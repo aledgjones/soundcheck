@@ -89,7 +89,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - **Final results are only PASS, FAIL or BLOCKED**, each resting on specific outcome lines. Unsure is never final.
 - **A FAIL, BLOCKED or Unsure** becomes `needs review`. On the page the row reads **"Checking"** (the tester reported a problem and the coordinator is checking it; it's the coordinator's job, not the person's), with no age on the row. A check that stalls shows in the sticky bar instead ("checking annotations/003 for 6 min", in amber). It should last only minutes.
 - **Review** is the coordinator alone, judging the tester's evidence and the server's capture. It does one of three things:
-  - **uphold:** the evidence is conclusive. The result is filed, and an open problem is created: a FAIL always makes a **blocker**; for a BLOCKED, the coordinator says whether the app caused it (a blocker) or the harness did (a note, not a problem).
+  - **uphold:** the evidence is conclusive. A FAIL is filed with a **blocker**. For a BLOCKED claim (the tester couldn't check), the coordinator says what stopped it: the **app** (it crashed, a screen wouldn't load), so the row is filed **FAIL** with a blocker; or the **environment or harness** (a missing label, a tool that can't reach a control), so it's filed **BLOCKED** with a note.
   - **verify:** the evidence isn't conclusive. A verification attempt is queued: a new agent on a fresh seed, **told the claim** ("the first attempt saw the stroke survive undo; reproduce it"). Reproduced: upheld. Not reproduced: filed as a finding marked "not reproduced (1 of 2)", never silently dropped, since flaky problems matter at triage.
   - **resolve an Unsure:** judge it from the evidence (PASS or FAIL, with a reason) or verify it, telling the new agent exactly what was unclear. Still unclear after verifying: filed BLOCKED with "spec unclear", and the spec is flagged for rewording with `create-test`, since ambiguity almost always means an outcome is worded too vaguely.
   - **send back:** the tester erred (a misread screen, a wrong tap, a device glitch), so a fresh attempt is queued without the claim.
@@ -358,12 +358,13 @@ The soundcheck repo ships as a Claude Code plugin:
   - **Blocked:** any open blocker.
   - **Not ready:** an open (untriaged) problem, specs not run, or results still under review.
   - **Ready:** otherwise.
+- **BLOCKED means the environment or harness stopped the test, never the app** (Aled, 2026-10-21). It isn't a result about the app: the row shows purple with one line saying why, counts as not tested until a rerun passes, and keeps the verdict at Not ready. Reset failures, stuck devices, missing labels and tool gaps are all BLOCKED. If the app stopped the test, it's a FAIL.
 - **Problems are app bugs and findings only.** Harness gaps and device glitches go in the run's notes.
 - **Triage outcomes** (3.3):
   - **Dismissed:** not a bug, or not reproduced. A problem that only passed on a rerun is Dismissed, never Fixed.
   - **Fixed:** a fix landed. Needs a ticket.
   - **Deferred:** accepted for this release. Needs a ticket.
-- **Blocker or finding, never a severity** (Aled, 2026-10-21). A **blocker** blocks the release until it's triaged: every upheld FAIL, and a BLOCKED the app caused. A **finding** doesn't block but still needs a decision: side finds, "not reproduced" ones, UX or accessibility observations. "Not exactly the test case, but something to think about." The kind follows from where the problem came from, so the coordinator never grades it, and a confirmed FAIL can't be labelled anything milder.
+- **Blocker or finding, never a severity** (Aled, 2026-10-21). A **blocker** blocks the release until it's triaged: every upheld FAIL, including a test the app stopped. A **finding** doesn't block but still needs a decision: side finds, "not reproduced" ones, UX or accessibility observations. "Not exactly the test case, but something to think about." The kind follows from where the problem came from, so the coordinator never grades it, and a confirmed FAIL can't be labelled anything milder.
 - **Duplicates fold into the original** (`duplicateOf`).
 
 ---

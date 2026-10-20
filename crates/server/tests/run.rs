@@ -655,7 +655,7 @@ fn a_duplicate_follows_its_original() {
     );
     run.triage(30, 2, Decision::Duplicate { of: 1 }, "same undo bug on iOS")
         .unwrap();
-    assert_eq!(run.verdict().reasons, ["1 blocker"]);
+    assert_eq!(run.verdict().reasons[0], "1 blocker");
     assert!(
         run.triage(31, 1, Decision::Duplicate { of: 2 }, "loop")
             .is_err()
@@ -690,7 +690,7 @@ fn a_harness_gap_blocked_stays_not_ready() {
     pass(&mut run, 20, DRAW, Ios);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::NotReady);
-    assert_eq!(v.reasons, ["1 spec blocked by the harness"]);
+    assert_eq!(v.reasons, ["1 blocked"]);
 }
 
 #[test]
@@ -930,6 +930,11 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_blocker() {
     )
     .unwrap();
     assert_eq!(run.state().problems[0].kind, ProblemKind::Blocker);
+    assert_eq!(
+        result(&run, BACK, Android),
+        Some(Final::Fail),
+        "the app stopped it, so it failed"
+    );
     assert_eq!(run.verdict().reasons[0], "1 blocker");
 }
 

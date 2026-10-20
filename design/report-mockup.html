@@ -40,6 +40,7 @@ a:hover{text-decoration:underline}
 .cell.pass .cell-text i{background:var(--pass)}
 .cell.fail .cell-text i{background:var(--fail)}
 .cell.fail .cell-text{color:var(--fail)}
+.cell.blocked .cell-text i{background:var(--blocked)}
 .cell.live .cell-text i{background:var(--accent)}
 .mini{display:flex;height:4px;width:150px;max-width:100%;border-radius:2px;overflow:hidden;background:var(--fill)}
 .mini i{display:block;height:100%}
@@ -139,6 +140,9 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .thumbs{display:flex;gap:10px;flex-wrap:wrap}
 .thumb{border:0;border-radius:12px;padding:0;background:var(--fill);overflow:hidden;width:88px;height:118px;box-shadow:0 0 0 1px var(--sep);display:grid;place-content:center;font-size:12px;color:var(--label2);text-align:center}
 .evidence-links{display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
+.blocked-block{background:color-mix(in srgb,var(--blocked) 9%,transparent);border-radius:12px;padding:10px 12px}
+.blocked-block .expect{display:block;color:var(--ink);font-weight:600}
+.blocked-block .saw{display:block}
 .finding-block{background:color-mix(in srgb,var(--partial) 9%,transparent);border-radius:12px;padding:10px 12px}
 .finding-block .expect{display:block;color:var(--ink);font-weight:600}
 .finding-block .saw{display:block}
@@ -217,6 +221,7 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
         <ul class="reasons" aria-label="What's in the way">
           <li class="chip reason bad">1 blocker</li>
           <li class="chip reason">1 finding to decide</li>
+          <li class="chip reason">1 blocked</li>
           <li class="chip reason">1 being checked</li>
           <li class="chip reason">31 not run yet</li>
         </ul>
@@ -232,7 +237,7 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
         <span class="cell live"><span class="cell-text"><i></i>1 checking · 3/9</span><span class="mini"><i class="pass" style="width:22%"></i><i class="review" style="width:11%"></i></span></span></a>
       <a class="grid-row" href="#section-viewer"><span class="grid-name">Viewer</span>
         <span class="cell live"><span class="cell-text"><i></i>Running · 1/6</span><span class="mini"><i class="pass" style="width:17%"></i><i class="pending" style="width:17%"></i></span></span>
-        <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span></a>
+        <span class="cell blocked"><span class="cell-text"><i></i>1 blocked · 0/6</span><span class="mini"><i class="blocked" style="width:17%"></i></span></span></a>
       <a class="grid-row" href="#section-account"><span class="grid-name">Account</span>
         <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span>
         <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span></a>
@@ -310,6 +315,19 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
           </details>
         </div>
       </details>
+      <details class="check" open>
+        <summary><span class="cid" title="viewer/004-zoom">004</span><span class="ctitle">Zoom in and out with the slider</span><span class="res pass">Passed</span><span class="res blocked">Blocked</span></summary>
+        <div class="check-body">
+          <div class="blocked-block">
+            <span class="expect">Couldn't be tested on iOS.</span>
+            <span class="saw">The zoom slider has no accessibility label, so its value can't be read. A harness gap, not an app result: it counts as not tested until a rerun passes.</span>
+          </div>
+          <details class="fold"><summary>Screenshots and tester's notes</summary>
+            <div class="thumbs" aria-label="Screenshots" style="margin-top:12px"><div class="thumb">slider</div></div>
+          </details>
+        </div>
+      </details>
+
       <details class="check">
         <summary><span class="cid" title="viewer/002-switch-parts">002</span><span class="ctitle">Switch between a score's parts</span><span class="res running">Running</span><span class="res not-run">Not run</span></summary>
       </details>

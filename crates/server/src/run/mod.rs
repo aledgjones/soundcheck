@@ -890,14 +890,11 @@ impl State {
                 let (row, problem): (Row, Option<(String, String)>) = match call {
                     Call::Uphold { title, cause } => match claim {
                         Claim::Fail => (file(Final::Fail), blocker(title, &[Answer::Failed])),
-                        _ => (
-                            file(Final::Blocked),
-                            if *cause == Some(Cause::App) {
-                                blocker(title, &[Answer::CouldntCheck])
-                            } else {
-                                None
-                            },
-                        ),
+                        // BLOCKED means only that the environment or harness stopped the test; if the app did, it failed.
+                        _ if *cause == Some(Cause::App) => {
+                            (file(Final::Fail), blocker(title, &[Answer::CouldntCheck]))
+                        }
+                        _ => (file(Final::Blocked), None),
                     },
                     Call::Judge { result, title } => (
                         file(*result),

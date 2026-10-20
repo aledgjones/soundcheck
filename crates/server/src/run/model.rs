@@ -36,7 +36,7 @@ pub enum Final {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ProblemKind {
-    /// Blocks the release until triaged: an upheld FAIL, or a BLOCKED the app caused.
+    /// Blocks the release until triaged: every upheld FAIL, including a test the app stopped.
     Blocker,
     /// Doesn't block but needs a decision: outside the check, or not reproduced.
     Finding,
@@ -46,9 +46,9 @@ pub enum ProblemKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Cause {
-    /// The app stopped it (a crash, a broken screen): a blocker.
+    /// The app stopped it (a crash, a broken screen): the row is filed FAIL, with a blocker.
     App,
-    /// The tooling did (a missing label, a tool that can't reach a control): a note, not a problem.
+    /// The environment or harness did (a missing label, a tool that can't reach a control): BLOCKED, with a note.
     Harness,
 }
 

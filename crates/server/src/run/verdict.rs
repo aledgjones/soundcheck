@@ -1,6 +1,6 @@
 //! The release verdict, from the run's rows and problems. No special gate tests: every spec counts the same.
 
-use super::model::{Final, ProblemKind, ProblemSource, Status};
+use super::model::{Final, ProblemKind, Status};
 use super::{Row, State};
 use serde::Serialize;
 
@@ -25,18 +25,13 @@ pub fn verdict(state: &State) -> Verdict {
     let mut harness_blocked = 0;
     let mut checking = state.pending_finds.len();
     let mut not_run = 0;
-    for ((spec, platform), record) in &state.rows {
+    for record in state.rows.values() {
         match &record.row {
-            // A BLOCKED with no problem is a harness gap: it counts as not run until a rerun passes.
+            // BLOCKED means the environment or harness stopped the test: it counts as untested until a rerun passes.
             Row::Filed {
                 result: Final::Blocked,
                 ..
-            } if !state.problems.iter().any(|p| {
-                &p.spec == spec && p.platform == *platform && p.source == ProblemSource::Row
-            }) =>
-            {
-                harness_blocked += 1
-            }
+            } => harness_blocked += 1,
             Row::Filed { .. } => {}
             Row::NeedsReview { .. } => checking += 1,
             Row::NotRun | Row::Queued { .. } | Row::Running { .. } => not_run += 1,
@@ -65,11 +60,7 @@ pub fn verdict(state: &State) -> Verdict {
     };
     say(blockers, "1 blocker", "blockers");
     say(findings, "1 finding to decide", "findings to decide");
-    say(
-        harness_blocked,
-        "1 spec blocked by the harness",
-        "specs blocked by the harness",
-    );
+    say(harness_blocked, "1 blocked", "blocked");
     say(checking, "1 being checked", "being checked");
     say(not_run, "1 not run yet", "not run yet");
 
