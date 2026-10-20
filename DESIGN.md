@@ -154,6 +154,14 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
   4. the tester's full narrative, collapsed.
      The server enforces 1: a non-pass must name the outcomes it failed, with observed text for each.
 - **The page header says what's happening now:** the spec running on each platform and for how long, or "idle 20 min: coordinator not responding". That's the only alarm an unattended run needs.
+- **Page decisions** (Aled, 2026-10-21):
+  - **Header:** the release label, devices, run start and last update. Commits stay out: the notes say which build each row ran on.
+  - **A slim sticky bar while the run is live** says what's happening now ("Android · annotations/003 · 2 min", or "idle 20 min: coordinator not responding" in amber), and goes once the run finishes.
+  - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
+  - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
+  - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
+  - **A collapsed timeline** at the bottom tells the run's story from the journal, one readable line per event. It replaces today's run log.
+  - **The server's root page lists runs** (release, date, verdict, ring), each opening its report. Exports stay single files.
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, severity badges, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
 - **Light enough to sit open for hours** beside an emulator: animate only opacity and transform, and leave no spinner on a row nobody is working on.
 - **Export:** a self-contained HTML file with screenshots embedded, which opens offline indefinitely.
