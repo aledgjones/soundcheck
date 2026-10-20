@@ -12,4 +12,11 @@ regex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml_ng.workspace = true
+axum.workspace = true
+rmcp.workspace = true
+schemars.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
 soundcheck-driver = { path = "../driver" }

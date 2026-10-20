@@ -107,6 +107,8 @@ pub struct Run {
     state: State,
     /// Tester liveness, kept in memory: a resumed run starts every running spec's clock again.
     activity: HashMap<String, Activity>,
+    /// Every entry so far, for the event stream's replay.
+    entries: Vec<Entry>,
 }
 
 impl Run {
@@ -118,10 +120,12 @@ impl Run {
             plan,
             journal,
             activity: HashMap::new(),
+            entries: Vec::new(),
         };
         for entry in &entries {
             run.state.apply(&run.plan, entry);
         }
+        run.entries = entries;
         for record in run.state.rows.values() {
             if let Row::Running { token, .. } = &record.row {
                 run.activity.insert(
@@ -136,6 +140,20 @@ impl Run {
         Ok(run)
     }
 
+    pub fn last_seq(&self) -> u64 {
+        self.entries.last().map_or(0, |e| e.seq)
+    }
+
+    /// Entries after `seq`, oldest first.
+    pub fn entries_after(&self, seq: u64) -> &[Entry] {
+        let start = self.entries.partition_point(|e| e.seq <= seq);
+        &self.entries[start..]
+    }
+
+    pub fn plan(&self) -> &Plan {
+        &self.plan
+    }
+
     pub fn state(&self) -> &State {
         &self.state
     }
@@ -148,13 +166,14 @@ impl Run {
         self.state.rows.get(&(spec.to_string(), platform))
     }
 
-    /// Starts the next attempt of a spec on a platform; returns its token.
+    /// Starts the next attempt of a spec on a platform; returns its token. `brief` renders the tester's prompt from
+    /// the token and any claim to verify, and is journalled as sent.
     pub fn dispatch(
         &mut self,
         now: u64,
         spec: &str,
         platform: Platform,
-        prompt: &str,
+        brief: impl FnOnce(&str, Option<&str>) -> String,
     ) -> Result<String> {
         self.open_for_commands()?;
         if self.state.paused {
@@ -186,8 +205,8 @@ impl Run {
                 platform,
                 attempt,
                 token: token.clone(),
+                prompt: brief(&token, verify.as_deref()),
                 verify,
-                prompt: prompt.into(),
             },
         )?;
         self.activity.insert(
@@ -564,6 +583,7 @@ impl Run {
     fn commit(&mut self, now: u64, event: Event) -> Result<()> {
         let entry = self.journal.append(now, event)?;
         self.state.apply(&self.plan, &entry);
+        self.entries.push(entry);
         Ok(())
     }
 }
@@ -730,7 +750,9 @@ impl State {
                         .map(|j| {
                             format!(
                                 "{}: {}",
-                                outcomes.get(j.outcome).map_or("?", String::as_str),
+                                outcomes
+                                    .get(j.outcome)
+                                    .map_or("?", |o| o.trim_end_matches('.')),
                                 j.observed
                             )
                         })

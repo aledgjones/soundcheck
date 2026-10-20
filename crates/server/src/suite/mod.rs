@@ -100,6 +100,13 @@ pub fn load(root: &Path) -> Suite {
         if name.starts_with('.') || NOT_FEATURES.contains(&name.as_str()) {
             continue;
         }
+        if suite
+            .config
+            .as_ref()
+            .is_some_and(|c| reports_dir(root, c) == entry)
+        {
+            continue;
+        }
         load_feature(&mut suite, &entry, &name);
     }
     suite
@@ -153,6 +160,14 @@ fn load_feature(suite: &mut Suite, dir: &Path, name: &str) {
         name: name.to_string(),
         context,
     });
+}
+
+/// Where runs are written: `reports` in suite.yaml (relative to the suite), or `reports/` beside the suite folder.
+pub fn reports_dir(root: &Path, config: &SuiteConfig) -> PathBuf {
+    match &config.reports {
+        Some(dir) => root.join(dir),
+        None => root.parent().unwrap_or(root).join("reports"),
+    }
 }
 
 fn sorted_entries(dir: &Path) -> Vec<PathBuf> {

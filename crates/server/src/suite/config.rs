@@ -1,9 +1,12 @@
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Platform {
     Android,
@@ -21,6 +24,19 @@ impl fmt::Display for Platform {
     }
 }
 
+impl std::str::FromStr for Platform {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "android" => Ok(Platform::Android),
+            "ios" => Ok(Platform::Ios),
+            "web" => Ok(Platform::Web),
+            other => Err(format!("{other} isn't a platform (android, ios, web)")),
+        }
+    }
+}
+
 /// `suite.yaml`: everything a project tells soundcheck about itself.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
@@ -31,7 +47,7 @@ pub struct SuiteConfig {
     pub hooks: Hooks,
     /// Seed scenario names the `seed` hook accepts.
     pub seeds: Vec<String>,
-    /// Where runs are written; defaults to `reports/` beside the suite.
+    /// Where runs are written, relative to the suite; defaults to `reports/` beside the suite folder.
     pub reports: Option<PathBuf>,
     #[serde(default)]
     pub models: Models,

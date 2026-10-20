@@ -69,3 +69,21 @@ fn a_broken_suite_reports_every_rule() {
         report.join("\n")
     );
 }
+
+#[test]
+fn a_reports_folder_inside_the_suite_is_not_a_feature() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("soundcheck-reports-{nanos}"));
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(root.join("annotations")).unwrap();
+    std::fs::create_dir_all(root.join("runs/20261020-235134")).unwrap();
+    for file in ["annotations/_feature.md", "annotations/001-draw.spec.md"] {
+        std::fs::copy(good.join(file), root.join(file)).unwrap();
+    }
+    let config = std::fs::read_to_string(good.join("suite.yaml")).unwrap() + "reports: runs\n";
+    std::fs::write(root.join("suite.yaml"), config).unwrap();
+    assert_eq!(lint(&suite::load(&root), "0.1.0"), vec![]);
+}

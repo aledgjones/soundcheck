@@ -1,8 +1,9 @@
 use crate::suite::config::Platform;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// A tester's judgment of one outcome.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum Answer {
     Held,
@@ -14,7 +15,7 @@ pub enum Answer {
 }
 
 /// What a tester's judgments add up to. Unsure is a claim, never a final result.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Claim {
     Pass,
@@ -23,7 +24,7 @@ pub enum Claim {
     Unsure,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Final {
     Pass,
@@ -31,14 +32,14 @@ pub enum Final {
     Blocked,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
     Bug,
     Finding,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Judgment {
     /// Index into the spec's Outcomes list.
     pub outcome: usize,
@@ -50,7 +51,7 @@ pub struct Judgment {
 }
 
 /// A problem a tester found outside the spec's outcomes while probing.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SideFind {
     pub summary: String,
     pub observed: String,
@@ -58,7 +59,7 @@ pub struct SideFind {
     pub evidence: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Posted {
     pub judgments: Vec<Judgment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -85,7 +86,7 @@ impl Posted {
 }
 
 /// The coordinator's review of a claim. Every call carries a one-line reason.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "call", rename_all = "kebab-case")]
 pub enum Call {
     /// The evidence is conclusive: file the claim. A FAIL needs a severity; a BLOCKED without one is a harness gap.
@@ -103,7 +104,7 @@ pub enum Call {
     SpecUnclear,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum ProblemSource {
     Row,
@@ -112,7 +113,7 @@ pub enum ProblemSource {
     NotReproduced,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Problem {
     pub id: u32,
     pub spec: String,
@@ -128,7 +129,7 @@ pub struct Problem {
 }
 
 /// Where triage left a problem. Open until the person and the coordinator decide.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "status", rename_all = "kebab-case")]
 pub enum Status {
     #[default]
@@ -144,7 +145,7 @@ pub enum Status {
 }
 
 /// A triage decision, as the coordinator records it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "decision", rename_all = "kebab-case")]
 pub enum Decision {
     Dismiss,
