@@ -45,8 +45,8 @@ pub fn summary(entry: &Entry) -> String {
                 .and_then(|v| v.get("call").and_then(|c| c.as_str()).map(str::to_string))
                 .unwrap_or_default()
         ),
-        Event::FindReviewed { id, severity, .. } => match severity {
-            Some(s) => format!("side find {id} upheld as a {s:?}").to_lowercase(),
+        Event::FindReviewed { id, title, .. } => match title {
+            Some(title) => format!("side find {id} is a finding: {title}"),
             None => format!("side find {id} isn't a problem"),
         },
         Event::Stalled { token, reason } => format!("{token} stalled: {reason}; queued again"),

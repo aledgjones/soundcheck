@@ -297,8 +297,20 @@ impl Run {
         };
         let (attempt, claim) = (*attempt, *claim);
         match (&call, claim) {
-            (Call::Uphold { severity: None }, Claim::Fail) => {
-                bail!("upholding a FAIL needs a severity")
+            (Call::Uphold { title, .. }, Claim::Fail) if blank(title) => {
+                bail!("upholding a FAIL makes a blocker: give it a title in plain words")
+            }
+            (Call::Uphold { cause: None, .. }, Claim::Blocked) => {
+                bail!("upholding a BLOCKED needs its cause: app or harness")
+            }
+            (
+                Call::Uphold {
+                    cause: Some(Cause::App),
+                    title,
+                },
+                Claim::Blocked,
+            ) if blank(title) => {
+                bail!("the app caused it, so it's a blocker: give it a title in plain words")
             }
             (Call::Uphold { .. }, Claim::Unsure) => {
                 bail!("an Unsure can't be upheld: judge it, verify it or mark the spec unclear")
@@ -311,10 +323,19 @@ impl Run {
             (
                 Call::Judge {
                     result: Final::Fail,
-                    severity: None,
+                    title,
                 },
                 _,
-            ) => bail!("judging FAIL needs a severity"),
+            ) if blank(title) => {
+                bail!("judging FAIL makes a blocker: give it a title in plain words")
+            }
+            (
+                Call::Judge {
+                    result: Final::Blocked,
+                    ..
+                },
+                _,
+            ) => bail!("an Unsure is judged PASS or FAIL; if it can't be, mark the spec unclear"),
             (Call::Verify { .. } | Call::SendBack, _) if record.budget >= MAX_ATTEMPTS => {
                 bail!("{spec} has used all {MAX_ATTEMPTS} attempts: file what's known")
             }
@@ -336,12 +357,12 @@ impl Run {
         Ok(())
     }
 
-    /// The coordinator's call on a side find: a problem with a severity, or no problem.
+    /// The coordinator's call on a side find: a finding with a title in plain words, or not a problem.
     pub fn review_find(
         &mut self,
         now: u64,
         id: u32,
-        severity: Option<Severity>,
+        title: Option<String>,
         reason: &str,
     ) -> Result<()> {
         self.open_for_commands()?;
@@ -351,11 +372,14 @@ impl Run {
         if !self.state.pending_finds.iter().any(|f| f.id == id) {
             bail!("side find {id} isn't waiting for review");
         }
+        if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
+            bail!("a finding's title can't be empty");
+        }
         self.commit(
             now,
             Event::FindReviewed {
                 id,
-                severity,
+                title,
                 reason: reason.into(),
             },
         )
@@ -773,7 +797,7 @@ impl State {
                 if claim == Claim::Pass {
                     if let Some(original) = &verify {
                         let r = &self.rows[&key];
-                        let summary = format!(
+                        let title = format!(
                             "Not reproduced ({} of {}): {original}",
                             r.sightings, r.budget
                         );
@@ -783,9 +807,10 @@ impl State {
                             spec: spec.clone(),
                             platform,
                             attempt,
-                            severity: Severity::Finding,
+                            kind: ProblemKind::Finding,
                             source: ProblemSource::NotReproduced,
-                            summary,
+                            title,
+                            detail: "A verification attempt passed.".into(),
                             verified: true,
                             reason: "a verification attempt passed".into(),
                             status: Status::Open,
@@ -858,26 +883,30 @@ impl State {
                     attempt: *attempt,
                     reason: reason.clone(),
                 };
-                let (row, problem): (Row, Option<(Severity, String)>) = match call {
-                    Call::Uphold { severity } => match claim {
-                        Claim::Fail => (
-                            file(Final::Fail),
-                            severity.map(|s| (s, summary(&[Answer::Failed]))),
-                        ),
+                // Every problem a review makes is a blocker: findings come only from side finds and verifications.
+                let blocker = |title: &Option<String>, answers: &[Answer]| {
+                    title.clone().map(|t| (t, summary(answers)))
+                };
+                let (row, problem): (Row, Option<(String, String)>) = match call {
+                    Call::Uphold { title, cause } => match claim {
+                        Claim::Fail => (file(Final::Fail), blocker(title, &[Answer::Failed])),
                         _ => (
                             file(Final::Blocked),
-                            severity.map(|s| (s, summary(&[Answer::CouldntCheck]))),
+                            if *cause == Some(Cause::App) {
+                                blocker(title, &[Answer::CouldntCheck])
+                            } else {
+                                None
+                            },
                         ),
                     },
-                    Call::Judge { result, severity } => {
-                        let found = summary(&[Answer::Unsure, Answer::Failed]);
-                        (
-                            file(*result),
-                            severity
-                                .filter(|_| *result != Final::Pass)
-                                .map(|s| (s, found)),
-                        )
-                    }
+                    Call::Judge { result, title } => (
+                        file(*result),
+                        if *result == Final::Fail {
+                            blocker(title, &[Answer::Unsure, Answer::Failed])
+                        } else {
+                            None
+                        },
+                    ),
                     Call::SpecUnclear => {
                         self.unclear_specs.insert(spec.clone());
                         (
@@ -912,16 +941,17 @@ impl State {
                         text: format!("harness gap: {reason}"),
                     });
                 }
-                if let Some((severity, summary)) = problem {
+                if let Some((title, detail)) = problem {
                     let id = self.next_id();
                     self.problems.push(Problem {
                         id,
                         spec: spec.clone(),
                         platform: *platform,
                         attempt: *attempt,
-                        severity,
+                        kind: ProblemKind::Blocker,
                         source: ProblemSource::Row,
-                        summary,
+                        title,
+                        detail,
                         verified: verify.is_some(),
                         reason: reason.clone(),
                         status: Status::Open,
@@ -929,24 +959,21 @@ impl State {
                 }
                 self.rows.get_mut(&key).unwrap().row = row;
             }
-            Event::FindReviewed {
-                id,
-                severity,
-                reason,
-            } => {
+            Event::FindReviewed { id, title, reason } => {
                 let Some(pos) = self.pending_finds.iter().position(|f| f.id == *id) else {
                     return;
                 };
                 let pending = self.pending_finds.remove(pos);
-                if let Some(severity) = severity {
+                if let Some(title) = title {
                     self.problems.push(Problem {
                         id: pending.id,
                         spec: pending.spec,
                         platform: pending.platform,
                         attempt: pending.attempt,
-                        severity: *severity,
+                        kind: ProblemKind::Finding,
                         source: ProblemSource::SideFind,
-                        summary: format!("{}: {}", pending.find.summary, pending.find.observed),
+                        title: title.clone(),
+                        detail: format!("{}: {}", pending.find.summary, pending.find.observed),
                         verified: false,
                         reason: reason.clone(),
                         status: Status::Open,
@@ -1037,6 +1064,10 @@ impl State {
             Event::Finished { .. } => self.finished = true,
         }
     }
+}
+
+fn blank(text: &Option<String>) -> bool {
+    text.as_deref().is_none_or(|t| t.trim().is_empty())
 }
 
 fn describe(row: &Row) -> &'static str {

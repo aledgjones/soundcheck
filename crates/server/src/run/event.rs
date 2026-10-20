@@ -1,4 +1,4 @@
-use super::model::{Build, Call, Decision, Final, Posted, Rerun, Severity};
+use super::model::{Build, Call, Decision, Final, Posted, Rerun};
 use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
 
@@ -28,10 +28,10 @@ pub enum Event {
         call: Call,
         reason: String,
     },
-    /// A side find reviewed: a problem with this severity, or none.
+    /// A side find reviewed: a finding with this title, or not a problem.
     FindReviewed {
         id: u32,
-        severity: Option<Severity>,
+        title: Option<String>,
         reason: String,
     },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.

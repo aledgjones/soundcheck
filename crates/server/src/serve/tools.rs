@@ -1,5 +1,5 @@
 use super::{Hub, prompt};
-use crate::run::model::{Build, Call, Decision, Judgment, Posted, Rerun, Severity, SideFind};
+use crate::run::model::{Build, Call, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -35,7 +35,6 @@ pub struct PostResultParams {
     /// Problems found while probing that the outcomes don't cover.
     #[serde(default)]
     pub side_finds: Vec<SideFind>,
-    pub proposed_severity: Option<Severity>,
     pub notes: Option<String>,
 }
 
@@ -58,8 +57,8 @@ pub struct ReviewParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ReviewFindParams {
     pub id: u32,
-    /// A severity makes it a problem; none means it isn't one.
-    pub severity: Option<Severity>,
+    /// A title in plain words makes it a finding; none means it isn't a problem.
+    pub title: Option<String>,
     pub reason: String,
 }
 
@@ -115,7 +114,6 @@ impl Tools {
         let posted = Posted {
             judgments: p.judgments,
             side_finds: p.side_finds,
-            proposed_severity: p.proposed_severity,
             notes: p.notes,
         };
         reply(self.hub.with_run(|run, now| {
@@ -211,14 +209,14 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: your call on a side find: give a severity to make it a problem, or none if it isn't one."
+        description = "Coordinator: your call on a side find: give it a title in plain words to make it a finding, or none if it isn't one."
     )]
     async fn review_find(
         &self,
         Parameters(p): Parameters<ReviewFindParams>,
     ) -> Result<CallToolResult, ErrorData> {
         reply(self.hub.with_run(|run, now| {
-            run.review_find(now, p.id, p.severity, &p.reason)?;
+            run.review_find(now, p.id, p.title, &p.reason)?;
             Ok(json!({ "reviewed_find": p.id }))
         }))
     }

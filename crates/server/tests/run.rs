@@ -7,6 +7,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const DRAW: &str = "annotations/001-draw";
 const BACK: &str = "annotations/002-back";
 
+fn bug() -> Call {
+    Call::Uphold {
+        title: Some("Undo leaves the stroke on screen".into()),
+        cause: None,
+    }
+}
+
 fn brief(_token: &str, _verify: Option<&str>) -> String {
     "brief".into()
 }
@@ -60,7 +67,6 @@ fn judged(answers: &[Answer]) -> Posted {
             })
             .collect(),
         side_finds: vec![],
-        proposed_severity: None,
         notes: None,
     }
 }
@@ -98,36 +104,27 @@ fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
     ));
 
     let err = run
-        .review(3, DRAW, Android, Call::Uphold { severity: None }, "real")
-        .unwrap_err();
-    assert!(err.to_string().contains("needs a severity"));
-    assert!(
-        run.review(
+        .review(
             3,
             DRAW,
             Android,
             Call::Uphold {
-                severity: Some(Severity::Bug)
+                title: None,
+                cause: None,
             },
-            ""
+            "real",
         )
-        .is_err()
-    );
+        .unwrap_err();
+    assert!(err.to_string().contains("give it a title"));
+    assert!(run.review(3, DRAW, Android, bug(), "").is_err());
 
-    run.review(
-        3,
-        DRAW,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "screenshot shows the stroke",
-    )
-    .unwrap();
+    run.review(3, DRAW, Android, bug(), "screenshot shows the stroke")
+        .unwrap();
     assert_eq!(result(&run, DRAW, Android), Some(Final::Fail));
     let problem = &run.state().problems[0];
-    assert_eq!(problem.severity, Severity::Bug);
-    assert_eq!(problem.summary, "Undo removes the stroke: saw outcome 0");
+    assert_eq!(problem.kind, ProblemKind::Blocker);
+    assert_eq!(problem.title, "Undo leaves the stroke on screen");
+    assert_eq!(problem.detail, "Undo removes the stroke: saw outcome 0");
     assert!(!problem.verified);
 }
 
@@ -146,16 +143,7 @@ fn review_never_blocks_the_next_dispatch_but_blocks_finishing() {
         "{err}"
     );
 
-    run.review(
-        6,
-        DRAW,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "real",
-    )
-    .unwrap();
+    run.review(6, DRAW, Android, bug(), "real").unwrap();
     let counts = run.finish(7).unwrap();
     assert_eq!((counts.pass, counts.fail, counts.not_run), (1, 1, 1));
     assert!(
@@ -196,9 +184,9 @@ fn a_verification_that_passes_files_a_not_reproduced_finding() {
     assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
     let problem = &run.state().problems[0];
     assert_eq!(problem.source, ProblemSource::NotReproduced);
-    assert_eq!(problem.severity, Severity::Finding);
+    assert_eq!(problem.kind, ProblemKind::Finding);
     assert_eq!(
-        problem.summary,
+        problem.title,
         "Not reproduced (1 of 2): the stroke survived undo"
     );
 }
@@ -214,16 +202,7 @@ fn a_reproduced_verification_is_upheld_as_verified() {
     let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
     run.post(5, &t2, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.review(
-        6,
-        DRAW,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "reproduced",
-    )
-    .unwrap();
+    run.review(6, DRAW, Android, bug(), "reproduced").unwrap();
     assert!(run.state().problems[0].verified);
 }
 
@@ -236,18 +215,7 @@ fn an_unsure_must_be_judged_verified_or_marked_unclear() {
             .unwrap(),
         Claim::Unsure
     );
-    assert!(
-        run.review(
-            3,
-            DRAW,
-            Android,
-            Call::Uphold {
-                severity: Some(Severity::Bug)
-            },
-            "r"
-        )
-        .is_err()
-    );
+    assert!(run.review(3, DRAW, Android, bug(), "r").is_err());
     assert!(
         run.review(
             3,
@@ -255,7 +223,7 @@ fn an_unsure_must_be_judged_verified_or_marked_unclear() {
             Android,
             Call::Judge {
                 result: Final::Fail,
-                severity: None
+                title: None
             },
             "r"
         )
@@ -267,7 +235,7 @@ fn an_unsure_must_be_judged_verified_or_marked_unclear() {
         Android,
         Call::Judge {
             result: Final::Pass,
-            severity: None,
+            title: None,
         },
         "screenshot is fine",
     )
@@ -307,7 +275,7 @@ fn judge_and_unclear_are_only_for_an_unsure() {
             Android,
             Call::Judge {
                 result: Final::Pass,
-                severity: None
+                title: None
             },
             "r"
         )
@@ -316,7 +284,7 @@ fn judge_and_unclear_are_only_for_an_unsure() {
 }
 
 #[test]
-fn a_blocked_upheld_without_severity_is_a_harness_gap_note() {
+fn a_blocked_the_harness_caused_is_a_note_not_a_problem() {
     let (mut run, _) = open("blocked");
     let t = run.dispatch(1, DRAW, Android, brief).unwrap();
     assert_eq!(
@@ -328,7 +296,10 @@ fn a_blocked_upheld_without_severity_is_a_harness_gap_note() {
         3,
         DRAW,
         Android,
-        Call::Uphold { severity: None },
+        Call::Uphold {
+            title: None,
+            cause: Some(Cause::Harness),
+        },
         "no label on the undo button",
     )
     .unwrap();
@@ -369,16 +340,8 @@ fn three_attempts_at_most() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("all 3 attempts"), "{err}");
-    run.review(
-        41,
-        DRAW,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Finding),
-        },
-        "seen 3 times",
-    )
-    .unwrap();
+    run.review(41, DRAW, Android, bug(), "seen 3 times")
+        .unwrap();
     assert_eq!(run.row(DRAW, Android).unwrap().sightings, 3);
 }
 
@@ -495,14 +458,15 @@ fn a_side_find_is_reviewed_on_its_own() {
     run.review_find(
         4,
         1,
-        Some(Severity::Bug),
+        Some("Eraser width resets after reopening".into()),
         "reproducible from the screenshot",
     )
     .unwrap();
     let problem = &run.state().problems[0];
     assert_eq!(problem.source, ProblemSource::SideFind);
+    assert_eq!(problem.kind, ProblemKind::Finding);
     assert_eq!(
-        problem.summary,
+        problem.detail,
         "Eraser width resets: width went back to 4 after reopening"
     );
 }
@@ -552,16 +516,7 @@ fn a_reopened_journal_carries_on_where_it_stopped() {
         run.stalled(1_000 + 119_000, 120_000).is_empty(),
         "the clock restarts on reopen"
     );
-    run.review(
-        4,
-        DRAW,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "real",
-    )
-    .unwrap();
+    run.review(4, DRAW, Android, bug(), "real").unwrap();
     run.post(5, &running, judged(&[Answer::Held])).unwrap();
     assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
 
@@ -587,16 +542,7 @@ fn fail_and_uphold(run: &mut Run, at: u64, spec: &str, platform: Platform) {
         vec![Answer::Failed]
     };
     run.post(at + 1, &t, judged(&answers)).unwrap();
-    run.review(
-        at + 2,
-        spec,
-        platform,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "real",
-    )
-    .unwrap();
+    run.review(at + 2, spec, platform, bug(), "real").unwrap();
 }
 
 fn pass(run: &mut Run, at: u64, spec: &str, platform: Platform) {
@@ -616,7 +562,7 @@ fn every_spec_passing_is_ready() {
     pass(&mut run, 10, DRAW, Ios);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::NotReady);
-    assert_eq!(v.reasons, ["1 spec not run"]);
+    assert_eq!(v.reasons, ["1 not run yet"]);
     pass(&mut run, 20, BACK, Android);
     assert_eq!(run.verdict().status, VerdictStatus::Ready);
 }
@@ -629,7 +575,7 @@ fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
     pass(&mut run, 20, BACK, Android);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::Blocked);
-    assert_eq!(v.reasons, ["1 open FAIL", "1 problem not triaged"]);
+    assert_eq!(v.reasons, ["1 blocker"]);
 
     run.finish(30).unwrap();
     let err = run
@@ -679,7 +625,7 @@ fn fixed_needs_a_later_pass_of_its_row() {
     run.post(11, &t, posted).unwrap();
     run.review(12, BACK, Android, Call::SendBack, "wrong tap")
         .unwrap();
-    run.review_find(13, 2, Some(Severity::Finding), "seen in the shot")
+    run.review_find(13, 2, Some("Menu flickers".into()), "seen in the shot")
         .unwrap();
     pass(&mut run, 14, BACK, Android);
     run.triage(
@@ -709,10 +655,7 @@ fn a_duplicate_follows_its_original() {
     );
     run.triage(30, 2, Decision::Duplicate { of: 1 }, "same undo bug on iOS")
         .unwrap();
-    assert_eq!(
-        run.verdict().reasons,
-        ["2 open FAILs", "1 problem not triaged"]
-    );
+    assert_eq!(run.verdict().reasons, ["1 blocker"]);
     assert!(
         run.triage(31, 1, Decision::Duplicate { of: 2 }, "loop")
             .is_err()
@@ -736,7 +679,10 @@ fn a_harness_gap_blocked_stays_not_ready() {
         3,
         BACK,
         Android,
-        Call::Uphold { severity: None },
+        Call::Uphold {
+            title: None,
+            cause: Some(Cause::Harness),
+        },
         "no label",
     )
     .unwrap();
@@ -744,7 +690,7 @@ fn a_harness_gap_blocked_stays_not_ready() {
     pass(&mut run, 20, DRAW, Ios);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::NotReady);
-    assert_eq!(v.reasons, ["1 spec BLOCKED"]);
+    assert_eq!(v.reasons, ["1 spec blocked by the harness"]);
 }
 
 #[test]
@@ -765,7 +711,7 @@ fn a_not_reproduced_finding_must_be_triaged() {
     pass(&mut run, 4, BACK, Android);
     pass(&mut run, 10, DRAW, Android);
     pass(&mut run, 20, DRAW, Ios);
-    assert_eq!(run.verdict().reasons, ["1 problem not triaged"]);
+    assert_eq!(run.verdict().reasons, ["1 finding to decide"]);
     run.triage(
         30,
         1,
@@ -940,16 +886,8 @@ fn each_build_gets_a_fresh_attempt_budget() {
                 .unwrap();
         }
     }
-    run.review(
-        30,
-        BACK,
-        Android,
-        Call::Uphold {
-            severity: Some(Severity::Bug),
-        },
-        "seen 3 times",
-    )
-    .unwrap();
+    run.review(30, BACK, Android, bug(), "seen 3 times")
+        .unwrap();
     run.install_build(40, Android, build("b2", "fp1"), vec![])
         .unwrap();
     let t = run.dispatch(41, BACK, Android, brief).unwrap();
@@ -963,5 +901,51 @@ fn each_build_gets_a_fresh_attempt_budget() {
         run.row(BACK, Android).unwrap().budget,
         1,
         "the replay agrees"
+    );
+}
+
+#[test]
+fn a_blocked_needs_its_cause_and_an_app_cause_is_a_blocker() {
+    let (mut run, _) = open("blocked-cause");
+    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::CouldntCheck])).unwrap();
+    let call = |title: Option<&str>, cause| Call::Uphold {
+        title: title.map(str::to_string),
+        cause,
+    };
+    let err = run
+        .review(3, BACK, Android, call(None, None), "r")
+        .unwrap_err();
+    assert!(err.to_string().contains("app or harness"), "{err}");
+    let err = run
+        .review(3, BACK, Android, call(None, Some(Cause::App)), "crashed")
+        .unwrap_err();
+    assert!(err.to_string().contains("give it a title"), "{err}");
+    run.review(
+        3,
+        BACK,
+        Android,
+        call(Some("The app crashes going back"), Some(Cause::App)),
+        "crashed",
+    )
+    .unwrap();
+    assert_eq!(run.state().problems[0].kind, ProblemKind::Blocker);
+    assert_eq!(run.verdict().reasons[0], "1 blocker");
+}
+
+#[test]
+fn an_unsure_is_judged_pass_or_fail_only() {
+    let (mut run, _) = open("judge-blocked");
+    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Unsure])).unwrap();
+    let judge = Call::Judge {
+        result: Final::Blocked,
+        title: None,
+    };
+    assert!(
+        run.review(3, BACK, Android, judge, "r")
+            .unwrap_err()
+            .to_string()
+            .contains("spec unclear")
     );
 }

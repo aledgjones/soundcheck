@@ -32,11 +32,24 @@ pub enum Final {
     Blocked,
 }
 
+/// What a problem means for the release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum Severity {
-    Bug,
+pub enum ProblemKind {
+    /// Blocks the release until triaged: an upheld FAIL, or a BLOCKED the app caused.
+    Blocker,
+    /// Doesn't block but needs a decision: outside the check, or not reproduced.
     Finding,
+}
+
+/// Why an upheld BLOCKED couldn't be checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Cause {
+    /// The app stopped it (a crash, a broken screen): a blocker.
+    App,
+    /// The tooling did (a missing label, a tool that can't reach a control): a note, not a problem.
+    Harness,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -65,8 +78,6 @@ pub struct Posted {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub side_finds: Vec<SideFind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposed_severity: Option<Severity>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
 }
 
@@ -89,8 +100,12 @@ impl Posted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "call", rename_all = "kebab-case")]
 pub enum Call {
-    /// The evidence is conclusive: file the claim. A FAIL needs a severity; a BLOCKED without one is a harness gap.
-    Uphold { severity: Option<Severity> },
+    /// The evidence is conclusive: file the claim. A FAIL becomes a blocker, which needs a plain-words title; a
+    /// BLOCKED needs its cause, and a title too when the app caused it.
+    Uphold {
+        title: Option<String>,
+        cause: Option<Cause>,
+    },
     /// Queue a fresh attempt told the claim, to reproduce it.
     Verify { claim: String },
     /// The tester erred: queue a fresh attempt without the claim.
@@ -98,7 +113,8 @@ pub enum Call {
     /// Resolve an Unsure from the evidence.
     Judge {
         result: Final,
-        severity: Option<Severity>,
+        /// Needed when the result is FAIL: the blocker's title.
+        title: Option<String>,
     },
     /// Still unclear after verifying: BLOCKED, and the spec needs rewording.
     SpecUnclear,
@@ -119,9 +135,12 @@ pub struct Problem {
     pub spec: String,
     pub platform: Platform,
     pub attempt: u32,
-    pub severity: Severity,
+    pub kind: ProblemKind,
     pub source: ProblemSource,
-    pub summary: String,
+    /// In plain words, written by the coordinator.
+    pub title: String,
+    /// What was expected and what was seen, from the tester's judgments.
+    pub detail: String,
     /// Whether a verification attempt reproduced it before it was upheld.
     pub verified: bool,
     pub reason: String,

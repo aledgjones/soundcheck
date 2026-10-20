@@ -53,17 +53,18 @@ The project's regression skill gives you:
 
 A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `status` for the row's judgments, then decide, with one plain line of reason:
 
-| Call             | When                                                                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **uphold**       | The evidence is conclusive. A FAIL needs a severity; a BLOCKED with no severity is a harness gap (a missing label, a tool that can't reach a control), not an app problem |
-| **verify**       | Plausible but not conclusive: seen once, on a degraded device, or hard to believe. Say exactly what to reproduce                                                          |
-| **send-back**    | The tester erred: a wrong tap, a misread screen, a step from the wrong place                                                                                              |
-| **judge**        | An Unsure you can settle from the evidence: PASS, or FAIL with a severity                                                                                                 |
-| **spec-unclear** | An Unsure still unclear after verifying: the outcome is worded too vaguely. The spec is flagged for rewording                                                             |
+| Call             | When                                                                                                                                                                                                                                                                        |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **uphold**       | The evidence is conclusive. A FAIL becomes a **blocker**: give it a `title` in plain words. A BLOCKED needs its `cause`: `app` (a crash, a broken screen: a blocker, with a title) or `harness` (a missing label, a tool that can't reach a control: a note, not a problem) |
+| **verify**       | Plausible but not conclusive: seen once, on a degraded device, or hard to believe. Say exactly what to reproduce                                                                                                                                                            |
+| **send-back**    | The tester erred: a wrong tap, a misread screen, a step from the wrong place                                                                                                                                                                                                |
+| **judge**        | An Unsure you can settle from the evidence: PASS, or FAIL with a blocker's `title`                                                                                                                                                                                          |
+| **spec-unclear** | An Unsure still unclear after verifying: the outcome is worded too vaguely. The spec is flagged for rewording                                                                                                                                                               |
 
-- **Severity:** `bug` when the app did something wrong, as observed; `finding` when it's worth knowing but not clearly a defect (a UX or accessibility observation, or something seen only on a degraded device). The tester's proposal is a hint; your call decides.
+- **Titles are what the person reads first.** Write each as the problem in plain words ("Undo leaves the stroke on screen when zoomed in"), never as the outcome or the tester's wording.
+- **Blocker or finding is never your judgement call.** Upheld failures are blockers; side finds and things that didn't reproduce are findings. If a failure doesn't seem worth blocking the release, that's for triage with the person, not a reason to file it as something milder.
 - **Look at the evidence, not just the claim.** Open a screenshot only when the judgments don't settle it, which keeps your context small for a long run.
-- **Side finds** (`side find(s) need review`): `review_find` with a severity if it's a real problem, or none if it isn't.
+- **Side finds** (`side find(s) need review`): `review_find` with a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem.
 - A spec gets at most 3 attempts. After that, file what's known.
 
 ## 4. Pause, resume, stop
