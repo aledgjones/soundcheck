@@ -164,7 +164,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
 
 Nothing in a run may wait for a human:
 
-- **Permissions:** the plugin ships an allowlist for soundcheck's own MCP tools. Testers can only call those, so that's safe. A Claude Code permission prompt must never be what stops an overnight run.
+- **Permissions:** a Claude Code permission prompt must never be what stops an overnight run. The `run` skill pre-allows the coordinator's tools (`allowed-tools`); `setup` adds `mcp__plugin_soundcheck_soundcheck__*` to the project's permission allowlist so background testers never prompt. That's safe because the tester agent's only tools are soundcheck's own and Read. The plugin's MCP tools are named `mcp__plugin_soundcheck_soundcheck__<tool>`, with the registry's hyphens as underscores; a test keeps the plugin's files in step with the registry.
 - **Accounts:** each platform's account is set up so seeding and sign-in never need a person (no account pickers, no device-policy prompts). `setup` checks this.
 - **Stuck devices:** the server restarts a degraded or wedged device (3.7). If a spec still can't run, the coordinator files it BLOCKED with the reason and moves on.
 - **Where the coordinator runs:** in v1, an ordinary Claude Code session on the test machine, left open. Headless dispatch stays a later step.

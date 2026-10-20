@@ -91,6 +91,13 @@ pub const TOOLS: &[Tool] = &[
     ),
 ];
 
+impl Tool {
+    /// Its MCP tool name: the same words joined by underscores.
+    pub fn mcp_name(&self) -> String {
+        self.name.replace('-', "_")
+    }
+}
+
 pub fn tool(name: &str) -> Option<&'static Tool> {
     TOOLS.iter().find(|t| t.name == name)
 }
