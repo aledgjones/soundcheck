@@ -89,7 +89,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - **Final results are only PASS, FAIL or BLOCKED**, each resting on specific outcome lines. Unsure is never final.
 - **A FAIL, BLOCKED or Unsure** becomes `needs review`. On the page the row reads **"Checking"** (the tester reported a problem and the coordinator is checking it; it's the coordinator's job, not the person's), with no age on the row. A check that stalls shows in the sticky bar instead ("checking annotations/003 for 6 min", in amber). It should last only minutes.
 - **Review** is the coordinator alone, judging the tester's evidence and the server's capture. It does one of three things:
-  - **uphold:** the evidence is conclusive. The result is filed, and a problem joins the findings list as **open**, with the coordinator setting its severity (bug or finding).
+  - **uphold:** the evidence is conclusive. The result is filed, and an open problem is created: a FAIL always makes a **blocker**; for a BLOCKED, the coordinator says whether the app caused it (a blocker) or the harness did (a note, not a problem).
   - **verify:** the evidence isn't conclusive. A verification attempt is queued: a new agent on a fresh seed, **told the claim** ("the first attempt saw the stroke survive undo; reproduce it"). Reproduced: upheld. Not reproduced: filed as a finding marked "not reproduced (1 of 2)", never silently dropped, since flaky problems matter at triage.
   - **resolve an Unsure:** judge it from the evidence (PASS or FAIL, with a reason) or verify it, telling the new agent exactly what was unclear. Still unclear after verifying: filed BLOCKED with "spec unclear", and the spec is flagged for rewording with `create-test`, since ambiguity almost always means an outcome is worded too vaguely.
   - **send back:** the tester erred (a misread screen, a wrong tap, a device glitch), so a fresh attempt is queued without the claim.
@@ -160,7 +160,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
   - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
   - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
   - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
-  - **Badges stay minimal:** an open problem shows one badge, its severity; "verified" and "side find" go in its detail. Fixed, Deferred and Dismissed problems show no badges, only their ticket, because the group header already says what happened.
+  - **One badge per problem, on the left:** an open problem shows **Blocker** (red) or **Finding** (amber); a fixed or deferred one shows its ticket; a dismissed one a muted "Dismissed". The right side says only where it happened. "Verified" and "side find" go in the detail. The approved mockup: https://claude.ai/artifact/2vwanZhfugrneZJQqJq49Q
   - **A collapsed timeline** at the bottom tells the run's story from the journal, one readable line per event. It replaces today's run log.
   - **The server's root page lists runs** (release, date, verdict, ring), each opening its report. Exports stay single files.
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, severity badges, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
@@ -354,7 +354,7 @@ The soundcheck repo ships as a Claude Code plugin:
 - **Any open FAIL blocks the release,** whichever spec it's on. There are no special gate tests.
 - **A BLOCKED** goes through review and triage like a FAIL. One blocked by a harness gap, not the app, goes in the run's notes, and its spec counts as not run until a rerun passes.
 - **Verdict:**
-  - **Blocked:** any open FAIL.
+  - **Blocked:** any open blocker.
   - **Not ready:** an open (untriaged) problem, specs not run, or results still under review.
   - **Ready:** otherwise.
 - **Problems are app bugs and findings only.** Harness gaps and device glitches go in the run's notes.
@@ -362,7 +362,7 @@ The soundcheck repo ships as a Claude Code plugin:
   - **Dismissed:** not a bug, or not reproduced. A problem that only passed on a rerun is Dismissed, never Fixed.
   - **Fixed:** a fix landed. Needs a ticket.
   - **Deferred:** accepted for this release. Needs a ticket.
-- **Severity (bug or finding)** is set by the coordinator when upholding. The tester only proposes it. Open problems show their severity; triaged ones don't.
+- **Blocker or finding, never a severity** (Aled, 2026-10-21). A **blocker** blocks the release until it's triaged: every upheld FAIL, and a BLOCKED the app caused. A **finding** doesn't block but still needs a decision: side finds, "not reproduced" ones, UX or accessibility observations. "Not exactly the test case, but something to think about." The kind follows from where the problem came from, so the coordinator never grades it, and a confirmed FAIL can't be labelled anything milder.
 - **Duplicates fold into the original** (`duplicateOf`).
 
 ---
