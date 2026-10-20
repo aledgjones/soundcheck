@@ -1,0 +1,112 @@
+use crate::Platform;
+
+const ALL: &[Platform] = &[Platform::Android, Platform::Ios, Platform::Web];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// Every spec may use it without declaring it.
+    Basic,
+    /// A mechanic an agent can't perform one call at a time; a spec declares it in `tools`.
+    Mechanic,
+}
+
+#[derive(Debug)]
+pub struct Tool {
+    pub name: &'static str,
+    pub kind: Kind,
+    pub platforms: &'static [Platform],
+    pub summary: &'static str,
+}
+
+const fn basic(name: &'static str, platforms: &'static [Platform], summary: &'static str) -> Tool {
+    Tool {
+        name,
+        kind: Kind::Basic,
+        platforms,
+        summary,
+    }
+}
+
+const fn mechanic(
+    name: &'static str,
+    platforms: &'static [Platform],
+    summary: &'static str,
+) -> Tool {
+    Tool {
+        name,
+        kind: Kind::Mechanic,
+        platforms,
+        summary,
+    }
+}
+
+/// Every driver tool. The MCP tool list, lint and the tester's brief all read from here.
+pub const TOOLS: &[Tool] = &[
+    basic(
+        "see",
+        ALL,
+        "list what's on screen, as a screen reader gets it",
+    ),
+    basic("expect", ALL, "fail unless an element is on screen"),
+    basic("gone", ALL, "fail if an element is on screen"),
+    basic("check", ALL, "several expect/gone assertions on one read"),
+    basic("wait", ALL, "wait for an element to appear"),
+    basic("shot", ALL, "save a screenshot"),
+    basic("errors", ALL, "crashes and app errors since launch"),
+    basic("tap", ALL, "tap an element"),
+    basic("fill", ALL, "empty a field and type into it"),
+    basic("type", ALL, "type into the focused field"),
+    basic("clear", ALL, "empty the focused field"),
+    basic("swipe", ALL, "swipe between two points"),
+    basic("drag", ALL, "press, hold, then drag"),
+    basic("hold", ALL, "press and hold"),
+    basic("keyboard", ALL, "whether the on-screen keyboard is shown"),
+    basic("launch", ALL, "restart the app"),
+    basic(
+        "batch",
+        ALL,
+        "run steps in order, stopping at the first failure",
+    ),
+    basic("hover", &[Platform::Web], "hover over an element"),
+    basic(
+        "goto",
+        &[Platform::Web],
+        "open a URL, or go back or forward",
+    ),
+    basic("viewport", &[Platform::Web], "resize the browser viewport"),
+    mechanic(
+        "tap-burst",
+        ALL,
+        "tap an element N times, M ms apart, for races",
+    ),
+    mechanic(
+        "network-drop",
+        &[Platform::Android, Platform::Web],
+        "cut the network for N seconds, then restore it",
+    ),
+    mechanic(
+        "stress",
+        &[Platform::Android],
+        "load the device's CPU for N seconds",
+    ),
+];
+
+pub fn tool(name: &str) -> Option<&'static Tool> {
+    TOOLS.iter().find(|t| t.name == name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_unique() {
+        for (i, t) in TOOLS.iter().enumerate() {
+            assert!(
+                TOOLS[i + 1..].iter().all(|o| o.name != t.name),
+                "{} twice",
+                t.name
+            );
+        }
+    }
+}

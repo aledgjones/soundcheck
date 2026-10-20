@@ -22,3 +22,4 @@ tokio = { version = "1.54.0", features = ["macros", "rt-multi-thread", "net", "s
 tokio-stream = "0.1"
 tokio-util = "0.7"
 reqwest = { version = "0.13.5", default-features = false }
+thiserror = "2.0.21"

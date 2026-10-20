@@ -1188,6 +1188,11 @@ dependencies = [
 [[package]]
 name = "soundcheck-driver"
 version = "0.1.0"
+dependencies = [
+ "regex",
+ "thiserror",
+ "tokio",
+]
 
 [[package]]
 name = "sse-stream"
