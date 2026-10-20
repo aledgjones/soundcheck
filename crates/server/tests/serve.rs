@@ -128,6 +128,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         "dispatch",
         "review",
         "review_find",
+        "install_build",
         "triage",
         "pause",
         "resume",

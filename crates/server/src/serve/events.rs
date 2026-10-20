@@ -58,6 +58,15 @@ pub fn summary(entry: &Entry) -> String {
         Event::Triaged {
             problem, reason, ..
         } => format!("problem {problem} triaged ({reason})"),
+        Event::BuildInstalled {
+            platform,
+            build,
+            reruns,
+        } => format!(
+            "build {} installed on {platform}: {} spec(s) to rerun",
+            build.label(),
+            reruns.len()
+        ),
         Event::Paused { reason } => format!("paused: {reason}"),
         Event::Resumed => "resumed".into(),
         Event::Finished { result_counts: c } => format!(

@@ -1,5 +1,5 @@
 use super::{Hub, prompt};
-use crate::run::model::{Call, Decision, Judgment, Posted, Severity, SideFind};
+use crate::run::model::{Build, Call, Decision, Judgment, Posted, Rerun, Severity, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -68,6 +68,15 @@ pub struct TriageParams {
     pub problem: u32,
     pub decision: Decision,
     pub reason: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct InstallBuildParams {
+    pub platform: Platform,
+    pub build: Build,
+    /// Rows you judge the change may affect, each with a reason. Native changes and open problems rerun anyway.
+    #[serde(default)]
+    pub reruns: Vec<Rerun>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -227,6 +236,19 @@ impl Tools {
         }))
     }
 
+    #[tool(
+        description = "Coordinator: a fix build is installed on a platform. Reruns every row on a native change, rows with open problems always, and the rows you list (agreed with the person); the rest keep their results. Only between specs."
+    )]
+    async fn install_build(
+        &self,
+        Parameters(p): Parameters<InstallBuildParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(self.hub.with_run(|run, now| {
+            let reruns = run.install_build(now, p.platform, p.build, p.reruns)?;
+            Ok(json!({ "reruns": reruns }))
+        }))
+    }
+
     #[tool(description = "Coordinator: pause the run; no spec is dispatched until resume.")]
     async fn pause(
         &self,
@@ -261,7 +283,7 @@ impl Tools {
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, review, review_find, triage, pause, resume and finish.",
+            "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, review, review_find, install_build, triage, pause, resume and finish.",
         )
     }
 }

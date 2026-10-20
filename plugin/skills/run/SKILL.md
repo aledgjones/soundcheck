@@ -13,6 +13,7 @@ allowed-tools:
   - mcp__plugin_soundcheck_soundcheck__review
   - mcp__plugin_soundcheck_soundcheck__review_find
   - mcp__plugin_soundcheck_soundcheck__triage
+  - mcp__plugin_soundcheck_soundcheck__install_build
   - mcp__plugin_soundcheck_soundcheck__pause
   - mcp__plugin_soundcheck_soundcheck__resume
   - mcp__plugin_soundcheck_soundcheck__finish
@@ -69,11 +70,19 @@ A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `sta
 
 When the person asks you to stop or pause (a big bug they want fixed first), call `pause` with their reason. Running testers finish, and nothing new starts. `resume` carries on from the next spec. There's no other special case for serious bugs.
 
-## 5. Finish
+## 5. A fix build mid-run
+
+When the person has a fix built and installed on a platform, the run carries on rather than starting again:
+
+1. Read the fix's diff and propose which rows it could affect, each with a one-line reason. Show the list to the person and adjust it to what they say.
+2. Call `install_build` between specs (it refuses while anything on that platform is running or waiting for review) with the build's commit, fingerprint and version, and the agreed reruns. A new fingerprint reruns everything on the platform, and rows with open problems always rerun, so a fix is proven on the build that has it.
+3. Carry on dispatching: the reruns are queued and go first.
+
+## 6. Finish
 
 When `status` shows nothing running, queued or waiting for review, call `finish`. It refuses, and names what's in the way, if anything is still open.
 
-## 6. Triage, with the person
+## 7. Triage, with the person
 
 Go through the open problems with the person, usually at the end, one at a time: what failed (the outcome, expected versus observed), how sure you are (verified or a single attempt), and your suggestion. They decide; you record it with `triage`:
 

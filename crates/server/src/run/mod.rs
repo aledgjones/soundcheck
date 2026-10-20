@@ -59,9 +59,14 @@ pub enum Row {
 #[derive(Debug, Clone)]
 pub struct RowRecord {
     pub row: Row,
+    /// The last attempt's number. It never goes back, so a later pass can prove a fix.
     pub attempts: u32,
-    /// Attempts that claimed a non-pass, for "not reproduced (1 of 2)".
+    /// Attempts used on the current build; the limit applies per build.
+    pub budget: u32,
+    /// Attempts on the current build that claimed a non-pass, for "not reproduced (1 of 2)".
     pub sightings: u32,
+    /// The build the latest attempt ran on. Internal tracking: the report's notes show it, rows don't.
+    pub build: Option<Build>,
 }
 
 /// A side find waiting for the coordinator.
@@ -90,6 +95,8 @@ pub struct State {
     pub notes: Vec<Note>,
     /// Specs flagged for rewording after an outcome stayed unclear.
     pub unclear_specs: BTreeSet<String>,
+    /// The build installed on each platform now.
+    pub builds: BTreeMap<Platform, Build>,
     pub paused: bool,
     pub finished: bool,
     next_id: u32,
@@ -188,8 +195,8 @@ impl Run {
                 describe(other)
             ),
         };
-        if record.attempts >= MAX_ATTEMPTS {
-            bail!("{spec} on {platform} has used all {MAX_ATTEMPTS} attempts");
+        if record.budget >= MAX_ATTEMPTS {
+            bail!("{spec} on {platform} has used all {MAX_ATTEMPTS} attempts on this build");
         }
         let attempt = record.attempts + 1;
         if let Some(((busy, on), _)) = self.state.rows.iter().find(|((_, p), r)| {
@@ -308,7 +315,7 @@ impl Run {
                 },
                 _,
             ) => bail!("judging FAIL needs a severity"),
-            (Call::Verify { .. } | Call::SendBack, _) if record.attempts >= MAX_ATTEMPTS => {
+            (Call::Verify { .. } | Call::SendBack, _) if record.budget >= MAX_ATTEMPTS => {
                 bail!("{spec} has used all {MAX_ATTEMPTS} attempts: file what's known")
             }
             (Call::Verify { claim }, _) if claim.trim().is_empty() => {
@@ -374,6 +381,88 @@ impl Run {
                 reason: reason.into(),
             },
         )
+    }
+
+    /// A new build is on a platform. Reruns what it may have changed: every row on a native change, rows with open
+    /// problems always (so a fix is proven on the build that has it), plus the rows the coordinator lists with a reason.
+    /// Everything else keeps its result, stamped with the build it ran on.
+    pub fn install_build(
+        &mut self,
+        now: u64,
+        platform: Platform,
+        build: Build,
+        listed: Vec<Rerun>,
+    ) -> Result<Vec<Rerun>> {
+        self.open_for_commands()?;
+        if build.commit.trim().is_empty() {
+            bail!("a build needs its commit");
+        }
+        let busy: Vec<&String> = self
+            .state
+            .rows
+            .iter()
+            .filter(|((_, p), r)| {
+                *p == platform && matches!(r.row, Row::Running { .. } | Row::NeedsReview { .. })
+            })
+            .map(|((spec, _), _)| spec)
+            .collect();
+        if !busy.is_empty() {
+            bail!(
+                "install between specs: on {platform}, {} still running or waiting for review",
+                busy.iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let native = self
+            .state
+            .builds
+            .get(&platform)
+            .is_some_and(|old| old.fingerprint != build.fingerprint);
+        let mut reruns: Vec<Rerun> = Vec::new();
+        let mut add = |spec: &str, reason: String| {
+            if !reruns.iter().any(|r| r.spec == spec) {
+                reruns.push(Rerun {
+                    spec: spec.into(),
+                    reason,
+                });
+            }
+        };
+        for ((spec, p), r) in &self.state.rows {
+            if *p != platform || !matches!(r.row, Row::Filed { .. }) {
+                continue;
+            }
+            if native {
+                add(spec, "native change".into());
+            } else if let Some(problem) = self.state.problems.iter().find(|pr| {
+                &pr.spec == spec
+                    && pr.platform == platform
+                    && self.state.status_of(pr) == &Status::Open
+            }) {
+                add(spec, format!("open problem {}", problem.id));
+            }
+        }
+        for rerun in listed {
+            if rerun.reason.trim().is_empty() {
+                bail!("say why {} should rerun", rerun.spec);
+            }
+            match self.state.rows.get(&(rerun.spec.clone(), platform)) {
+                None => bail!("{} doesn't run on {platform}", rerun.spec),
+                Some(r) if matches!(r.row, Row::Filed { .. }) => add(&rerun.spec, rerun.reason),
+                // Not run yet, or already queued: it runs on the new build anyway.
+                Some(_) => {}
+            }
+        }
+        self.commit(
+            now,
+            Event::BuildInstalled {
+                platform,
+                build,
+                reruns: reruns.clone(),
+            },
+        )?;
+        Ok(reruns)
     }
 
     /// A tester's tool call began; time inside a call never counts towards a stall.
@@ -601,7 +690,9 @@ impl State {
                     RowRecord {
                         row: Row::NotRun,
                         attempts: 0,
+                        budget: 0,
                         sightings: 0,
+                        build: None,
                     },
                 );
             }
@@ -645,8 +736,11 @@ impl State {
                 verify,
                 ..
             } => {
+                let build = self.builds.get(platform).cloned();
                 if let Some(r) = self.rows.get_mut(&(spec.clone(), *platform)) {
                     r.attempts = *attempt;
+                    r.budget += 1;
+                    r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
                         token: token.clone(),
@@ -681,7 +775,7 @@ impl State {
                         let r = &self.rows[&key];
                         let summary = format!(
                             "Not reproduced ({} of {}): {original}",
-                            r.sightings, r.attempts
+                            r.sightings, r.budget
                         );
                         let id = self.next_id();
                         self.problems.push(Problem {
@@ -870,7 +964,7 @@ impl State {
                 else {
                     return;
                 };
-                r.row = if r.attempts >= MAX_ATTEMPTS {
+                r.row = if r.budget >= MAX_ATTEMPTS {
                     Row::Filed {
                         result: Final::Blocked,
                         attempt,
@@ -918,6 +1012,25 @@ impl State {
                         Decision::Duplicate { of } => Status::Duplicate { of: *of },
                     };
                 }
+            }
+            Event::BuildInstalled {
+                platform,
+                build,
+                reruns,
+            } => {
+                self.builds.insert(*platform, build.clone());
+                for rerun in reruns {
+                    if let Some(r) = self.rows.get_mut(&(rerun.spec.clone(), *platform)) {
+                        r.row = Row::Queued { verify: None };
+                        r.budget = 0;
+                        r.sightings = 0;
+                    }
+                }
+                self.notes.extend(reruns.iter().map(|rerun| Note {
+                    spec: rerun.spec.clone(),
+                    platform: *platform,
+                    text: format!("rerun on {}: {}", build.label(), rerun.reason),
+                }));
             }
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,

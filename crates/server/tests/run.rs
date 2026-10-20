@@ -795,3 +795,173 @@ fn triage_survives_a_reopen() {
         matches!(&run.state().problem(1).unwrap().status, Status::Deferred { ticket, .. } if ticket == "SA-703")
     );
 }
+
+fn build(commit: &str, fingerprint: &str) -> Build {
+    Build {
+        commit: commit.into(),
+        fingerprint: Some(fingerprint.into()),
+        version: Some("2.16.1".into()),
+    }
+}
+
+#[test]
+fn a_js_fix_reruns_open_problems_and_listed_rows_only() {
+    let (mut run, _) = open("fix-js");
+    run.install_build(0, Android, build("aaaaaaa1", "fp1"), vec![])
+        .unwrap();
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    pass(&mut run, 10, BACK, Android);
+    pass(&mut run, 20, DRAW, Ios);
+
+    let reruns = run
+        .install_build(30, Android, build("bbbbbbb2", "fp1"), vec![])
+        .unwrap();
+    assert_eq!(
+        reruns,
+        [Rerun {
+            spec: DRAW.into(),
+            reason: "open problem 1".into()
+        }]
+    );
+    assert_eq!(
+        result(&run, BACK, Android),
+        Some(Final::Pass),
+        "untouched rows keep their result"
+    );
+    assert_eq!(
+        run.row(BACK, Android)
+            .unwrap()
+            .build
+            .as_ref()
+            .unwrap()
+            .commit,
+        "aaaaaaa1"
+    );
+    assert_eq!(
+        result(&run, DRAW, Ios),
+        Some(Final::Pass),
+        "another platform isn't touched"
+    );
+
+    // The fix: the rerun passes on the new build, which is what lets triage call it Fixed.
+    pass(&mut run, 40, DRAW, Android);
+    assert_eq!(
+        run.row(DRAW, Android)
+            .unwrap()
+            .build
+            .as_ref()
+            .unwrap()
+            .commit,
+        "bbbbbbb2"
+    );
+    run.triage(
+        50,
+        1,
+        Decision::Fix {
+            ticket: "SA-704".into(),
+        },
+        "undo fixed",
+    )
+    .unwrap();
+    assert!(
+        run.state()
+            .notes
+            .iter()
+            .any(|n| n.text == "rerun on 2.16.1 (bbbbbbb): open problem 1")
+    );
+}
+
+#[test]
+fn a_listed_rerun_needs_a_reason() {
+    let (mut run, _) = open("fix-listed");
+    run.install_build(0, Android, build("a1", "fp1"), vec![])
+        .unwrap();
+    pass(&mut run, 1, BACK, Android);
+    let listed = |reason: &str| {
+        vec![Rerun {
+            spec: BACK.into(),
+            reason: reason.into(),
+        }]
+    };
+    assert!(
+        run.install_build(2, Android, build("b2", "fp1"), listed(" "))
+            .is_err()
+    );
+    let reruns = run
+        .install_build(
+            2,
+            Android,
+            build("b2", "fp1"),
+            listed("the fix touches the back stack"),
+        )
+        .unwrap();
+    assert_eq!(reruns[0].reason, "the fix touches the back stack");
+    assert_eq!(
+        run.row(BACK, Android).unwrap().row,
+        Row::Queued { verify: None }
+    );
+}
+
+#[test]
+fn a_native_change_reruns_the_whole_platform() {
+    let (mut run, _) = open("fix-native");
+    run.install_build(0, Android, build("a1", "fp1"), vec![])
+        .unwrap();
+    pass(&mut run, 1, DRAW, Android);
+    pass(&mut run, 10, BACK, Android);
+    let reruns = run
+        .install_build(20, Android, build("b2", "fp2"), vec![])
+        .unwrap();
+    assert_eq!(reruns.len(), 2);
+    assert!(reruns.iter().all(|r| r.reason == "native change"));
+}
+
+#[test]
+fn a_build_installs_only_between_specs() {
+    let (mut run, _) = open("fix-between");
+    run.dispatch(1, DRAW, Android, brief).unwrap();
+    let err = run
+        .install_build(2, Android, build("b2", "fp1"), vec![])
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("still running or waiting for review"), "{err}");
+    run.install_build(2, Ios, build("b2", "fp1"), vec![])
+        .unwrap();
+}
+
+#[test]
+fn each_build_gets_a_fresh_attempt_budget() {
+    let (mut run, path) = open("fix-budget");
+    for at in [1u64, 10, 20] {
+        let t = run.dispatch(at, BACK, Android, brief).unwrap();
+        run.post(at + 1, &t, judged(&[Answer::Failed])).unwrap();
+        if at < 20 {
+            run.review(at + 2, BACK, Android, Call::SendBack, "misread")
+                .unwrap();
+        }
+    }
+    run.review(
+        30,
+        BACK,
+        Android,
+        Call::Uphold {
+            severity: Some(Severity::Bug),
+        },
+        "seen 3 times",
+    )
+    .unwrap();
+    run.install_build(40, Android, build("b2", "fp1"), vec![])
+        .unwrap();
+    let t = run.dispatch(41, BACK, Android, brief).unwrap();
+    assert_eq!(
+        t, "annotations/002-back#4@android",
+        "attempt numbers keep counting"
+    );
+    drop(run);
+    let run = Run::open(plan(false), &path, 0).unwrap();
+    assert_eq!(
+        run.row(BACK, Android).unwrap().budget,
+        1,
+        "the replay agrees"
+    );
+}

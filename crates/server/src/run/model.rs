@@ -153,3 +153,30 @@ pub enum Decision {
     Defer { ticket: String },
     Duplicate { of: u32 },
 }
+
+/// The build installed on a platform, as the project's build-identity hook reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Build {
+    pub commit: String,
+    /// Changes when native code changes; a new one reruns every row on the platform.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+}
+
+impl Build {
+    pub fn label(&self) -> String {
+        let short: String = self.commit.chars().take(7).collect();
+        match &self.version {
+            Some(v) => format!("{v} ({short})"),
+            None => short,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Rerun {
+    pub spec: String,
+    pub reason: String,
+}

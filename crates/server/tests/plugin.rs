@@ -34,6 +34,7 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
         "dispatch",
         "review",
         "review_find",
+        "install_build",
         "triage",
         "pause",
         "resume",

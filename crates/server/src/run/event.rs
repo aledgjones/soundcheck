@@ -1,4 +1,4 @@
-use super::model::{Call, Decision, Final, Posted, Severity};
+use super::model::{Build, Call, Decision, Final, Posted, Rerun, Severity};
 use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
 
@@ -51,6 +51,12 @@ pub enum Event {
         #[serde(flatten)]
         decision: Decision,
         reason: String,
+    },
+    /// A new build on a platform, with the reruns it triggered, as computed when it was installed.
+    BuildInstalled {
+        platform: Platform,
+        build: Build,
+        reruns: Vec<Rerun>,
     },
     Paused {
         reason: String,
