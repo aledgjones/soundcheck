@@ -147,12 +147,13 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
 
 - **One UI.** The live page, the final report and the export are the same pages rendered from the same journal, so what the person watches during a run is exactly what they review afterwards.
 - **Keep today's look.** The layout and styles of Solo Scores' current report (overview grid, section bars, overall ring, row and problem styling) carry over, adapted to the new workflow and data. Any design change beyond that is discussed with the person before it's made.
-- **What failed must be obvious at a glance.** Today's rows can bury it in a wall of text. Each non-pass row leads with, in this order:
-  1. the outcome(s) that didn't hold, each as one line of expected versus observed ("Undo removes the stroke: the stroke stayed");
-  2. the coordinator's call and its one-line reason, with verified or single attempt;
-  3. the evidence (screenshot, tree, logs), one click away;
-  4. the tester's full narrative, collapsed.
-     The server enforces 1: a non-pass must name the outcomes it failed, with observed text for each.
+- **What needs attention must be obvious at a glance.** Today's rows can bury it in a wall of text. Every row's detail follows one order (Aled, 2026-10-21):
+  1. **anything that needs attention, as one coloured block:** red for a failure (the outcome that didn't hold, expected versus observed, and the coordinator's call with its reason and whether it was verified); amber for a finding (what it is in one line, that it's outside the check, and a link to it in Problems);
+  2. **the outcomes,** each with what was seen. Where the coordinator settled an outcome (an Unsure judged from a screenshot), its note sits under that outcome, never in a separate box;
+  3. **the evidence and the tester's notes,** collapsed.
+
+  The collapsed row hints at a finding ("Passed · 1 finding"). The server enforces the failure block's input: a non-pass must name the outcomes it failed, with observed text for each.
+
 - **The page header says what's happening now:** the spec running on each platform and for how long, or "idle 20 min: coordinator not responding". That's the only alarm an unattended run needs.
 - **Page decisions** (Aled, 2026-10-21):
   - **Header:** the release label, devices, run start and last update. Commits stay out: the notes say which build each row ran on.
