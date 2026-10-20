@@ -211,6 +211,11 @@ Nothing in a run may wait for a human:
   - a timeout on every call;
   - a wedged reader is restarted;
   - after a device reboot, the forwards are restored.
+- **Long-lived at both ends.** The readers keep one accessibility connection open on the device, and the server keeps one connection to each reader, so a step never starts a process. Today's speed-up came from exactly this for reads: each `ui.mjs` call still started Node, ran the guard and set up adb.
+- **Input goes through the readers too.** Today every action starts a process: an Android tap is `adb shell input tap` (0.7–0.8 s, and `fill` 2.0 s, measured 2026-10-20), and each iOS touch is a new `axe` process. The readers take input over the same connection instead:
+  - **Android:** `UiAutomation.injectInputEvent` inside the reader, so taps, drags and holds cost milliseconds, and `tap-burst` intervals are timed on the device rather than across adb round trips;
+  - **iOS:** the reader keeps the HID connection open for touches and typing, as it does for reads.
+  - **Before it replaces adb and `axe`,** prove that injected input still reproduces timing races the way raw taps did: rerun the SA-437 back-burst check on its bug build. Maestro's settling once hid that race. adb and `axe` stay as fallbacks.
 - **Parity tests:** every reader against the platform's own tool (`uiautomator`, `axe`, Chrome's snapshot), on a fixed screen set that includes overlays, sheets, dialogs, menus and screens with the keyboard up. A reader change ships only after it passes.
 
 ### 4.4 Ruled out
