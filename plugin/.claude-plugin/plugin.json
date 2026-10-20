@@ -1,0 +1,7 @@
+{
+  "name": "soundcheck",
+  "description": "Regression testing for apps with AI testers on Android, iOS and web: set a project up, author specs, and run a suite with live results.",
+  "author": {
+    "name": "Aled Jones"
+  }
+}

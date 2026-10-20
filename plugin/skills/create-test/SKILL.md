@@ -1,0 +1,92 @@
+---
+name: create-test
+description: "Add or change soundcheck specs: the test cases in a project's suite (suite.yaml, <feature>/NNN-name.spec.md, _feature.md). Use when: writing a new test, turning a found bug into a regression spec, rewording a spec flagged 'spec unclear', adding a seed scenario a spec needs, renaming or moving a spec, or fixing `soundcheck lint` problems."
+---
+
+# Create or change a test
+
+A spec is one thing a user does, written so an AI tester can drive the app, judge each outcome on its own, and probe around it. A soundcheck tester only sees the spec, its feature's `_feature.md` and the screen; it never reads the app's source. Write for that reader.
+
+## Before writing
+
+1. **Find the suite:** the folder with `suite.yaml`. The project's own regression skill says where it is.
+2. **Read the feature's `_feature.md`** (how to get there, label hints, platform differences) and the specs already in that folder.
+3. **Search for duplicates.** Grep the suite's titles and outcomes for the behaviour you're about to test. If a spec already covers the goal, extend its outcomes or its probe instead of adding a new spec: nothing is checked twice.
+
+## The file
+
+`<feature>/NNN-name.spec.md`, where `NNN` is the next free number in that feature folder, in run order, and `name` is a few lower-case words joined by hyphens. The path is the spec's ID (`annotations/004-eraser`), so never reuse a number.
+
+```markdown
+---
+title: Erase part of a stroke
+seed: viewer
+starts-on: [Annotate]
+platforms: [android, ios, web]
+past-bugs: [SA-614]
+---
+
+## Goal
+
+Draw a stroke, then erase its middle with the eraser.
+
+## Outcomes
+
+- Only the erased part disappears; both ends stay.
+- Undo brings the erased part back.
+
+## Probe around it
+
+Erase across two strokes at once; change the eraser width first.
+```
+
+### Frontmatter
+
+| Key                 | Rule                                                                                                                                        |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`             | The user's goal in plain words, under 80 characters. No tap paths (`A > B`), code formatting, spec or ticket IDs, flags, seed or tool names |
+| `seed`              | A scenario from `suite.yaml`'s `seeds`. Every spec starts from its own full seed                                                            |
+| `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem  |
+| `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                               |
+| `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                          |
+| `tools`             | Optional driver tools beyond the basics: `tap-burst` (races), `network-drop` (offline and reconnect), `stress` (device load)                |
+| `past-bugs`         | Tickets this spec guards                                                                                                                    |
+| `proven-failing-on` | Builds where this spec caught a real bug. Only record what actually happened; never fill it in to look trustworthy                          |
+
+### Sections
+
+- **`## Goal`** (required): what the user sets out to do, in a sentence or two.
+- **`## Outcomes`** (required): a `- ` list of what a user would notice. The tester judges each one separately as held, failed, unsure or couldn't check, so each must be **observable on its own**:
+  - one thing per bullet;
+  - concrete enough that two testers would agree ("Undo brings the erased part back", not "Undo works properly");
+  - exact copy only for destructive or blocking messages (delete confirmations, storage full);
+  - no layout details a design tweak would break: header text, dividers, button order.
+- **`## Probe around it`** (optional): variations to try near the goal. Agents find new bugs next to old ones, so every past bug gets one.
+- **`## Pinned`** (optional): exact steps, only where they guard a past bug or reach a control an agent can't discover.
+
+## Isolation
+
+- A spec never relies on state another spec left behind, and never mentions another spec. A flow that builds on itself (create, rename, delete) is one spec.
+- If no seed scenario gives the starting state, add one: extend the project's seed hook, add the name to `suite.yaml`'s `seeds`, and pick `starts-on` labels unique to it. Boundaries (storage exactly full, one byte over) are seed scenarios too.
+
+## Turning a found bug into a regression spec
+
+Most specs start this way.
+
+1. Search for the spec that covers the feature. If its goal is the same, add an outcome and a probe there. Otherwise, write a new spec placed right after the one it belongs with.
+2. Make it more specific than a general spec: say in the Goal or Pinned how the bug was triggered, and in the Probe what to try around it.
+3. Add the ticket to `past-bugs`.
+4. If the trigger is mechanical (a race, a dropped network, device load), name the driver tool in `tools` and say how to use it ("tap back 5 times, 100 ms apart, with `tap-burst`"). The tool's output is evidence; the tester's judgement of the whole spec is the result.
+5. Record `proven-failing-on` only after the spec has failed on the bug build.
+
+## Rewording a spec flagged "spec unclear"
+
+The run's notes name the spec and the outcome that two testers couldn't judge. Rewrite that outcome so it's observable: name what's on screen when it holds, or split it into two outcomes. Don't loosen it until it can't fail.
+
+## Renaming or moving
+
+Give the spec its new path and add `old-id: new-id` to `id-map.yaml` in the suite root, so its history survives. Never put an ID that still exists on the left.
+
+## Finish
+
+Run `soundcheck lint <suite folder>` and fix every problem it reports. Lint checks the config, file names, frontmatter, sections, seeds, platforms, tools, title rules and the ID map. A run refuses to start on a suite that doesn't lint clean.
