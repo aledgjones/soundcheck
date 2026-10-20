@@ -1,0 +1,378 @@
+<title>Soundcheck Live Report</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* Today's report styles, carried over unchanged, plus the few additions the new workflow needs (marked "new"). */
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--label2:rgba(60,60,67,.6);--label3:rgba(60,60,67,.3);--sep:rgba(60,60,67,.12);--fill:rgba(118,118,128,.12);--pass:#34c759;--fail:#ff3b30;--partial:#ff9500;--blocked:#af52de;--notrun:#c7c7cc;--accent:#0071e3;--review:#ff9500;--bar:rgba(245,245,247,.86)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--label2:rgba(235,235,245,.6);--label3:rgba(235,235,245,.3);--sep:rgba(84,84,88,.6);--fill:rgba(118,118,128,.24);--pass:#30d158;--fail:#ff453a;--partial:#ff9f0a;--blocked:#bf5af2;--notrun:#48484a;--accent:#2997ff;--review:#ff9f0a;--bar:rgba(0,0,0,.82);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--label2:rgba(235,235,245,.6);--label3:rgba(235,235,245,.3);--sep:rgba(84,84,88,.6);--fill:rgba(118,118,128,.24);--pass:#30d158;--fail:#ff453a;--partial:#ff9f0a;--blocked:#bf5af2;--notrun:#48484a;--accent:#2997ff;--review:#ff9f0a;--bar:rgba(0,0,0,.82);color-scheme:dark}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",system-ui,sans-serif;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1}
+main{max-width:980px;margin:0 auto;padding-block:40px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+h1,h2,h3,h4{margin:0;line-height:1.1;letter-spacing:-.025em;text-wrap:balance}
+h1{font-size:48px;font-weight:700}
+h2{font-size:28px;font-weight:700}
+h3{font-size:22px;font-weight:700}
+a{color:var(--accent);text-decoration:none}
+a:hover{text-decoration:underline}
+.muted{color:var(--label2)}
+.card{background:var(--card);border-radius:22px}
+.head-text{display:flex;flex-direction:column;gap:8px}
+.eyebrow{font-size:14px;font-weight:600;letter-spacing:0;color:var(--label2)}
+.facts{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:6px;font-size:14px;color:var(--label2)}
+.summary{margin-top:36px;overflow:hidden}
+.summary-head{display:flex;flex-direction:column;align-items:center;gap:14px;padding:44px 28px 34px;text-align:center}
+.summary-verdict{display:flex;flex-direction:column;gap:6px;max-width:600px}
+.summary-verdict strong{font-size:24px;font-weight:700}
+.summary-verdict strong.blocked{color:var(--fail)}
+.reasons{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 8px;margin:4px 0 0;padding:0;list-style:none}
+.ringwrap{position:relative;width:176px;height:176px}
+.ring{width:176px;height:176px;transform:rotate(-90deg)}
+.ring circle{fill:none;stroke-width:14;stroke-linecap:round}
+.ring-bg{stroke:color-mix(in srgb,var(--pass) 18%,transparent)}
+.ring-seg.pass{stroke:var(--pass)}
+.ring-seg.fail{stroke:var(--fail)}
+.ring-seg.blocked{stroke:var(--blocked)}
+.ringlabel{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
+.ringlabel b{font-size:44px;font-weight:700;letter-spacing:-.03em}
+.cell{display:inline-flex;flex-direction:column;gap:7px;min-width:0}
+.cell-text{display:inline-flex;align-items:center;gap:8px;font-size:15px;color:var(--label2);white-space:nowrap}
+.cell-text i{width:10px;height:10px;border-radius:50%;flex:none;background:var(--notrun)}
+.cell.pass .cell-text i{background:var(--pass)}
+.cell.fail .cell-text i{background:var(--fail)}
+.cell.fail .cell-text{color:var(--fail)}
+.cell.live .cell-text i{background:var(--accent)}
+.mini{display:flex;height:4px;width:150px;max-width:100%;border-radius:2px;overflow:hidden;background:var(--fill)}
+.mini i{display:block;height:100%}
+.mini .pass{background:var(--pass)}
+.mini .fail{background:var(--fail)}
+.mini .blocked{background:var(--blocked)}
+.mini .review{background:var(--review)}
+.mini .pending{background:var(--accent)}
+.res{display:inline-flex;align-items:center;gap:7px;font-size:15px;color:var(--label2);white-space:nowrap}
+.res::before{display:inline-grid;place-content:center;width:20px;height:20px;border-radius:50%;font-size:11px;font-weight:800;color:#fff;flex:none}
+.res.pass::before{content:"✓";background:var(--pass)}
+.res.fail{color:var(--fail)}
+.res.fail::before{content:"✕";background:var(--fail)}
+.res.blocked{color:var(--blocked)}
+.res.blocked::before{content:"–";background:var(--blocked)}
+.res.not-run{color:var(--label3)}
+.res.not-run::before{content:"";background:transparent;box-shadow:inset 0 0 0 1.5px var(--label3)}
+/* new: running and needs review. Only opacity moves, and only on the one live row. */
+.res.running{color:var(--accent)}
+.res.running::before{content:"";background:var(--accent);animation:breathe 2.4s ease-in-out infinite}
+.res.review{color:var(--review)}
+.res.review::before{content:"";background-color:var(--review);background-image:radial-gradient(circle at 5.5px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 10px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 14.5px 10px,#fff 1.4px,transparent 1.7px)}
+.age{font-size:13px;color:var(--label2);margin-left:2px}
+@keyframes breathe{50%{opacity:.35}}
+@media (prefers-reduced-motion:reduce){.res.running::before{animation:none}}
+.chip{display:inline-block;font-size:13px;font-weight:600;border-radius:999px;padding:2px 10px;white-space:nowrap;background:var(--fill);color:var(--label2)}
+.chip.ticket{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
+.chip.bug{color:var(--fail);background:color-mix(in srgb,var(--fail) 12%,transparent)}
+.chip.blocks{color:var(--fail);background:color-mix(in srgb,var(--fail) 12%,transparent)}
+.chip.decide{color:var(--ink);background:var(--fill)}
+.chip.muted{color:var(--label3);background:transparent;box-shadow:inset 0 0 0 1px var(--sep)}
+.chip.finding{color:var(--partial);background:color-mix(in srgb,var(--partial) 14%,transparent)}
+.chip.fixed{color:var(--pass);background:color-mix(in srgb,var(--pass) 14%,transparent)}
+.chip.reason{font-weight:500;color:var(--ink)}
+.chip.reason.bad{color:var(--fail);background:color-mix(in srgb,var(--fail) 10%,transparent)}
+.kind{font-size:13px;font-weight:600;color:var(--label2);margin-left:8px}
+.grid{padding:0 0 8px}
+.grid-row{display:grid;grid-template-columns:1fr 210px 210px;gap:16px;align-items:center;padding:14px 28px;color:inherit;text-decoration:none;position:relative}
+.grid-row+.grid-row::before{content:"";position:absolute;top:0;left:28px;right:0;height:1px;background:var(--sep)}
+a.grid-row:hover{background:var(--fill);text-decoration:none}
+.grid-head{font-size:13px;color:var(--label2);padding-top:6px;padding-bottom:6px}
+.grid-name{font-weight:600}
+summary{cursor:pointer;list-style:none}
+summary::-webkit-details-marker{display:none}
+summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:8px}
+.fold>summary{display:inline-flex;align-items:center;gap:8px;color:var(--accent);font-size:15px}
+.fold>summary::after{content:"";width:7px;height:7px;border-right:2px solid currentColor;border-bottom:2px solid currentColor;transform:rotate(45deg) translateY(-3px);transition:transform .2s}
+.fold[open]>summary::after{transform:rotate(-135deg) translateY(-2px)}
+.block>h2{margin:64px 0 18px}
+.problems{display:flex;flex-direction:column;background:var(--card);border-radius:22px;overflow:hidden}
+.problem{padding:16px 24px;position:relative}
+.problem+.problem::before{content:"";position:absolute;top:0;left:24px;right:0;height:1px;background:var(--sep)}
+.problem summary.p2{display:grid;grid-template-columns:96px 1fr 170px;gap:12px;align-items:center}
+.problem summary.p2 h3{font-size:17px;font-weight:600;letter-spacing:-.022em}
+.pwhere{font-size:14px;text-align:right;color:var(--label2)}
+.psev{display:flex;justify-content:flex-end;gap:6px}
+.pgroup{display:block;margin:30px 0 12px 4px;font-size:15px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.02em}
+.pgroup:first-of-type{margin-top:18px}
+.problem-body{margin-top:12px;color:var(--label2);font-size:15px;padding-left:108px}
+.problem:hover{background:color-mix(in srgb,var(--fill) 50%,transparent)}
+.toolbar{display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin:64px 0 18px}
+.toolbar h2{margin:0 auto 0 0}
+.segmented{display:inline-flex;background:var(--fill);border-radius:10px;padding:2px}
+.filter{border:0;background:transparent;color:var(--ink);border-radius:8px;padding:6px 16px;font:inherit;font-size:14px;font-weight:500;cursor:pointer}
+.filter[aria-pressed="true"]{background:var(--card);box-shadow:0 3px 8px rgba(0,0,0,.12),0 3px 1px rgba(0,0,0,.04);font-weight:600}
+.sections{display:flex;flex-direction:column;gap:24px}
+.section{padding:26px 0 10px}
+.section header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:0 28px;margin-bottom:14px}
+.checks-head,.check>summary{display:grid;grid-template-columns:52px 1fr 150px 150px;gap:14px;align-items:center}
+.checks-head{font-size:13px;color:var(--label2);padding:4px 28px 8px}
+.check{position:relative}
+.check::before{content:"";position:absolute;top:0;left:94px;right:0;height:1px;background:var(--sep)}
+.check>summary{padding:13px 28px}
+.check>summary:hover{background:var(--fill)}
+.cid{font-size:14px;color:var(--label3);font-weight:500}
+.ctitle{display:block;min-width:0;font-size:17px}
+.csub{display:block;font-size:14px;color:var(--label2);margin-top:2px}
+/* new: a row's detail leads with what failed */
+.check-body{display:flex;flex-direction:column;gap:16px;padding:2px 28px 22px 94px;font-size:15px;color:var(--label2)}
+.platform-label{font-size:13px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.02em}
+.outcomes{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:8px}
+.outcomes li{display:grid;grid-template-columns:20px 1fr;gap:10px;align-items:start}
+.outcomes .o{font-weight:600;color:var(--ink)}
+.outcomes .obs{display:block}
+.mark{width:20px;height:20px;border-radius:50%;display:grid;place-content:center;font-size:11px;font-weight:800;color:#fff;margin-top:1px}
+.mark.held{background:var(--pass)}
+.mark.failed{background:var(--fail)}
+.mark.unsure{background:var(--review)}
+.failed-outcome{background:color-mix(in srgb,var(--fail) 7%,transparent);border-radius:12px;padding:10px 12px}
+.failed-outcome .expect{display:block;color:var(--ink)}
+.failed-outcome .expect{font-weight:600}
+.failed-outcome .saw{display:block;color:var(--fail)}
+.callline{display:block;margin-top:4px;font-size:14px;color:var(--label2)}
+.call{border-left:3px solid var(--accent);padding-left:12px;color:var(--ink)}
+.call b{font-weight:600}
+.call .muted{display:block;font-size:14px}
+.thumbs{display:flex;gap:10px;flex-wrap:wrap}
+.thumb{border:0;border-radius:12px;padding:0;background:var(--fill);overflow:hidden;width:88px;height:118px;box-shadow:0 0 0 1px var(--sep);display:grid;place-content:center;font-size:12px;color:var(--label2);text-align:center}
+.evidence-links{display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
+.finding-block{background:color-mix(in srgb,var(--partial) 9%,transparent);border-radius:12px;padding:10px 12px}
+.finding-block .expect{display:block;color:var(--ink);font-weight:600}
+.finding-block .saw{display:block}
+.settled{display:block;margin-top:4px;font-size:14px;color:var(--label2);border-left:2px solid var(--sep);padding-left:10px}
+.hint{color:var(--partial);margin-left:4px}
+/* new: sticky "now" bar while the run is live */
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bar)}
+.nowbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;backdrop-filter:saturate(1.8) blur(16px);-webkit-backdrop-filter:saturate(1.8) blur(16px);background:var(--bar);border-bottom:1px solid var(--sep)}
+.nowbar-in{max-width:980px;margin:0 auto;display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.nowbar b{font-weight:600}
+.live-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:6px;animation:breathe 2.4s ease-in-out infinite}
+.nowbar .warn{color:var(--partial);font-weight:600}
+.notes{padding:20px 28px;display:flex;flex-direction:column;gap:14px;font-size:15px}
+.notes dl{display:grid;grid-template-columns:max-content 1fr;gap:10px 20px;margin:0}
+.notes dt{font-weight:600}
+.notes dd{margin:0;color:var(--label2)}
+.timeline{padding:18px 28px}
+.timeline ol{list-style:none;margin:14px 0 0;padding:0;font:13px/1.7 ui-monospace,"SF Mono",Menlo,monospace;color:var(--label2);letter-spacing:0}
+.timeline li span{color:var(--label3);margin-right:12px}
+.example{display:inline-block;margin-left:8px;font-size:12px;font-weight:600;color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:999px;padding:1px 8px;vertical-align:middle}
+footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
+@media (max-width:734px){
+  h1{font-size:34px}
+  .grid-row{grid-template-columns:1fr 1fr 1fr;padding:12px 16px}
+  .grid-row+.grid-row::before{left:16px}
+  .mini{width:100%}
+  .checks-head,.check>summary{grid-template-columns:36px 1fr;padding-left:16px;padding-right:16px}
+  .checks-head span:nth-child(n+3){display:none}
+  .check>summary .res{grid-column:2}
+  .check::before{left:16px}
+  .check-body{padding:2px 16px 20px}
+  .problem summary.p2{grid-template-columns:1fr}
+  .pwhere{grid-column:1/-1;text-align:left}
+  .problem-body{padding-left:0}
+  .section header,.notes,.timeline{padding-left:16px;padding-right:16px}
+  .summary-head{padding:32px 16px 26px}
+}
+</style>
+
+<div class="nowbar" role="status" aria-live="polite">
+  <div class="nowbar-in">
+    <span><i class="live-dot" aria-hidden="true"></i><b>Live</b></span>
+    <span>Android · <b>viewer/002</b> · running 2 min</span>
+    <span>iOS · checking <b>annotations/003</b></span>
+    <span class="muted">Coordinator active 20 s ago</span>
+  </div>
+</div>
+
+<main>
+  <header class="head">
+    <div class="head-text">
+      <span class="eyebrow">Solo Scores · regression <span class="example">Mockup with example data</span></span>
+      <h1>v2.16.2 <span class="muted">· candidate</span></h1>
+      <div class="facts">
+        <span>Android: Pixel_Tablet_API_35 (emulator)</span>
+        <span>iOS: iPad Pro 13-inch (M5) simulator</span>
+        <span>Started 21 Oct, 09:02</span>
+        <span>Updated 11:47</span>
+      </div>
+    </div>
+  </header>
+
+  <section class="summary card" aria-label="Summary">
+    <div class="summary-head">
+      <div class="ringwrap">
+        <svg class="ring" viewBox="0 0 120 120" aria-hidden="true">
+          <circle cx="60" cy="60" r="44" class="ring-bg"/>
+          <circle cx="60" cy="60" r="44" class="ring-seg pass" stroke-dasharray="190 86.5" stroke-dashoffset="0"/>
+          <circle cx="60" cy="60" r="44" class="ring-seg fail" stroke-dasharray="5 271.5" stroke-dashoffset="-194"/>
+          <circle cx="60" cy="60" r="44" class="ring-seg blocked" stroke-dasharray="3 273.5" stroke-dashoffset="-203"/>
+        </svg>
+        <div class="ringlabel"><b>69%</b></div>
+      </div>
+      <div class="summary-verdict">
+        <strong class="blocked">Blocked</strong>
+        <ul class="reasons" aria-label="What's in the way">
+          <li class="chip reason bad">1 blocker</li>
+          <li class="chip reason">1 finding to decide</li>
+          <li class="chip reason">1 being checked</li>
+          <li class="chip reason">31 not run yet</li>
+        </ul>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="grid-row grid-head"><span>Section</span><span>Android</span><span>iOS</span></div>
+      <a class="grid-row" href="#section-collections"><span class="grid-name">Collections</span>
+        <span class="cell pass"><span class="cell-text"><i></i>4/4 passed</span><span class="mini"><i class="pass" style="width:100%"></i></span></span>
+        <span class="cell pass"><span class="cell-text"><i></i>4/4 passed</span><span class="mini"><i class="pass" style="width:100%"></i></span></span></a>
+      <a class="grid-row" href="#section-annotations"><span class="grid-name">Annotations</span>
+        <span class="cell fail"><span class="cell-text"><i></i>1 failed · 8/9</span><span class="mini"><i class="pass" style="width:89%"></i><i class="fail" style="width:11%"></i></span></span>
+        <span class="cell live"><span class="cell-text"><i></i>1 checking · 3/9</span><span class="mini"><i class="pass" style="width:22%"></i><i class="review" style="width:11%"></i></span></span></a>
+      <a class="grid-row" href="#section-viewer"><span class="grid-name">Viewer</span>
+        <span class="cell live"><span class="cell-text"><i></i>Running · 1/6</span><span class="mini"><i class="pass" style="width:17%"></i><i class="pending" style="width:17%"></i></span></span>
+        <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span></a>
+      <a class="grid-row" href="#section-account"><span class="grid-name">Account</span>
+        <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span>
+        <span class="cell"><span class="cell-text"><i></i>Not run</span><span class="mini"></span></span></a>
+    </div>
+  </section>
+
+  <div class="toolbar">
+    <h2>Checks by section</h2>
+    <div class="segmented" role="group" aria-label="Show">
+      <button class="filter" type="button" aria-pressed="true">All</button>
+      <button class="filter" type="button" aria-pressed="false">Needs attention</button>
+    </div>
+  </div>
+
+  <div class="sections">
+    <section class="section card" id="section-annotations">
+      <header><h3>Annotations</h3></header>
+      <div class="checks-head"><span>ID</span><span>Check</span><span>Android</span><span>iOS</span></div>
+
+      <details class="check">
+        <summary><span class="cid" title="annotations/001-draw">001</span><span class="ctitle">Draw a pen stroke, undo and redo it</span><span class="res pass">Passed</span><span class="res pass">Passed</span></summary>
+        <div class="check-body">
+          <span class="platform-label">Android · what each outcome rested on</span>
+          <ul class="outcomes">
+            <li><span class="mark held" aria-label="held">✓</span><span><span class="o">The stroke disappears on undo and returns in the same place on redo.</span><span class="obs">Undo cleared the stroke; Redo drew it back at the same spot (compared before and after shots).</span></span></li>
+            <li><span class="mark held" aria-label="held">✓</span><span><span class="o">Undo and Redo enable and disable to match.</span><span class="obs">Undo enabled after the stroke, disabled after undoing it; Redo the reverse.</span></span></li>
+          </ul>
+        </div>
+      </details>
+
+      <details class="check" open>
+        <summary><span class="cid" title="annotations/002-undo-after-zoom">002</span><span class="ctitle">Undo a stroke drawn while zoomed in<span class="csub">Probe: undo straight after zooming back out</span></span><span class="res fail">Failed</span><span class="res pass">Passed</span></summary>
+        <div class="check-body">
+          <div class="failed-outcome">
+            <span class="expect">Undo removes the stroke.</span>
+            <span class="saw">The stroke stayed after Undo at 2.5× zoom; it went only after zooming out and tapping Undo again.</span>
+            <span class="callline">Reproduced on a second attempt from a fresh seed.</span>
+          </div>
+          <div class="thumbs" aria-label="Screenshots">
+            <div class="thumb">before undo</div><div class="thumb">after undo</div><div class="thumb">zoomed out</div>
+          </div>
+          <div class="evidence-links"><a href="#">Element tree</a><a href="#">Logs</a></div>
+          <details class="fold"><summary>Tester's notes</summary>
+            <p>Zoomed to about 2.5× with a pinch, drew a level stroke across the second stave, tapped Undo once. The stroke stayed on screen and Undo greyed out, so the app believes it's gone. Zooming back out redrew the page without it.</p>
+          </details>
+        </div>
+      </details>
+
+      <details class="check">
+        <summary><span class="cid" title="annotations/003-text-resize">003</span><span class="ctitle">Change the text size while typing</span><span class="res pass">Passed</span><span class="res review" title="The tester reported a problem; the coordinator is checking it">Checking</span></summary>
+      </details>
+
+      <details class="check">
+        <summary><span class="cid" title="annotations/004-eraser">004</span><span class="ctitle">Erase part of a stroke</span><span class="res pass">Passed</span><span class="res not-run">Not run</span></summary>
+      </details>
+    </section>
+
+    <section class="section card" id="section-viewer">
+      <header><h3>Viewer</h3></header>
+      <div class="checks-head"><span>ID</span><span>Check</span><span>Android</span><span>iOS</span></div>
+      <details class="check" open>
+        <summary><span class="cid" title="viewer/001-turn-pages">001</span><span class="ctitle">Turn pages and reopen at the last one</span><span class="res pass">Passed<span class="hint">· 1 finding</span></span><span class="res not-run">Not run</span></summary>
+        <div class="check-body">
+          <div class="finding-block">
+            <span class="expect">Finding: the page counter doesn't come back after fading out.</span>
+            <span class="saw">Not part of this check. Seen while probing: it faded after 3 s, and tapping the page didn't show it again. <a href="#problems">In Problems</a></span>
+          </div>
+          <span class="platform-label">Android · outcomes</span>
+          <ul class="outcomes">
+            <li><span class="mark held" aria-label="held">✓</span><span><span class="o">Swiping turns one page at a time.</span><span class="obs">Six swipes, six pages, no skips.</span></span></li>
+            <li><span class="mark held" aria-label="held">✓</span><span><span class="o">Reopening the score returns to the last page viewed.</span><span class="obs">Reopened on page 6.</span><span class="settled">The tester couldn't read the page number with the counter hidden; the coordinator confirmed page 6 from the screenshot.</span></span></li>
+          </ul>
+          <details class="fold"><summary>Screenshots and tester's notes</summary>
+            <div class="thumbs" aria-label="Screenshots" style="margin-top:12px"><div class="thumb">page 6</div><div class="thumb">reopened</div></div>
+          </details>
+        </div>
+      </details>
+      <details class="check">
+        <summary><span class="cid" title="viewer/002-switch-parts">002</span><span class="ctitle">Switch between a score's parts</span><span class="res running">Running</span><span class="res not-run">Not run</span></summary>
+      </details>
+    </section>
+  </div>
+
+  <section class="block" id="problems">
+    <h2>Problems</h2>
+    <h4 class="pgroup">Open · 2</h4>
+    <div class="problems">
+      <details class="problem">
+        <summary class="p2"><span class="pticket"><span class="chip blocks">Blocker</span></span><h3>Undo leaves the stroke on screen when zoomed in</h3><span class="pwhere">Android · Annotations</span></summary>
+        <div class="problem-body"><p><b>Undo removes the stroke:</b> the stroke stayed after Undo at 2.5× zoom; it went only after zooming out.</p><p>Verified: reproduced on a second attempt from a fresh seed. <a href="#section-annotations">Open its row</a></p></div>
+      </details>
+      <details class="problem">
+        <summary class="p2"><span class="pticket"><span class="chip finding">Finding</span></span><h3>Page counter doesn't come back after fading out</h3><span class="pwhere">Android · Viewer</span></summary>
+        <div class="problem-body"><p>A side find, seen while probing viewer/001: the counter faded after 3 s and a tap on the page didn't show it again. <a href="#section-viewer">Open its row</a></p></div>
+      </details>
+    </div>
+
+    <h4 class="pgroup">Fixed · 1</h4>
+    <div class="problems">
+      <details class="problem"><summary class="p2"><span class="pticket"><span class="chip ticket">SA-711</span></span><h3>Blank screen after going back quickly from a score</h3><span class="pwhere">Android · Collections</span></summary>
+        <div class="problem-body"><p>Passed again on the fix build after a tap-burst of 5 back taps.</p></div></details>
+    </div>
+    <h4 class="pgroup">Deferred · 1</h4>
+    <div class="problems">
+      <details class="problem"><summary class="p2"><span class="pticket"><span class="chip ticket">SA-712</span></span><h3>Saved text renders soft when zoomed in</h3><span class="pwhere">iOS · Annotations</span></summary>
+        <div class="problem-body"><p>Accepted for this release: cosmetic, only above 2× zoom.</p></div></details>
+    </div>
+    <h4 class="pgroup">Dismissed · 1</h4>
+    <div class="problems">
+      <details class="problem"><summary class="p2"><span class="pticket"><span class="chip muted">Dismissed</span></span><h3>Not reproduced (1 of 2): the share sheet opened twice</h3><span class="pwhere">iOS · Collections</span></summary>
+        <div class="problem-body"><p>Seen once on a degraded simulator; the verification passed on a fresh boot.</p></div></details>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Notes</h2>
+    <div class="card notes">
+      <dl>
+        <dt>Builds</dt><dd>Android: 2.16.2 (a41c9e0) until 10:58, then 2.16.2 (b7d203f) with the back-navigation fix. iOS: 2.16.2 (a41c9e0).</dd>
+        <dt>Reruns</dt><dd>On b7d203f: collections/002 (open problem 3), collections/004 (the fix touches the back stack).</dd>
+        <dt>Specs flagged unclear</dt><dd>annotations/007: "the handles look right" couldn't be judged twice. Reword it with create-test.</dd>
+        <dt>Harness gaps</dt><dd>viewer/004 on iOS: the zoom slider has no accessibility label, so its value couldn't be read.</dd>
+        <dt>Device health</dt><dd>iOS simulator degraded 10:20–10:31 (memory); restarted. One result in that window is marked.</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section class="block">
+    <h2>Timeline</h2>
+    <div class="card timeline">
+      <details class="fold"><summary>Show all 214 events</summary>
+        <ol>
+          <li><span>11:44</span>#212 dispatched viewer/002 on android (attempt 1)</li>
+          <li><span>11:46</span>#213 annotations/003#1@ios posted Unsure: checking</li>
+          <li><span>11:46</span>#214 viewer/001#1@android posted Unsure: checking; 1 side find</li>
+          <li><span>11:47</span>#215 reviewed viewer/001 on android: judge (screenshot shows page 6)</li>
+        </ol>
+      </details>
+    </div>
+  </section>
+
+  <footer>Generated by soundcheck 0.1 from the run's journal. Local stack only; nothing here touched production.</footer>
+</main>
