@@ -1,0 +1,12 @@
+soundcheck: "0.2"
+platforms:
+  android: {}
+  web:
+    base-url: http://localhost:5173
+hooks:
+  guard: "true"
+  seed: node seed.mjs
+  build-identity: "true"
+seeds: []
+models:
+  default: gpt

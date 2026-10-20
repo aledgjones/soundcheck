@@ -1,0 +1,17 @@
+soundcheck: "0.1"
+platforms:
+  android:
+    app-id: com.example.app
+    account: android@example.com
+  ios:
+    app-id: com.example.app
+  web:
+    base-url: http://localhost:5173
+    start: npm run dev
+hooks:
+  guard: node hooks/guard.mjs
+  seed: node hooks/seed.mjs --wipe {scenario}
+  build-identity: node hooks/build-identity.mjs
+seeds: [viewer, empty]
+tickets:
+  url: https://example.atlassian.net/browse/{id}

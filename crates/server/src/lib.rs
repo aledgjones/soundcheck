@@ -1,0 +1,4 @@
+pub mod lint;
+pub mod suite;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
