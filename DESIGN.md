@@ -177,6 +177,7 @@ Nothing in a run may wait for a human:
 
 ### 4.1 Interface
 
+- **One registry of every tool** (`soundcheck_driver::TOOLS`): each entry has its name, its kind (basic, or a mechanic) and the platforms it runs on, and later its parameters, which are also its MCP schema. The MCP tool list, lint and the tester's brief all read from it, so no tool is defined twice. Basic tools are open to every spec; a spec lists mechanics in `tools`, and lint refuses one on a platform it doesn't run on.
 - **Reading:**
   - `see [filter]`: the element tree;
   - `expect` and `gone`;

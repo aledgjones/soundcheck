@@ -1,9 +1,24 @@
 use crate::suite::config::{Platform, compatible};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, ID_MAP_FILE, Problem, Suite};
 use regex::Regex;
+use soundcheck_driver::Kind;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::LazyLock;
+
+fn mechanics() -> impl Iterator<Item = &'static soundcheck_driver::Tool> {
+    soundcheck_driver::TOOLS
+        .iter()
+        .filter(|t| t.kind == Kind::Mechanic)
+}
+
+fn driver_platform(platform: Platform) -> soundcheck_driver::Platform {
+    match platform {
+        Platform::Android => soundcheck_driver::Platform::Android,
+        Platform::Ios => soundcheck_driver::Platform::Ios,
+        Platform::Web => soundcheck_driver::Platform::Web,
+    }
+}
 
 pub const MODELS: &[&str] = &["haiku", "sonnet", "opus", "fable"];
 const TITLE_MAX: usize = 80;
@@ -116,10 +131,8 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         if title.contains(&f.seed) && f.seed.len() > 3 {
             push("title: no seed names".into());
         }
-        for tool in soundcheck_driver::TOOLS {
-            if title.contains(tool) {
-                push("title: no tool names".into());
-            }
+        if mechanics().any(|t| title.contains(t.name)) {
+            push("title: no tool names".into());
         }
 
         if !config.seeds.contains(&f.seed) {
@@ -152,12 +165,22 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         {
             push(format!("model: {model} isn't one of {}", MODELS.join(", ")));
         }
-        for tool in &f.tools {
-            if !soundcheck_driver::TOOLS.contains(&tool.as_str()) {
-                push(format!(
-                    "tools: {tool} isn't a driver tool ({})",
-                    soundcheck_driver::TOOLS.join(", ")
-                ));
+        for name in &f.tools {
+            match soundcheck_driver::tool(name) {
+                None => push(format!(
+                    "tools: {name} isn't a driver tool ({})",
+                    mechanics().map(|t| t.name).collect::<Vec<_>>().join(", ")
+                )),
+                Some(t) if t.kind == Kind::Basic => push(format!(
+                    "tools: {name} is a basic tool; list only the others"
+                )),
+                Some(t) => {
+                    for platform in &f.platforms {
+                        if !t.platforms.contains(&driver_platform(*platform)) {
+                            push(format!("tools: {name} doesn't run on {platform}"));
+                        }
+                    }
+                }
             }
         }
     }
