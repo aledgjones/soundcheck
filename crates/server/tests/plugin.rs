@@ -52,3 +52,12 @@ fn the_mcp_config_points_at_the_default_port() {
     let config: serde_json::Value = serde_json::from_str(&plugin_file(".mcp.json")).unwrap();
     assert_eq!(config["soundcheck"]["url"], "http://127.0.0.1:7357/mcp");
 }
+
+#[test]
+fn setup_allows_exactly_soundchecks_tools() {
+    let skill = plugin_file("skills/setup/SKILL.md");
+    assert!(
+        skill.contains(&format!("\"{PREFIX}*\"")),
+        "setup's allowlist rule must match the tool prefix"
+    );
+}
