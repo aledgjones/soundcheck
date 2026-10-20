@@ -87,7 +87,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - **A PASS** files at once, provided it has evidence for every outcome.
 - **The tester judges each outcome,** not the spec: **held**, **failed**, **unsure** (observed, but it can't tell whether it's right) or **couldn't check** (never got to observe it). The server derives the spec's claim: any failed is FAIL, else any couldn't check is BLOCKED, else any unsure is **Unsure**, else PASS.
 - **Final results are only PASS, FAIL or BLOCKED**, each resting on specific outcome lines. Unsure is never final.
-- **A FAIL, BLOCKED or Unsure** becomes `needs review`. On the live page the row shows "Needs review" with its age, so a stuck one stands out. That should last only minutes.
+- **A FAIL, BLOCKED or Unsure** becomes `needs review`. On the page the row reads **"Checking"** (the tester reported a problem and the coordinator is checking it; it's the coordinator's job, not the person's), with no age on the row. A check that stalls shows in the sticky bar instead ("checking annotations/003 for 6 min", in amber). It should last only minutes.
 - **Review** is the coordinator alone, judging the tester's evidence and the server's capture. It does one of three things:
   - **uphold:** the evidence is conclusive. The result is filed, and a problem joins the findings list as **open**, with the coordinator setting its severity (bug or finding).
   - **verify:** the evidence isn't conclusive. A verification attempt is queued: a new agent on a fresh seed, **told the claim** ("the first attempt saw the stroke survive undo; reproduce it"). Reproduced: upheld. Not reproduced: filed as a finding marked "not reproduced (1 of 2)", never silently dropped, since flaky problems matter at triage.
@@ -160,6 +160,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
   - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
   - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
   - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
+  - **Badges stay minimal:** an open problem shows one badge, its severity; "verified" and "side find" go in its detail. Fixed, Deferred and Dismissed problems show no badges, only their ticket, because the group header already says what happened.
   - **A collapsed timeline** at the bottom tells the run's story from the journal, one readable line per event. It replaces today's run log.
   - **The server's root page lists runs** (release, date, verdict, ring), each opening its report. Exports stay single files.
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, severity badges, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
