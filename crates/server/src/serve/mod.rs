@@ -34,19 +34,16 @@ pub struct Hub {
     pub suite: Suite,
     run: Mutex<Run>,
     events: broadcast::Sender<Entry>,
-    /// Every request carries it, so nothing else on the machine can drive the run.
-    pub token: String,
     pub stall_ms: u64,
 }
 
 impl Hub {
-    pub fn new(suite: Suite, run: Run, token: String, stall_ms: u64) -> Arc<Hub> {
+    pub fn new(suite: Suite, run: Run, stall_ms: u64) -> Arc<Hub> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Hub {
             suite,
             run: Mutex::new(run),
             events,
-            token,
             stall_ms,
         })
     }
@@ -94,13 +91,13 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         Default::default(),
         StreamableHttpServerConfig::default().with_cancellation_token(shutdown.child_token()),
     );
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    let addr = listener.local_addr()?;
     let app = axum::Router::new()
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
-        .layer(middleware::from_fn_with_state(hub.clone(), require_token))
+        .layer(middleware::from_fn_with_state(addr.port(), local_only))
         .with_state(hub.clone());
-    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
-    let addr = listener.local_addr()?;
 
     let ticker = {
         let hub = hub.clone();
@@ -131,27 +128,27 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     })
 }
 
-#[derive(Deserialize)]
-struct TokenQuery {
-    token: Option<String>,
-}
-
-async fn require_token(
-    State(hub): State<Arc<Hub>>,
-    Query(query): Query<TokenQuery>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let bearer = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "));
-    if bearer == Some(hub.token.as_str()) || query.token.as_deref() == Some(hub.token.as_str()) {
+/// Only this machine's own callers: agents and the CLI send no Origin, and the live page sends this server's own.
+/// Checking Host as well stops a page whose domain was rebound to 127.0.0.1.
+async fn local_only(State(port): State<u16>, request: Request, next: Next) -> Response {
+    if is_local(port, request.headers()) {
         next.run(request).await
     } else {
-        (StatusCode::UNAUTHORIZED, "missing or wrong run token\n").into_response()
+        (
+            StatusCode::FORBIDDEN,
+            "soundcheck only answers this machine's own callers\n",
+        )
+            .into_response()
     }
+}
+
+fn is_local(port: u16, headers: &axum::http::HeaderMap) -> bool {
+    let ours = [format!("127.0.0.1:{port}"), format!("localhost:{port}")];
+    let header = |name| headers.get(name).and_then(|v| v.to_str().ok());
+    let host_ok = header(header::HOST).is_some_and(|h| ours.iter().any(|o| o == h));
+    let origin_ok = header(header::ORIGIN)
+        .is_none_or(|origin| ours.iter().any(|o| origin == format!("http://{o}")));
+    host_ok && origin_ok
 }
 
 #[derive(Deserialize)]

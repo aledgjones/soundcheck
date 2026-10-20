@@ -3,7 +3,7 @@ use clap::{Parser, Subcommand};
 use soundcheck::run::{Plan, PlannedSpec, Run};
 use soundcheck::suite::config::Platform;
 use soundcheck::{VERSION, lint, serve, suite};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -147,18 +147,16 @@ fn run_command(
     };
     std::fs::create_dir_all(&run_dir)?;
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms())?;
-    let token = random_token()?;
     let stall_ms = stall_seconds * 1000;
 
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let hub = serve::Hub::new(suite, run, token.clone(), stall_ms);
+        let hub = serve::Hub::new(suite, run, stall_ms);
         let server = serve::start(hub, port).await?;
         let url = format!("http://{}", server.addr);
         let info = serde_json::json!({
             "url": url,
             "mcp": format!("{url}/mcp"),
-            "token": token,
             "run": run_dir,
         });
         std::fs::write(
@@ -166,10 +164,7 @@ fn run_command(
             serde_json::to_string_pretty(&info)?,
         )?;
         println!("soundcheck {VERSION}: run in {}", run_dir.display());
-        println!(
-            "MCP at {url}/mcp, token in {}",
-            run_dir.join("server.json").display()
-        );
+        println!("MCP at {url}/mcp");
         tokio::signal::ctrl_c().await?;
         server.shutdown.cancel();
         let _ = server.handle.await;
@@ -183,12 +178,10 @@ fn events_command(run_dir: &Path, after: u64) -> Result<()> {
             .context("no server.json: is the run started?")?,
     )?;
     let url = info["url"].as_str().context("server.json: url")?;
-    let token = info["token"].as_str().context("server.json: token")?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let mut response = reqwest::Client::new()
             .get(format!("{url}/events?after={after}"))
-            .bearer_auth(token)
             .send()
             .await?
             .error_for_status()?;
@@ -217,10 +210,4 @@ fn run_name() -> String {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => secs.to_string(),
     }
-}
-
-fn random_token() -> Result<String> {
-    let mut bytes = [0u8; 16];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
 }

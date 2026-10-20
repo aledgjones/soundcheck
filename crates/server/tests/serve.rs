@@ -10,8 +10,6 @@ use soundcheck::suite;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-const TOKEN: &str = "test-token";
-
 async fn server() -> (serve::Server, String) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     let suite = suite::load(&root);
@@ -34,7 +32,7 @@ async fn server() -> (serve::Server, String) {
     let dir = std::env::temp_dir().join(format!("soundcheck-serve-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(Hub::new(suite, run, TOKEN.into(), 120_000), 0)
+    let server = serve::start(Hub::new(suite, run, 120_000), 0)
         .await
         .unwrap();
     let url = format!("http://{}", server.addr);
@@ -43,7 +41,7 @@ async fn server() -> (serve::Server, String) {
 
 async fn client(url: &str) -> RunningService<RoleClient, ClientConfig> {
     let transport = StreamableHttpClientTransport::from_config(
-        StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")).auth_header(TOKEN),
+        StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")),
     );
     ClientConfig::default().serve(transport).await.unwrap()
 }
@@ -68,20 +66,52 @@ async fn call(
 }
 
 #[tokio::test]
-async fn requests_without_the_run_token_are_refused() {
+async fn only_this_machines_own_callers_are_answered() {
     let (server, url) = server().await;
-    let response = reqwest::Client::new()
-        .get(format!("{url}/events"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
-    let response = reqwest::Client::new()
-        .get(format!("{url}/events?token=wrong"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(response.status(), 401);
+    let port = server.addr.port();
+    let get = |origin: Option<String>, host: Option<String>| {
+        let mut request = reqwest::Client::new().get(format!("{url}/events"));
+        if let Some(origin) = origin {
+            request = request.header("Origin", origin);
+        }
+        if let Some(host) = host {
+            request = request.header("Host", host);
+        }
+        request.send()
+    };
+    let status = |r: reqwest::Response| r.status().as_u16();
+    assert_eq!(
+        status(get(None, None).await.unwrap()),
+        200,
+        "agents and the CLI send no Origin"
+    );
+    assert_eq!(
+        status(
+            get(Some(format!("http://127.0.0.1:{port}")), None)
+                .await
+                .unwrap()
+        ),
+        200,
+        "the live page"
+    );
+    assert_eq!(
+        status(
+            get(Some("https://evil.example".into()), None)
+                .await
+                .unwrap()
+        ),
+        403,
+        "another site"
+    );
+    assert_eq!(
+        status(
+            get(None, Some(format!("evil.example:{port}")))
+                .await
+                .unwrap()
+        ),
+        403,
+        "a rebound domain"
+    );
     server.shutdown.cancel();
 }
 
@@ -193,7 +223,6 @@ async fn the_event_stream_replays_then_follows() {
 
     let mut response = reqwest::Client::new()
         .get(format!("{url}/events?after=1"))
-        .bearer_auth(TOKEN)
         .send()
         .await
         .unwrap();

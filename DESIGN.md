@@ -59,7 +59,7 @@ How they talk:
 
 - One process listens on localhost over HTTP: MCP (streamable HTTP, `rmcp`), the live page, its WebSocket and the event stream share one port. The plugin's MCP config points every agent at that URL.
 - **Why not stdio:** Claude Code starts a stdio MCP server once per agent, which would mean several processes fighting over the devices and the journal.
-- It binds to 127.0.0.1 only, and each run has a random token the MCP config and CLI carry.
+- **Local callers only, with no secret.** It binds to 127.0.0.1, requires a `Host` of `127.0.0.1:<port>` or `localhost:<port>` (which stops a page whose domain was rebound to 127.0.0.1), and refuses any `Origin` but its own (agents and the CLI send none; the live page sends the server's). A token or fixed secret was dropped: any local process could read it and drive the emulator over adb anyway, and it would stop the plugin's MCP config being a plain fixed URL.
 
 ### 3.2 A run
 
@@ -389,7 +389,7 @@ Built against Solo Scores, which proves the concept; there's no separate demo ap
 ## 10. Open questions
 
 - **Licence:** it will be public eventually, so choose one before the first push. MIT is proposed, since the iOS reader follows AXe's MIT code.
-- **Port** and how the plugin's MCP config learns the run's token.
+- **Port:** 7357 by default. A session opened before `soundcheck run` must reconnect once (`/mcp`); the `run` skill handles it.
 - **The tester's silence timeout** before a running spec is treated as stopped.
 - **Web start hook:** a local dev server or a preview build, and how its build identity is read.
 - **Android overlay gap:** some overlay controls report invisible to a long-lived `UiAutomation` connection. Is it timing, a transform or a window issue? Needed for full parity.
