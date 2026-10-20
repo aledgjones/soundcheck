@@ -10,5 +10,6 @@ anyhow.workspace = true
 clap.workspace = true
 regex.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 serde_yaml_ng.workspace = true
 soundcheck-driver = { path = "../driver" }
