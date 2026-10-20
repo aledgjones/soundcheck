@@ -3,6 +3,7 @@
 pub mod event;
 pub mod journal;
 pub mod model;
+pub mod verdict;
 
 use crate::suite::config::Platform;
 use anyhow::{Result, bail};
@@ -137,6 +138,10 @@ impl Run {
 
     pub fn state(&self) -> &State {
         &self.state
+    }
+
+    pub fn verdict(&self) -> verdict::Verdict {
+        verdict::verdict(&self.state)
     }
 
     pub fn row(&self, spec: &str, platform: Platform) -> Option<&RowRecord> {
@@ -393,6 +398,69 @@ impl Run {
         Ok(())
     }
 
+    /// Records a triage decision. Fixed needs its row to have passed on a later attempt than the one that found it.
+    pub fn triage(
+        &mut self,
+        now: u64,
+        problem: u32,
+        decision: Decision,
+        reason: &str,
+    ) -> Result<()> {
+        if reason.trim().is_empty() {
+            bail!("every triage decision needs a reason");
+        }
+        let Some(p) = self.state.problem(problem) else {
+            bail!("no problem {problem}");
+        };
+        match &decision {
+            Decision::Fix { ticket } | Decision::Defer { ticket } if ticket.trim().is_empty() => {
+                bail!("fixed and deferred problems need a ticket")
+            }
+            Decision::Fix { .. } => {
+                let passed_later = matches!(
+                    self.row(&p.spec, p.platform).map(|r| &r.row),
+                    Some(Row::Filed { result: Final::Pass, attempt, .. }) if *attempt > p.attempt
+                );
+                if !passed_later {
+                    bail!(
+                        "problem {problem} can't be Fixed until {} passes on {} again with the fix",
+                        p.spec,
+                        p.platform
+                    );
+                }
+            }
+            Decision::Duplicate { of } => {
+                if *of == problem {
+                    bail!("a problem can't duplicate itself");
+                }
+                match self.state.problem(*of) {
+                    None => bail!("no problem {of}"),
+                    Some(o) if matches!(o.status, Status::Duplicate { .. }) => {
+                        bail!("problem {of} is itself a duplicate; point at its original")
+                    }
+                    Some(_) => {}
+                }
+                if self
+                    .state
+                    .problems
+                    .iter()
+                    .any(|o| o.status == Status::Duplicate { of: problem })
+                {
+                    bail!("other problems are duplicates of {problem}; it can't become one itself");
+                }
+            }
+            _ => {}
+        }
+        self.commit(
+            now,
+            Event::Triaged {
+                problem,
+                decision,
+                reason: reason.into(),
+            },
+        )
+    }
+
     pub fn pause(&mut self, now: u64, reason: &str) -> Result<()> {
         self.open_for_commands()?;
         if self.state.paused {
@@ -521,6 +589,18 @@ impl State {
         state
     }
 
+    pub fn problem(&self, id: u32) -> Option<&Problem> {
+        self.problems.iter().find(|p| p.id == id)
+    }
+
+    /// A problem's effective status: a duplicate takes its original's.
+    pub fn status_of<'a>(&'a self, problem: &'a Problem) -> &'a Status {
+        match &problem.status {
+            Status::Duplicate { of } => self.problem(*of).map_or(&problem.status, |o| &o.status),
+            status => status,
+        }
+    }
+
     fn running_token(&self, token: &str) -> Option<(String, Platform)> {
         self.rows.iter().find_map(|(key, r)| match &r.row {
             Row::Running { token: t, .. } if t == token => Some(key.clone()),
@@ -594,6 +674,7 @@ impl State {
                             summary,
                             verified: true,
                             reason: "a verification attempt passed".into(),
+                            status: Status::Open,
                         });
                     }
                     let reason = if verify.is_some() {
@@ -727,6 +808,7 @@ impl State {
                         summary,
                         verified: verify.is_some(),
                         reason: reason.clone(),
+                        status: Status::Open,
                     });
                 }
                 self.rows.get_mut(&key).unwrap().row = row;
@@ -751,6 +833,7 @@ impl State {
                         summary: format!("{}: {}", pending.find.summary, pending.find.observed),
                         verified: false,
                         reason: reason.clone(),
+                        status: Status::Open,
                     });
                 }
             }
@@ -791,6 +874,27 @@ impl State {
                         platform: *platform,
                         text: format!("reset failed: {reason}"),
                     });
+                }
+            }
+            Event::Triaged {
+                problem,
+                decision,
+                reason,
+            } => {
+                if let Some(p) = self.problems.iter_mut().find(|p| p.id == *problem) {
+                    let reason = reason.clone();
+                    p.status = match decision {
+                        Decision::Dismiss => Status::Dismissed { reason },
+                        Decision::Fix { ticket } => Status::Fixed {
+                            ticket: ticket.clone(),
+                            reason,
+                        },
+                        Decision::Defer { ticket } => Status::Deferred {
+                            ticket: ticket.clone(),
+                            reason,
+                        },
+                        Decision::Duplicate { of } => Status::Duplicate { of: *of },
+                    };
                 }
             }
             Event::Paused { .. } => self.paused = true,

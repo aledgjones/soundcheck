@@ -1,4 +1,4 @@
-use super::model::{Call, Final, Posted, Severity};
+use super::model::{Call, Decision, Final, Posted, Severity};
 use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
 
@@ -43,6 +43,13 @@ pub enum Event {
     ResetFailed {
         spec: String,
         platform: Platform,
+        reason: String,
+    },
+    /// Triage: allowed after the run has finished, since it usually happens then.
+    Triaged {
+        problem: u32,
+        #[serde(flatten)]
+        decision: Decision,
         reason: String,
     },
     Paused {

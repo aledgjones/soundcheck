@@ -572,3 +572,222 @@ fn a_reopened_journal_carries_on_where_it_stopped() {
     );
     assert!(lines.lines().nth(3).unwrap().contains(r#""call":"uphold""#));
 }
+
+use soundcheck::run::verdict::VerdictStatus;
+
+fn fail_and_uphold(run: &mut Run, at: u64, spec: &str, platform: Platform) {
+    let t = run.dispatch(at, spec, platform, "p").unwrap();
+    let answers: Vec<Answer> = if spec == DRAW {
+        vec![Answer::Failed, Answer::Held]
+    } else {
+        vec![Answer::Failed]
+    };
+    run.post(at + 1, &t, judged(&answers)).unwrap();
+    run.review(
+        at + 2,
+        spec,
+        platform,
+        Call::Uphold {
+            severity: Some(Severity::Bug),
+        },
+        "real",
+    )
+    .unwrap();
+}
+
+fn pass(run: &mut Run, at: u64, spec: &str, platform: Platform) {
+    let t = run.dispatch(at, spec, platform, "p").unwrap();
+    let answers: Vec<Answer> = if spec == DRAW {
+        vec![Answer::Held, Answer::Held]
+    } else {
+        vec![Answer::Held]
+    };
+    run.post(at + 1, &t, judged(&answers)).unwrap();
+}
+
+#[test]
+fn every_spec_passing_is_ready() {
+    let (mut run, _) = open("ready");
+    pass(&mut run, 1, DRAW, Android);
+    pass(&mut run, 10, DRAW, Ios);
+    let v = run.verdict();
+    assert_eq!(v.status, VerdictStatus::NotReady);
+    assert_eq!(v.reasons, ["1 spec not run"]);
+    pass(&mut run, 20, BACK, Android);
+    assert_eq!(run.verdict().status, VerdictStatus::Ready);
+}
+
+#[test]
+fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
+    let (mut run, _) = open("blocked-verdict");
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    pass(&mut run, 10, DRAW, Ios);
+    pass(&mut run, 20, BACK, Android);
+    let v = run.verdict();
+    assert_eq!(v.status, VerdictStatus::Blocked);
+    assert_eq!(v.reasons, ["1 open FAIL", "1 problem not triaged"]);
+
+    run.finish(30).unwrap();
+    let err = run
+        .triage(31, 1, Decision::Defer { ticket: " ".into() }, "known")
+        .unwrap_err();
+    assert!(err.to_string().contains("need a ticket"));
+    run.triage(
+        31,
+        1,
+        Decision::Defer {
+            ticket: "SA-700".into(),
+        },
+        "rare, ships next release",
+    )
+    .unwrap();
+    assert_eq!(
+        run.verdict().status,
+        VerdictStatus::Ready,
+        "triage works after the run finished"
+    );
+}
+
+#[test]
+fn fixed_needs_a_later_pass_of_its_row() {
+    let (mut run, _) = open("fixed");
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    let err = run
+        .triage(
+            5,
+            1,
+            Decision::Fix {
+                ticket: "SA-701".into(),
+            },
+            "fix landed",
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("passes on android again"), "{err}");
+
+    // A side find from an attempt that was sent back, whose row then passed on attempt 2.
+    let t = run.dispatch(10, BACK, Android, "p").unwrap();
+    let mut posted = judged(&[Answer::Failed]);
+    posted.side_finds.push(SideFind {
+        summary: "Menu flickers".into(),
+        observed: "twice".into(),
+        evidence: vec![],
+    });
+    run.post(11, &t, posted).unwrap();
+    run.review(12, BACK, Android, Call::SendBack, "wrong tap")
+        .unwrap();
+    run.review_find(13, 2, Some(Severity::Finding), "seen in the shot")
+        .unwrap();
+    pass(&mut run, 14, BACK, Android);
+    run.triage(
+        20,
+        2,
+        Decision::Fix {
+            ticket: "SA-702".into(),
+        },
+        "flicker fixed",
+    )
+    .unwrap();
+    assert!(matches!(
+        run.state().problem(2).unwrap().status,
+        Status::Fixed { .. }
+    ));
+}
+
+#[test]
+fn a_duplicate_follows_its_original() {
+    let (mut run, _) = open("duplicate");
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    fail_and_uphold(&mut run, 10, DRAW, Ios);
+    pass(&mut run, 20, BACK, Android);
+    assert!(
+        run.triage(30, 2, Decision::Duplicate { of: 2 }, "same")
+            .is_err()
+    );
+    run.triage(30, 2, Decision::Duplicate { of: 1 }, "same undo bug on iOS")
+        .unwrap();
+    assert_eq!(
+        run.verdict().reasons,
+        ["2 open FAILs", "1 problem not triaged"]
+    );
+    assert!(
+        run.triage(31, 1, Decision::Duplicate { of: 2 }, "loop")
+            .is_err()
+    );
+
+    run.triage(32, 1, Decision::Dismiss, "it's the intended behaviour")
+        .unwrap();
+    assert_eq!(
+        run.verdict().status,
+        VerdictStatus::Ready,
+        "the duplicate follows the dismissal"
+    );
+}
+
+#[test]
+fn a_harness_gap_blocked_stays_not_ready() {
+    let (mut run, _) = open("gap-verdict");
+    let t = run.dispatch(1, BACK, Android, "p").unwrap();
+    run.post(2, &t, judged(&[Answer::CouldntCheck])).unwrap();
+    run.review(
+        3,
+        BACK,
+        Android,
+        Call::Uphold { severity: None },
+        "no label",
+    )
+    .unwrap();
+    pass(&mut run, 10, DRAW, Android);
+    pass(&mut run, 20, DRAW, Ios);
+    let v = run.verdict();
+    assert_eq!(v.status, VerdictStatus::NotReady);
+    assert_eq!(v.reasons, ["1 spec BLOCKED"]);
+}
+
+#[test]
+fn a_not_reproduced_finding_must_be_triaged() {
+    let (mut run, _) = open("not-repro-verdict");
+    let t = run.dispatch(1, BACK, Android, "p").unwrap();
+    run.post(2, &t, judged(&[Answer::Failed])).unwrap();
+    run.review(
+        3,
+        BACK,
+        Android,
+        Call::Verify {
+            claim: "blank screen".into(),
+        },
+        "once",
+    )
+    .unwrap();
+    pass(&mut run, 4, BACK, Android);
+    pass(&mut run, 10, DRAW, Android);
+    pass(&mut run, 20, DRAW, Ios);
+    assert_eq!(run.verdict().reasons, ["1 problem not triaged"]);
+    run.triage(
+        30,
+        1,
+        Decision::Dismiss,
+        "not reproduced on a healthy device",
+    )
+    .unwrap();
+    assert_eq!(run.verdict().status, VerdictStatus::Ready);
+}
+
+#[test]
+fn triage_survives_a_reopen() {
+    let (mut run, path) = open("triage-replay");
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    run.triage(
+        5,
+        1,
+        Decision::Defer {
+            ticket: "SA-703".into(),
+        },
+        "later",
+    )
+    .unwrap();
+    drop(run);
+    let run = Run::open(plan(false), &path, 0).unwrap();
+    assert!(
+        matches!(&run.state().problem(1).unwrap().status, Status::Deferred { ticket, .. } if ticket == "SA-703")
+    );
+}

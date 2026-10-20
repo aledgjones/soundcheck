@@ -124,4 +124,31 @@ pub struct Problem {
     /// Whether a verification attempt reproduced it before it was upheld.
     pub verified: bool,
     pub reason: String,
+    pub status: Status,
+}
+
+/// Where triage left a problem. Open until the person and the coordinator decide.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "kebab-case")]
+pub enum Status {
+    #[default]
+    Open,
+    /// Not a bug, or not reproduced.
+    Dismissed { reason: String },
+    /// A fix landed, proven by a later pass of its row.
+    Fixed { ticket: String, reason: String },
+    /// Accepted for this release.
+    Deferred { ticket: String, reason: String },
+    /// Folded into the original: its platform and evidence join it, and the original's status applies.
+    Duplicate { of: u32 },
+}
+
+/// A triage decision, as the coordinator records it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "decision", rename_all = "kebab-case")]
+pub enum Decision {
+    Dismiss,
+    Fix { ticket: String },
+    Defer { ticket: String },
+    Duplicate { of: u32 },
 }
