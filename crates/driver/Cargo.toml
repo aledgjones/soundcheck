@@ -6,7 +6,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chromiumoxide.workspace = true
+futures.workspace = true
 regex.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true }
 

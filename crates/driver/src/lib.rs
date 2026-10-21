@@ -5,6 +5,7 @@ pub mod element;
 pub mod matcher;
 pub mod ops;
 pub mod tools;
+pub mod web;
 
 pub use device::{Device, DriverError};
 pub use element::{Element, Rect};
