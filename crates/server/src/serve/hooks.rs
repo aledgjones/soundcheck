@@ -36,7 +36,15 @@ pub async fn run(root: &Path, command: &str, timeout: Duration) -> Result<String
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         let tail: Vec<&str> = stderr.lines().rev().take(3).collect();
-        let reason = tail.into_iter().rev().collect::<Vec<_>>().join(" ");
+        let mut reason = tail.iter().rev().copied().collect::<Vec<_>>().join(" ");
+        // A long build's tail is often a stack trace; its first error line is the reason.
+        if let Some(first) = stderr
+            .lines()
+            .find(|l| l.contains("Error:") || l.contains("error:"))
+            .filter(|l| !tail.contains(l))
+        {
+            reason = format!("{} … {reason}", first.trim());
+        }
         bail!(
             "`{command}` failed{}",
             if reason.trim().is_empty() {

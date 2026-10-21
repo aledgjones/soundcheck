@@ -77,6 +77,7 @@ pub fn summary(entry: &Entry) -> String {
             "evidence saved for {spec} on {platform}: {}",
             files.join(", ")
         ),
+        Event::Preflight { checks } => format!("ready to run: {}", checks.join("; ")),
         Event::Interrupted { token } => format!(
             "{token} interrupted by a server restart; queued again without using an attempt"
         ),

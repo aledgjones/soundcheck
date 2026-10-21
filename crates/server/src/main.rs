@@ -175,6 +175,19 @@ fn run_command(args: RunArgs) -> Result<()> {
             String::from_utf8_lossy(&guard.stderr).trim()
         );
     }
+    // Preflight: every check passes before anything runs, or the run refuses with the reason.
+    let mut checks = Vec::new();
+    pass(
+        &mut checks,
+        format!("the suite lints clean ({} specs)", suite.specs.len()),
+    );
+    pass(
+        &mut checks,
+        format!(
+            "the guard passed: {}",
+            String::from_utf8_lossy(&guard.stdout).trim()
+        ),
+    );
     // A resumed run keeps how it was started, unless told otherwise.
     let saved = resume
         .as_deref()
@@ -235,6 +248,11 @@ fn run_command(args: RunArgs) -> Result<()> {
         soundcheck::report::run_summary(&run, &label).to_string(),
     )?;
     let config_has_install = config.hooks.install.is_some();
+    let ready: std::collections::HashMap<Platform, Vec<String>> = config
+        .platforms
+        .iter()
+        .map(|(p, c)| (*p, c.ready.clone()))
+        .collect();
     let config_web_start = config
         .platforms
         .get(&Platform::Web)
@@ -284,6 +302,41 @@ fn run_command(args: RunArgs) -> Result<()> {
         for problem in problems {
             eprintln!("soundcheck: build identity unknown for {problem}");
         }
+        for &platform in &platforms {
+            if let Some(build) =
+                hub.with_run(|run, _| Ok(run.state().builds.get(&platform).cloned()))?
+            {
+                pass(&mut checks, format!("{platform} has build {}", build.label()));
+            }
+        }
+        // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say).
+        for &platform in &platforms {
+            let labels = ready.get(&platform).cloned().unwrap_or_default();
+            hub.on_device(platform, async |d| {
+                soundcheck_driver::Device::launch(&d.device).await?;
+                for label in &labels {
+                    let m = soundcheck_driver::Matcher::parse(label)
+                        .map_err(|e| soundcheck_driver::DriverError::Invalid(e.to_string()))?;
+                    d.wait(&m, 30_000).await.map_err(|_| {
+                        soundcheck_driver::DriverError::NotFound(format!(
+                            "{label:?} didn't show after launching: is the app signed in and past onboarding?"
+                        ))
+                    })?;
+                }
+                Ok(())
+            })
+            .await
+            .with_context(|| format!("{platform} isn't ready to test"))?;
+            pass(&mut checks, if labels.is_empty() {
+                format!("{platform}: the device answers and the app launched")
+            } else {
+                format!(
+                    "{platform}: the device answers, the app launched and shows {}",
+                    labels.join(", ")
+                )
+            });
+        }
+        hub.with_run(|run, now| run.preflight(now, checks.clone()))?;
         let server = serve::start(hub, port).await?;
         let url = format!("http://{}", server.addr);
         let info = serde_json::json!({
@@ -403,4 +456,10 @@ fn run_name() -> String {
         Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
         _ => secs.to_string(),
     }
+}
+
+/// A preflight check that passed: shown as it happens, and kept for the journal.
+fn pass(checks: &mut Vec<String>, check: String) {
+    println!("✓ {check}");
+    checks.push(check);
 }

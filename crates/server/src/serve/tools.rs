@@ -443,7 +443,9 @@ impl Tools {
                 .hub
                 .with_run(|run, now| run.evidence_captured(now, &spec, platform, attempt, files));
         }
-        self.hub.check_health(&spec, platform, attempt).await;
+        // In the background: sampling takes seconds, and the next spec's reset waits for the device anyway.
+        let hub = self.hub.clone();
+        tokio::spawn(async move { hub.check_health(&spec, platform, attempt).await });
         reply(Ok(
             json!({ "claim": claim, "next": "you're done: stop here" }),
         ))

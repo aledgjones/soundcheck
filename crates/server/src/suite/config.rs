@@ -70,6 +70,10 @@ pub struct PlatformConfig {
     pub base_url: Option<String>,
     /// Web only: the command that serves the app under test.
     pub start: Option<String>,
+    /// Labels that prove the app is ready to test once launched (signed in, past onboarding). The run checks them
+    /// before it starts, so a signed-out device stops it there rather than failing every spec.
+    #[serde(default)]
+    pub ready: Vec<String>,
 }
 
 /// Shell commands: exit 0 for ok, JSON on stdout where data comes back.

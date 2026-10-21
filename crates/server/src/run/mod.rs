@@ -652,6 +652,10 @@ impl Run {
 
     /// On resume: every spec that was running when the server stopped goes back to the queue, without using an
     /// attempt, since the harness stopped it rather than the app.
+    pub fn preflight(&mut self, now: u64, checks: Vec<String>) -> Result<()> {
+        self.commit(now, Event::Preflight { checks })
+    }
+
     pub fn interrupt_running(&mut self, now: u64) -> Result<usize> {
         let tokens: Vec<String> = self
             .state
@@ -1271,6 +1275,8 @@ impl State {
                 platform: *platform,
                 text: format!("device restarted after this spec: {reason}"),
             }),
+            // A record for the timeline; nothing about the rows changes.
+            Event::Preflight { .. } => {}
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
             Event::Finished { .. } => self.finished = true,

@@ -57,6 +57,10 @@ pub enum Event {
         spec: String,
         reason: String,
     },
+    /// The checks that passed before the run started (or resumed): suite, guard, builds, devices, app ready.
+    Preflight {
+        checks: Vec<String>,
+    },
     /// The server stopped while the spec ran (resumed later): the attempt doesn't count, and the spec goes first.
     Interrupted {
         token: String,
