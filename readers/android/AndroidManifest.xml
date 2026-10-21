@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.soundcheck.reader">
+  <uses-sdk android:minSdkVersion="34" android:targetSdkVersion="35" />
+  <uses-permission android:name="android.permission.INTERNET" />
+  <application android:label="Soundcheck reader" android:hasCode="true" />
+  <instrumentation android:name=".Reader" android:targetPackage="dev.soundcheck.reader" />
+</manifest>
