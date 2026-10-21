@@ -62,3 +62,14 @@ fn setup_allows_exactly_soundchecks_tools() {
         "setup's allowlist rule must match the tool prefix"
     );
 }
+
+#[test]
+fn the_plugin_and_the_binary_share_a_version() {
+    let manifest = plugin_file(".claude-plugin/plugin.json");
+    let version = format!("\"version\": \"{}\"", env!("CARGO_PKG_VERSION"));
+    assert!(
+        manifest.contains(&version),
+        "plugin.json's version must be the crate's ({})",
+        env!("CARGO_PKG_VERSION")
+    );
+}
