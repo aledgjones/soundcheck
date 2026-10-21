@@ -79,7 +79,10 @@ pub struct Hooks {
     pub seed: String,
     pub build_identity: String,
     pub install: Option<String>,
+    /// Read-only data checks testers can ask for: `check {name} [args]`.
     pub check: Option<String>,
+    /// The other side acting while a tester watches (another user revokes access): `act {name} [args]`.
+    pub act: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

@@ -172,25 +172,30 @@ impl Hub {
             .join(dir.unwrap_or_else(|| "fixtures".into()))
     }
 
-    /// Runs the project's check hook: `<check> <name> <args...>`, each quoted for the shell. A failing check is
-    /// still evidence, so its exit and output come back rather than an error.
-    pub async fn check_data(&self, name: &str, args: &[String]) -> Result<String> {
+    /// Runs the project's check or act hook: `<hook> <name> <args...>`, each quoted for the shell. A failing call
+    /// is still evidence, so its exit and output come back rather than an error.
+    pub async fn project_hook(&self, kind: &str, name: &str, args: &[String]) -> Result<String> {
         let config = self
             .suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let Some(check) = &config.hooks.check else {
-            anyhow::bail!("suite.yaml has no check hook");
+        let hook = if kind == "check" {
+            &config.hooks.check
+        } else {
+            &config.hooks.act
+        };
+        let Some(hook) = hook else {
+            anyhow::bail!("suite.yaml has no {kind} hook");
         };
         let quoted: Vec<String> = std::iter::once(name)
             .chain(args.iter().map(String::as_str))
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
-        let command = format!("{check} {}", quoted.join(" "));
-        match hooks::run(&self.suite.root, &command, hooks::GUARD_TIMEOUT).await {
+        let command = format!("{hook} {}", quoted.join(" "));
+        match hooks::run(&self.suite.root, &command, hooks::SEED_TIMEOUT).await {
             Ok(out) => Ok(out),
-            Err(e) => Ok(format!("check failed: {e:#}")),
+            Err(e) => Ok(format!("{kind} failed: {e:#}")),
         }
     }
 

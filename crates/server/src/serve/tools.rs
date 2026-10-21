@@ -872,6 +872,29 @@ impl Tools {
     }
 
     #[tool(
+        description = "Tester: have the other side act while you watch, as the suite names it (e.g. an owner revoking your access). Returns what the action printed."
+    )]
+    async fn act(
+        &self,
+        Parameters(p): Parameters<CheckDataParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let checked = self.hub.with_run(|run, now| {
+            run.running(&p.token)?;
+            run.call_started(now, &p.token);
+            Ok(())
+        });
+        if let Err(e) = checked {
+            return reply(Err(e));
+        }
+        let result = self.hub.project_hook("act", &p.name, &p.args).await;
+        let _ = self.hub.with_run(|run, now| {
+            run.call_finished(now, &p.token);
+            Ok(())
+        });
+        reply(result.map(|out| json!({ "output": out.trim() })))
+    }
+
+    #[tool(
         description = "Tester: one of the project's data checks, for outcomes the screen can't show (e.g. what was saved). Returns what the check printed, as evidence."
     )]
     async fn check_data(
@@ -886,7 +909,7 @@ impl Tools {
         if let Err(e) = checked {
             return reply(Err(e));
         }
-        let result = self.hub.check_data(&p.name, &p.args).await;
+        let result = self.hub.project_hook("check", &p.name, &p.args).await;
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, &p.token);
             Ok(())
