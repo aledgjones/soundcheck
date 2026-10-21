@@ -102,7 +102,7 @@ pub struct TokenParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
     pub token: String,
-    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`. `at:<x>,<y>` taps a point (points on iOS, pixels on Android) for a control `see` can't name.
+    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`. Last resort: `at:<x>,<y>` taps a point (points on iOS, pixels on Android), only for a control `see` can't name at all.
     pub target: String,
     /// Take the last match, e.g. a dialog's button that shares its label with the row behind it.
     #[serde(default)]
