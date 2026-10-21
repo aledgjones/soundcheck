@@ -46,6 +46,11 @@ pub trait Device {
         Err(self.unsupported("push"))
     }
 
+    /// Presses a hardware key by its web name (`ArrowRight`, `Enter`, `Escape`, `Home`…), as a keyboard or pedal would.
+    async fn press(&self, _key: &str) -> Result<()> {
+        Err(self.unsupported("press"))
+    }
+
     async fn keyboard_shown(&self) -> Result<bool> {
         Err(self.unsupported("keyboard"))
     }

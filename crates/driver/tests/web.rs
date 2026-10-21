@@ -18,8 +18,10 @@ const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><b
   <p id="taps">Taps 0</p>
   <p id="net">online</p>
   <p id="width"></p>
+  <p id="key">No key</p>
 </main>
 <script>
+  addEventListener('keydown', (e) => { document.getElementById('key').textContent = 'Key ' + e.key; });
   setInterval(() => {
     document.getElementById('net').textContent = navigator.onLine ? 'online' : 'offline';
     document.getElementById('width').textContent = 'Width ' + innerWidth;
@@ -85,6 +87,9 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
 
     driver.tap_burst(&m("Tap"), 5, 50).await.unwrap();
     driver.wait(&m("Taps 5"), 3000).await.unwrap();
+
+    driver.device.press("ArrowRight").await.unwrap();
+    driver.wait(&m("Key ArrowRight"), 3000).await.unwrap();
 
     driver.device.viewport(500, 700).await.unwrap();
     driver.wait(&m("Width 500"), 3000).await.unwrap();

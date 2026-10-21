@@ -280,6 +280,13 @@ pub enum Step {
     Goto {
         url: String,
     },
+    Press {
+        key: String,
+    },
+    /// Wait without doing anything, so a sequence's timing is the device's, not the agent's.
+    Pause {
+        ms: u64,
+    },
 }
 
 async fn step(d: &Driver<Web>, step: &Step) -> Result<String, DriverError> {
@@ -332,6 +339,19 @@ async fn step(d: &Driver<Web>, step: &Step) -> Result<String, DriverError> {
             let (x, y) = e.tap_point();
             d.device.hover_at(x, y).await?;
             format!("hovered {}", line(&e))
+        }
+        Step::Press { key } => {
+            d.device.press(key).await?;
+            format!("pressed {key}")
+        }
+        Step::Pause { ms } => {
+            if *ms > 30_000 {
+                return Err(DriverError::Invalid(format!(
+                    "pause takes milliseconds: {ms} is over 30000"
+                )));
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+            format!("paused {ms} ms")
         }
         Step::Goto { url } => {
             d.device.goto(url).await?;
@@ -784,6 +804,19 @@ impl Tools {
         .await
     }
 
+    #[tool(
+        description = "Tester: press a hardware key by its web name (ArrowRight, Enter, Escape, Home…), as a keyboard or page-turn pedal would."
+    )]
+    async fn press(
+        &self,
+        Parameters(p): Parameters<TextParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device.press(&p.text).await.map(|()| "pressed")
+        })
+        .await
+    }
+
     #[tool(description = "Tester: whether the on-screen keyboard is shown.")]
     async fn keyboard(
         &self,
@@ -918,7 +951,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, hover, goto), stopping at the first that fails. Returns what each step did."
+        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, hover, goto, press, pause), stopping at the first that fails; pause steps keep a sequence's timing on the device. Returns what each step did."
     )]
     async fn batch(
         &self,

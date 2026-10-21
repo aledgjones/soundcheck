@@ -421,6 +421,30 @@ impl Device for Web {
             .clone())
     }
 
+    async fn press(&self, key: &str) -> Result<()> {
+        let code = match key {
+            "Enter" => 13,
+            "Escape" => 27,
+            "Tab" => 9,
+            "Backspace" => 8,
+            "Space" | " " => 32,
+            "PageUp" => 33,
+            "PageDown" => 34,
+            "End" => 35,
+            "Home" => 36,
+            "ArrowLeft" => 37,
+            "ArrowUp" => 38,
+            "ArrowRight" => 39,
+            "ArrowDown" => 40,
+            other => {
+                return Err(DriverError::Invalid(format!(
+                    "{other} isn't a key soundcheck knows; use web key names such as ArrowRight or Enter"
+                )));
+            }
+        };
+        self.key(key, code).await
+    }
+
     async fn hover_at(&self, x: f64, y: f64) -> Result<()> {
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
