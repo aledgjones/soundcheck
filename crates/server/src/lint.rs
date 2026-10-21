@@ -128,9 +128,6 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 push(format!("title: {rule}"));
             }
         }
-        if title.contains(&f.seed) && f.seed.len() > 3 {
-            push("title: no seed names".into());
-        }
         if mechanics().any(|t| title.contains(t.name)) {
             push("title: no tool names".into());
         }

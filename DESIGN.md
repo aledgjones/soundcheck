@@ -316,7 +316,7 @@ Undo straight after the first stroke; undo twice quickly.
 - **Sections:** `## Goal` and `## Outcomes` (a `- ` list) are required; `## Probe around it` is optional, and so is `## Pinned`: exact steps, only where they guard a past bug or reach a control an agent can't discover.
 - **Each outcome is judged on its own** (held, failed, unsure, couldn't check), with evidence; the spec's result follows from them (3.3).
 - **A seen bug gets a regression spec:** more specific instructions, plus a probe around the old failure. Mechanics an agent can't do are driver tools the spec names; boundaries are seed scenarios.
-- **The title is the user's goal.** No tap paths, seed names or tool commands.
+- **The title is the user's goal.** No tap paths or tool commands.
 - **Outcomes are what a user would notice.** Exact copy only for destructive or blocking messages, and no layout details a design tweak would break.
 - **Platform differences go in `_feature.md` hints,** not separate specs.
 

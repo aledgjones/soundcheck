@@ -42,16 +42,16 @@ Erase across two strokes at once; change the eraser width first.
 
 ### Frontmatter
 
-| Key                 | Rule                                                                                                                                        |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `title`             | The user's goal in plain words, under 80 characters. No tap paths (`A > B`), code formatting, spec or ticket IDs, flags, seed or tool names |
-| `seed`              | A scenario from `suite.yaml`'s `seeds`. Every spec starts from its own full seed                                                            |
-| `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem  |
-| `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                               |
-| `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                          |
-| `tools`             | Optional driver tools beyond the basics: `tap-burst` (races), `network-drop` (offline and reconnect), `stress` (device load)                |
-| `past-bugs`         | Tickets this spec guards                                                                                                                    |
-| `proven-failing-on` | Builds where this spec caught a real bug. Only record what actually happened; never fill it in to look trustworthy                          |
+| Key                 | Rule                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `title`             | The user's goal in plain words, under 80 characters. No tap paths (`A > B`), code formatting, spec or ticket IDs, flags or tool names      |
+| `seed`              | A scenario from `suite.yaml`'s `seeds`. Every spec starts from its own full seed                                                           |
+| `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem |
+| `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                              |
+| `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                         |
+| `tools`             | Optional driver tools beyond the basics: `tap-burst` (races), `network-drop` (offline and reconnect), `stress` (device load)               |
+| `past-bugs`         | Tickets this spec guards                                                                                                                   |
+| `proven-failing-on` | Builds where this spec caught a real bug. Only record what actually happened; never fill it in to look trustworthy                         |
 
 ### Sections
 
