@@ -225,9 +225,11 @@ impl Hub {
                 if !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
                     let intercept = spec.front.tools.iter().any(|t| t == "network-drop");
+                    let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
                     self.on_device(platform, async |d| {
                         // Before the launch, so the app's connections go through the proxy that can freeze them.
                         d.device.intercept_network(intercept).await?;
+                        d.device.hardware_keyboard(hardware).await?;
                         Device::launch(&d.device).await?;
                         for label in &starts_on {
                             let m = Matcher::parse(label)

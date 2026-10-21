@@ -1,6 +1,6 @@
 //! The iOS simulator: reads through the reader (`readers/ios`, one long-lived accessibility session serving
-//! `axe describe-ui` JSON), with `axe describe-ui` as the fallback; input through AXe. Points everywhere but
-//! screenshots, which are in pixels.
+//! `axe describe-ui` JSON), with `axe describe-ui` as the fallback; input through the reader's held HID session.
+//! Points everywhere but screenshots, which are in pixels.
 
 use crate::Platform;
 use crate::device::{Device, DriverError, Health, Result};
@@ -138,6 +138,8 @@ pub struct Ios {
     launched: std::sync::Mutex<SystemTime>,
     /// How long the last launch took to show a screen, in milliseconds.
     last_launch_ms: std::sync::Mutex<Option<u64>>,
+    /// Whether the hardware keyboard is known to be connected, so typing needn't look for the on-screen one.
+    hardware_keyboard: std::sync::atomic::AtomicBool,
 }
 
 /// Health limits for the Mac that runs the simulator, and the app's launch.
@@ -170,8 +172,29 @@ fn key_centre(keys: &[Element], label: &str) -> Option<(f64, f64)> {
 }
 
 impl Ios {
+    /// Sends a script of input events through the reader's held HID session: about 0.1 s a tap, where starting
+    /// `axe` for each took about 1.3 s. The script's steps are the reader's (`d`, `u`, `w`, `k`, `kd`, `ku`).
+    async fn hid(&self, script: &str) -> Result<()> {
+        self.ensure_reader().await?;
+        let path = format!("/hid?{}", script.replace(' ', "%20"));
+        if self.reader_get(&path).await.is_ok() {
+            return Ok(());
+        }
+        // A reader from an older build has no HID endpoint, and one from before a simulator reboot has a dead
+        // session; a fresh one has neither problem.
+        self.stop_reader();
+        self.ensure_reader().await?;
+        self.reader_get(&path).await.map(|_| ())
+    }
+
     /// The screen's elements when the on-screen keyboard is up (its `space` and `shift` keys show), else none.
     async fn on_screen_keyboard(&self) -> Result<Option<Vec<Element>>> {
+        if self
+            .hardware_keyboard
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return Ok(None);
+        }
         let elements = self.read(true).await?;
         let up = ["space", "shift"]
             .iter()
@@ -253,6 +276,7 @@ impl Ios {
             reader,
             launched: std::sync::Mutex::new(SystemTime::now()),
             last_launch_ms: std::sync::Mutex::new(None),
+            hardware_keyboard: std::sync::atomic::AtomicBool::new(false),
         };
         ios.no_hardware_keyboard().await?;
         run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
@@ -448,6 +472,63 @@ async fn run(program: &str, args: &[&str]) -> Result<String> {
 }
 
 /// Points along a drag, about 10 apart, ending at `to`.
+/// The USB HID usage code that types `c` on a US keyboard, and whether it needs shift (as AXe's table).
+fn char_key(c: char) -> Option<(u32, bool)> {
+    const BASE: &str = "1234567890-=[]\\;'`,./";
+    const SHIFTED: &str = "!@#$%^&*()_+{}|:\"~<>?";
+    const CODES: [u32; 21] = [
+        30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 45, 46, 47, 48, 49, 51, 52, 53, 54, 55, 56,
+    ];
+    Some(match c {
+        'a'..='z' => (4 + (c as u32 - 'a' as u32), false),
+        'A'..='Z' => (4 + (c as u32 - 'A' as u32), true),
+        ' ' => (44, false),
+        '\n' => (40, false),
+        '\t' => (43, false),
+        c => match (BASE.find(c), SHIFTED.find(c)) {
+            (Some(i), _) => (CODES[i], false),
+            (_, Some(i)) => (CODES[i], true),
+            _ => return None,
+        },
+    })
+}
+
+/// A HID script that types `text`, or none if a character has no key. Keys sent back to back were dropped by a field
+/// that re-renders as it changes, so each waits a moment, still far quicker than a person.
+fn type_script(text: &str) -> Option<String> {
+    let mut steps = Vec::new();
+    for (i, c) in text.chars().enumerate() {
+        if i > 0 {
+            steps.push("w 30".to_string());
+        }
+        let (code, shift) = char_key(c)?;
+        if shift {
+            steps.push("kd 225".to_string());
+        }
+        steps.push(format!("k {code}"));
+        if shift {
+            steps.push("ku 225".to_string());
+        }
+    }
+    Some(steps.join(";"))
+}
+
+fn touch_script(points: &[(f64, f64)], hold_ms: u64, step_ms: u64) -> String {
+    let mut steps = Vec::new();
+    if let Some((x, y)) = points.first() {
+        steps.push(format!("d {x:.0} {y:.0}"));
+        steps.push(format!("w {hold_ms}"));
+    }
+    for (x, y) in points.iter().skip(1) {
+        steps.push(format!("d {x:.0} {y:.0}"));
+        steps.push(format!("w {step_ms}"));
+    }
+    if let Some((x, y)) = points.last() {
+        steps.push(format!("u {x:.0} {y:.0}"));
+    }
+    steps.join(";")
+}
+
 fn path(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
     let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / 10.0)
         .ceil()
@@ -470,79 +551,42 @@ impl Device for Ios {
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
-        // Both `axe tap` styles drop taps (one missed 10 of 20); a touch held for 80 ms missed none.
+        // A touch held for 80 ms registers as a tap every time; an instant down and up could be missed.
         self.hold_at(x, y, 80).await
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
-        let (x, y, delay) = (
-            format!("{x:.0}"),
-            format!("{y:.0}"),
-            format!("{}", ms as f64 / 1000.0),
-        );
-        self.axe(&[
-            "touch", "-x", &x, "-y", &y, "--down", "--up", "--delay", &delay,
-        ])
-        .await
-        .map(|_| ())
+        self.hid(&touch_script(&[(x, y)], ms, 0)).await
     }
 
     async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        // `axe drag` moves at once, so a long-press drag never starts; another `--down` moves the held touch.
-        let mut steps = vec![
-            format!("touch -x {:.0} -y {:.0} --down", from.0, from.1),
-            format!("sleep {}", hold_ms as f64 / 1000.0),
-        ];
-        for (x, y) in path(from, to) {
-            steps.push(format!("touch -x {x:.0} -y {y:.0} --down"));
-            steps.push("sleep 0.03".into());
-        }
-        steps.push("sleep 0.3".into());
-        steps.push(format!("touch -x {:.0} -y {:.0} --up", to.0, to.1));
-        let mut args = vec!["batch"];
-        for s in &steps {
-            args.extend(["--step", s.as_str()]);
-        }
-        self.axe(&args).await.map(|_| ())
+        let mut points = vec![from];
+        points.extend(path(from, to));
+        self.hid(&format!("{};w 300", touch_script(&points, hold_ms, 30)))
+            .await
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
-        let n = |v: f64| format!("{v:.0}");
-        let (x1, y1, x2, y2, d) = (
-            n(from.0),
-            n(from.1),
-            n(to.0),
-            n(to.1),
-            format!("{}", ms as f64 / 1000.0),
-        );
-        self.axe(&[
-            "swipe",
-            "--start-x",
-            &x1,
-            "--start-y",
-            &y1,
-            "--end-x",
-            &x2,
-            "--end-y",
-            &y2,
-            "--duration",
-            &d,
-        ])
-        .await
-        .map(|_| ())
+        let mut points = vec![from];
+        points.extend(path(from, to));
+        let step = ms / points.len().max(1) as u64;
+        self.hid(&touch_script(&points, 0, step)).await
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
-        // AXe types as a hardware keyboard, which iOS ignores while the simulator's is disconnected; then only the
-        // on-screen keys reach the field.
+        // Key events arrive as a hardware keyboard, which iOS ignores while the simulator's is disconnected (a spec
+        // with `keyboard: software`); then only the on-screen keys reach the field.
         if self.on_screen_keyboard().await?.is_some() {
             for c in text.chars() {
                 self.type_key(c).await?;
             }
             return Ok(());
         }
-        self.axe(&["type", text]).await?;
-        sleep(Duration::from_millis(300)).await;
+        let script = type_script(text).ok_or_else(|| {
+            DriverError::Invalid(format!("{text:?} has a character with no US key"))
+        })?;
+        self.hid(&script).await?;
+        sleep(Duration::from_millis(100)).await;
         Ok(())
     }
 
@@ -552,29 +596,19 @@ impl Device for Ios {
                 DriverError::NotFound("the on-screen keyboard's delete key".into())
             })?;
             // Backwards from the cursor, which `fill` puts at the end of the field.
-            for _ in 0..chars {
-                self.tap_at(delete.0, delete.1).await?;
-            }
-            return Ok(());
+            let tap = format!(
+                "d {:.0} {:.0};w 60;u {:.0} {:.0}",
+                delete.0, delete.1, delete.0, delete.1
+            );
+            let script = vec![tap; chars].join(";w 40;");
+            return self.hid(&script).await;
         }
-        // Select-all is ignored with the hardware keyboard off and a tap leaves the cursor mid-text, so delete
-        // forward and back from wherever it is.
-        let keys: Vec<String> = std::iter::repeat_n("76", chars)
-            .chain(std::iter::repeat_n("42", chars))
-            .map(str::to_string)
-            .collect();
-        // AXe takes at most 100 keys per sequence.
-        for chunk in keys.chunks(100) {
-            self.axe(&[
-                "key-sequence",
-                "--keycodes",
-                &chunk.join(","),
-                "--delay",
-                "0.02",
-            ])
-            .await?;
-        }
-        Ok(())
+        // A tap can leave the cursor mid-text, so delete forward and back from wherever it is.
+        let script = std::iter::repeat_n("k 76", chars)
+            .chain(std::iter::repeat_n("k 42", chars))
+            .collect::<Vec<_>>()
+            .join(";");
+        self.hid(&script).await
     }
 
     async fn launch(&self) -> Result<()> {
@@ -659,6 +693,20 @@ impl Device for Ios {
             .map_err(device)
     }
 
+    async fn hardware_keyboard(&self, on: bool) -> Result<()> {
+        let path = format!("/keyboard?hardware={}", if on { "on" } else { "off" });
+        self.ensure_reader().await?;
+        if self.reader_get(&path).await.is_err() {
+            // A reader from an older build answers pings but has no keyboard switch; a fresh one does.
+            self.stop_reader();
+            self.ensure_reader().await?;
+            self.reader_get(&path).await?;
+        }
+        self.hardware_keyboard
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+
     async fn press(&self, key: &str) -> Result<()> {
         let on_screen = match key {
             "Enter" | "Return" => Some("return"),
@@ -676,15 +724,12 @@ impl Device for Ios {
                 "{key} isn't a key soundcheck knows; use names such as ArrowRight or Enter"
             ))
         })?;
-        self.axe(&["key", &code.to_string()]).await.map(|_| ())
+        self.hid(&format!("k {code}")).await
     }
 
-    // Separate `axe touch` calls keep one touch held between them; another `--down` moves it.
+    // The HID session keeps one touch held between scripts; another down moves it.
     async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        let (x, y) = (format!("{x:.0}"), format!("{y:.0}"));
-        self.axe(&["touch", "-x", &x, "-y", &y, "--down"])
-            .await
-            .map(|_| ())
+        self.hid(&format!("d {x:.0} {y:.0}")).await
     }
 
     async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
@@ -692,10 +737,7 @@ impl Device for Ios {
     }
 
     async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        let (x, y) = (format!("{x:.0}"), format!("{y:.0}"));
-        self.axe(&["touch", "-x", &x, "-y", &y, "--up"])
-            .await
-            .map(|_| ())
+        self.hid(&format!("u {x:.0} {y:.0}")).await
     }
 
     async fn screen_size(&self) -> Result<(f64, f64)> {
@@ -761,17 +803,11 @@ impl Device for Ios {
     }
 
     async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
-        // One AXe process, so the gaps are timed there rather than across process start-ups.
-        let tap = format!("touch -x {x:.0} -y {y:.0} --down --up --delay 0.08");
-        let gap = format!("sleep {}", interval_ms as f64 / 1000.0);
-        let mut args = vec!["batch"];
-        for i in 0..count {
-            if i > 0 {
-                args.extend(["--step", gap.as_str()]);
-            }
-            args.extend(["--step", tap.as_str()]);
-        }
-        self.axe(&args).await.map(|_| ())
+        let script = (0..count)
+            .map(|_| format!("d {x:.0} {y:.0};w 80;u {x:.0} {y:.0}"))
+            .collect::<Vec<_>>()
+            .join(&format!(";w {interval_ms};"));
+        self.hid(&script).await
     }
 }
 

@@ -27,10 +27,22 @@ pub struct Frontmatter {
     pub model: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
+    /// `software` for a spec that needs the on-screen keyboard; otherwise a hardware keyboard is connected, so typing
+    /// is fast and the on-screen one stays hidden.
+    #[serde(default)]
+    pub keyboard: Keyboard,
     #[serde(default)]
     pub past_bugs: Vec<String>,
     #[serde(default)]
     pub proven_failing_on: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Keyboard {
+    #[default]
+    Hardware,
+    Software,
 }
 
 pub const SECTIONS: &[&str] = &["Goal", "Outcomes", "Probe around it", "Pinned"];

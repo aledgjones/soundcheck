@@ -132,7 +132,7 @@ fn the_page_shows_failures_findings_and_checks() {
         "The stroke stayed after Undo at 2.5× zoom.",
         "The screenshot shows the stroke after Undo.",
         "Checking</span>",
-        "· 1 finding</span>",
+        "<span class=\"chip small finding\">1 finding</span>",
         "Finding: The back arrow flickers on fast taps",
         "class=\"nowbar\"",
         "checking <b>annotations/001-draw</b>",

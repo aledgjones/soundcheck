@@ -230,20 +230,47 @@ fn anr_app(line: &str) -> Option<String> {
 }
 
 /// `input text` takes one word: spaces become %s, and the shell's own characters are escaped.
-fn input_text(text: &str) -> String {
+/// Text for a reader query string, as `URLDecoder` reads it back.
+fn url_encode(text: &str) -> String {
     let mut out = String::new();
-    for c in text.chars() {
-        match c {
-            ' ' => out.push_str("%s"),
-            '\'' | '"' | '\\' | '&' | '|' | ';' | '<' | '>' | '(' | ')' | '$' | '`' | '*' | '?'
-            | '[' | ']' | '#' | '~' | '!' | '{' | '}' => {
-                out.push('\\');
-                out.push(c);
-            }
-            c => out.push(c),
+    for b in text.bytes() {
+        if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
         }
     }
     out
+}
+
+/// A reader input script for one touch through `points`: down at the first, held `hold_ms`, moving through the rest
+/// `step_ms` apart, up at the last.
+fn touch_script(points: &[(f64, f64)], hold_ms: u64, step_ms: u64) -> String {
+    let mut steps = Vec::new();
+    if let Some((x, y)) = points.first() {
+        steps.push(format!("d {x:.0} {y:.0}"));
+        steps.push(format!("w {hold_ms}"));
+    }
+    for (x, y) in points.iter().skip(1) {
+        steps.push(format!("d {x:.0} {y:.0}"));
+        steps.push(format!("w {step_ms}"));
+    }
+    if let Some((x, y)) = points.last() {
+        steps.push(format!("u {x:.0} {y:.0}"));
+    }
+    steps.join(";")
+}
+
+fn path(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
+    let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / 10.0)
+        .ceil()
+        .max(1.0) as u32;
+    (1..=steps)
+        .map(|i| {
+            let t = f64::from(i) / f64::from(steps);
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+        .collect()
 }
 
 fn keycode(key: &str) -> Option<u32> {
@@ -397,6 +424,28 @@ impl Android {
         Ok(body.to_string())
     }
 
+    /// Runs a touch and key script through the reader's automation connection: one injected gesture with the
+    /// device keeping the timing, where `adb shell input` costs a process start per action.
+    async fn input(&self, script: &str) -> Result<()> {
+        self.reader_call(&format!("/input?{}", url_encode(script)))
+            .await
+    }
+
+    async fn reader_call(&self, path: &str) -> Result<()> {
+        self.ensure_reader().await?;
+        if self.reader_get(path).await.is_ok() {
+            return Ok(());
+        }
+        // A reader installed from an older build has no input endpoints: install this one and start it afresh.
+        let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
+        if let Some(apk) = &self.reader_apk {
+            self.adb(&["install", "-r", &apk.display().to_string()])
+                .await?;
+        }
+        self.ensure_reader().await?;
+        self.reader_get(path).await.map(|_| ())
+    }
+
     /// Starts the reader if it isn't answering. Only one UI automation client can connect at a time.
     async fn ensure_reader(&self) -> Result<()> {
         let port = format!("tcp:{READER_PORT}");
@@ -520,59 +569,33 @@ impl Device for Android {
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
-        self.shell(&format!("input tap {x:.0} {y:.0}"))
-            .await
-            .map(|_| ())
+        self.hold_at(x, y, 80).await
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
-        self.shell(&format!(
-            "input motionevent DOWN {x:.0} {y:.0}; sleep {}; input motionevent UP {x:.0} {y:.0}",
-            ms as f64 / 1000.0
-        ))
-        .await
-        .map(|_| ())
+        self.input(&touch_script(&[(x, y)], ms, 0)).await
     }
 
     async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        // One shell call, so adb round trips don't break up the gesture; `input swipe` never holds first.
-        let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / 10.0)
-            .ceil()
-            .max(1.0) as u32;
-        let moves: Vec<String> = (1..=steps)
-            .map(|i| {
-                let t = f64::from(i) / f64::from(steps);
-                format!(
-                    "input motionevent MOVE {:.0} {:.0}",
-                    from.0 + (to.0 - from.0) * t,
-                    from.1 + (to.1 - from.1) * t
-                )
-            })
-            .collect();
-        self.shell(&format!(
-            "input motionevent DOWN {:.0} {:.0}; sleep {}; {}; sleep 0.3; input motionevent UP {:.0} {:.0}",
-            from.0,
-            from.1,
-            hold_ms as f64 / 1000.0,
-            moves.join("; "),
-            to.0,
-            to.1
-        ))
-        .await
-        .map(|_| ())
+        let mut points = vec![from];
+        points.extend(path(from, to));
+        // A pause at the end, so the drop isn't read as a fling.
+        let mut script = touch_script(&points, hold_ms, 16);
+        if let Some(up) = script.rfind(";u ") {
+            script.insert_str(up, ";w 300");
+        }
+        self.input(&script).await
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
-        self.shell(&format!(
-            "input swipe {:.0} {:.0} {:.0} {:.0} {ms}",
-            from.0, from.1, to.0, to.1
-        ))
-        .await
-        .map(|_| ())
+        let mut points = vec![from];
+        points.extend(path(from, to));
+        let step = ms / points.len() as u64;
+        self.input(&touch_script(&points, step, step)).await
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
-        self.shell(&format!("input text {}", input_text(text)))
+        self.reader_call(&format!("/type?{}", url_encode(text)))
             .await?;
         sleep(Duration::from_millis(300)).await;
         Ok(())
@@ -580,9 +603,7 @@ impl Device for Android {
 
     async fn clear(&self, _chars: usize) -> Result<()> {
         // Select all (ctrl+A), then delete.
-        self.shell("input keycombination 113 29; input keyevent 67")
-            .await
-            .map(|_| ())
+        self.input("kd 113;k 29;ku 113;k 67").await
     }
 
     async fn launch(&self) -> Result<()> {
@@ -675,27 +696,20 @@ impl Device for Android {
                 "{key} isn't a key soundcheck knows; use names such as ArrowRight or Enter"
             ))
         })?;
-        self.shell(&format!("input keyevent {code}"))
-            .await
-            .map(|_| ())
+        self.input(&format!("k {code}")).await
     }
 
+    // The reader keeps the touch held between calls: a second `d` moves it.
     async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        self.shell(&format!("input motionevent DOWN {x:.0} {y:.0}"))
-            .await
-            .map(|_| ())
+        self.input(&format!("d {x:.0} {y:.0}")).await
     }
 
     async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
-        self.shell(&format!("input motionevent MOVE {x:.0} {y:.0}"))
-            .await
-            .map(|_| ())
+        self.input(&format!("d {x:.0} {y:.0}")).await
     }
 
     async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        self.shell(&format!("input motionevent UP {x:.0} {y:.0}"))
-            .await
-            .map(|_| ())
+        self.input(&format!("u {x:.0} {y:.0}")).await
     }
 
     async fn screen_size(&self) -> Result<(f64, f64)> {
@@ -725,13 +739,11 @@ impl Device for Android {
     }
 
     async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
-        // One shell, so the device keeps the timing; each `input tap` itself takes a little time on the device.
-        let taps: Vec<String> = (0..count)
-            .map(|_| format!("input tap {x:.0} {y:.0}"))
-            .collect();
-        self.shell(&taps.join(&format!("; sleep {}; ", interval_ms as f64 / 1000.0)))
+        // One script, so the device keeps the timing.
+        let tap = format!("d {x:.0} {y:.0};w 40;u {x:.0} {y:.0}");
+        let taps: Vec<String> = (0..count).map(|_| tap.clone()).collect();
+        self.input(&taps.join(&format!(";w {};", interval_ms.saturating_sub(40))))
             .await
-            .map(|_| ())
     }
 
     async fn intercept_network(&self, on: bool) -> Result<()> {
@@ -981,8 +993,16 @@ mod tests {
     }
 
     #[test]
-    fn typed_text_survives_the_shell() {
-        assert_eq!(input_text("E2E Seed Renamed"), "E2E%sSeed%sRenamed");
-        assert_eq!(input_text("Bach's (1)"), r"Bach\'s%s\(1\)");
+    fn typed_text_survives_the_query_string() {
+        assert_eq!(url_encode("E2E Seed Renamed"), "E2E%20Seed%20Renamed");
+        assert_eq!(url_encode("Bach's (1)+é"), "Bach%27s%20%281%29%2B%C3%A9");
+    }
+
+    #[test]
+    fn a_drag_holds_then_moves() {
+        assert_eq!(
+            touch_script(&[(0.0, 0.0), (10.0, 0.0)], 500, 16),
+            "d 0 0;w 500;d 10 0;w 16;u 10 0"
+        );
     }
 }

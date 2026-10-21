@@ -5,6 +5,11 @@ import android.app.Instrumentation;
 import android.app.UiAutomation;
 import android.graphics.Rect;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.view.InputDevice;
+import android.view.KeyCharacterMap;
+import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.WindowManager;
 import android.view.accessibility.AccessibilityNodeInfo;
 import java.io.BufferedReader;
@@ -13,11 +18,14 @@ import java.io.OutputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.TimeoutException;
 
 // Keeps one UiAutomation connection open and serves the active window's tree as `uiautomator dump` XML on
-// 127.0.0.1:9018 (GET /dump, GET /dump?all, GET /ping answering "ok soundcheck"), so each read skips uiautomator's ~3.5 s start-up. Emulator-only test tool.
+// 127.0.0.1:9018 (GET /dump, GET /dump?all, GET /ping answering "ok soundcheck"), so each read skips uiautomator's ~3.5 s start-up.
+// Input goes through the same connection (GET /input?<script>, GET /type?<text>) rather than an `adb shell input` per
+// action. Emulator-only test tool.
 public class Reader extends Instrumentation {
   private static final int PORT = 9018;
   private UiAutomation automation;
@@ -66,6 +74,22 @@ public class Reader extends Instrumentation {
         status = 500;
         body = String.valueOf(e);
       }
+    } else if (request != null
+        && (request.startsWith("GET /input?") || request.startsWith("GET /type?"))) {
+      String query = request.substring(request.indexOf('?') + 1);
+      int end = query.indexOf(' ');
+      query = URLDecoder.decode(end < 0 ? query : query.substring(0, end), StandardCharsets.UTF_8);
+      try {
+        if (request.startsWith("GET /input?")) {
+          input(query);
+        } else {
+          type(query);
+        }
+        body = "ok";
+      } catch (Exception e) {
+        status = 500;
+        body = String.valueOf(e);
+      }
     } else if (request != null && request.startsWith("GET /ping")) {
       body = "ok soundcheck";
     } else {
@@ -80,6 +104,65 @@ public class Reader extends Instrumentation {
             .getBytes(StandardCharsets.UTF_8));
     out.write(bytes);
     out.flush();
+  }
+
+  // When the held touch went down, or 0 when no touch is held; a second `d` moves it.
+  private long downTime;
+
+  // A script of steps separated by `;` (the same as the iOS reader's): `d x y` touch down, or move while down; `u x y`
+  // touch up; `w ms` wait; `k code` key press; `kd code` / `ku code` key down and up. Codes are Android key codes.
+  private void input(String script) throws Exception {
+    for (String step : script.split(";")) {
+      String[] p = step.trim().split(" ");
+      switch (p[0]) {
+        case "d" -> touch(downTime == 0 ? MotionEvent.ACTION_DOWN : MotionEvent.ACTION_MOVE, p);
+        case "u" -> touch(MotionEvent.ACTION_UP, p);
+        case "w" -> Thread.sleep(Long.parseLong(p[1]));
+        case "k" -> {
+          key(KeyEvent.ACTION_DOWN, Integer.parseInt(p[1]));
+          key(KeyEvent.ACTION_UP, Integer.parseInt(p[1]));
+        }
+        case "kd" -> key(KeyEvent.ACTION_DOWN, Integer.parseInt(p[1]));
+        case "ku" -> key(KeyEvent.ACTION_UP, Integer.parseInt(p[1]));
+        default -> throw new IllegalArgumentException("bad step: " + step);
+      }
+    }
+  }
+
+  private void touch(int action, String[] p) {
+    long now = SystemClock.uptimeMillis();
+    if (action == MotionEvent.ACTION_DOWN) {
+      downTime = now;
+    }
+    MotionEvent e =
+        MotionEvent.obtain(downTime, now, action, Float.parseFloat(p[1]), Float.parseFloat(p[2]), 0);
+    e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+    automation.injectInputEvent(e, true);
+    e.recycle();
+    if (action == MotionEvent.ACTION_UP) {
+      downTime = 0;
+    }
+  }
+
+  private void key(int action, int code) {
+    long now = SystemClock.uptimeMillis();
+    automation.injectInputEvent(new KeyEvent(now, now, action, code, 0), true);
+  }
+
+  // Each character as the keys that type it (shift included), from the device's own key map. Keys sent back to back
+  // were dropped by a field that re-renders as it changes, so each key down waits a moment.
+  private void type(String text) throws Exception {
+    KeyEvent[] events =
+        KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD).getEvents(text.toCharArray());
+    if (events == null) {
+      throw new IllegalArgumentException("no keys type " + text);
+    }
+    for (KeyEvent e : events) {
+      if (e.getAction() == KeyEvent.ACTION_DOWN) {
+        Thread.sleep(30);
+      }
+      automation.injectInputEvent(KeyEvent.changeTimeRepeat(e, SystemClock.uptimeMillis(), 0), true);
+    }
   }
 
   private String dump(boolean all) {

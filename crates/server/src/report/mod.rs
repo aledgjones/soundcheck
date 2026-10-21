@@ -452,23 +452,28 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
         .next()
         .unwrap_or("");
     let mut attention = false;
-    let mut finding_count = 0;
+    // Findings belong to the check, not one platform's result: one pill by the title counts them all.
+    let findings: Vec<_> = shown
+        .iter()
+        .flat_map(|p| findings_for(page, &spec.id, *p))
+        .collect();
+    let open_findings = findings.iter().filter(|f| f.status == Status::Open).count();
+    let pill = match findings.len() {
+        0 => String::new(),
+        n => format!(
+            "<span class=\"chip small{}\">{n} finding{}</span>",
+            if open_findings > 0 {
+                " finding"
+            } else {
+                " muted"
+            },
+            if n == 1 { "" } else { "s" }
+        ),
+    };
     let mut cells = String::new();
     for p in shown {
         let r = state.rows.get(&(spec.id.clone(), *p));
-        let mut c = result_cell(r);
-        let n = findings_for(page, &spec.id, *p).len();
-        if n > 0 {
-            finding_count += n;
-            c = c.replacen(
-                "</span>",
-                &format!(
-                    "<span class=\"hint\">· {n} finding{}</span></span>",
-                    if n == 1 { "" } else { "s" }
-                ),
-                1,
-            );
-        }
+        let c = result_cell(r);
         if let Some(r) = r
             && matches!(
                 r.row,
@@ -482,7 +487,7 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
         }
         cells.push_str(&c);
     }
-    attention |= finding_count > 0;
+    attention |= open_findings > 0;
 
     let with_detail: Vec<&(Platform, &RowRecord)> = records
         .iter()
@@ -507,7 +512,7 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
         )
     });
     format!(
-        "<details class=\"check\" id=\"{}\"{}{}><summary><span class=\"cid\" title=\"{}\">{}</span><span class=\"ctitle\">{}</span>{cells}</summary>{}</details>",
+        "<details class=\"check\" id=\"{}\"{}{}><summary><span class=\"cid\" title=\"{}\">{}</span><span class=\"ctitle\">{}{pill}</span>{cells}</summary>{}</details>",
         anchor(&spec.id),
         if attention { " data-attn" } else { "" },
         if open { " open" } else { "" },

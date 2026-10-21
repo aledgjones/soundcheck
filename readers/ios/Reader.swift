@@ -27,6 +27,7 @@ final class Reader {
 
   let udid: String
   var simulator: FBSimulator?
+  var hid: FBSimulatorHID?
 
   init(udid: String) {
     self.udid = udid
@@ -70,6 +71,60 @@ final class Reader {
       }
     }
     return latest
+  }
+
+  // Sends a script of input events through one held HID session, rather than starting `axe` per touch (~1.2 s each).
+  // Steps are separated by `;`: `d x y` touch down (or move, while down), `u x y` touch up, `w ms` wait, `k code`
+  // key press, `kd code` / `ku code` key down and up.
+  func sendHID(_ script: String) async throws {
+    guard let simulator else {
+      throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+    }
+    if hid == nil {
+      hid = try await simulator.connectToHID()
+    }
+    guard let hid else { return }
+    var events: [FBSimulatorHIDEvent] = []
+    for step in script.split(separator: ";") {
+      let parts = step.split(separator: " ")
+      let n = parts.dropFirst().compactMap { Double($0) }
+      switch (parts.first, n.count) {
+      case ("d", 2): events.append(.touch(direction: .down, x: n[0], y: n[1]))
+      case ("u", 2): events.append(.touch(direction: .up, x: n[0], y: n[1]))
+      case ("w", 1): events.append(.delay(n[0] / 1000))
+      case ("k", 1): events.append(.shortKeyPress(UInt32(n[0])))
+      case ("kd", 1): events.append(.keyboard(direction: .down, keyCode: UInt32(n[0])))
+      case ("ku", 1): events.append(.keyboard(direction: .up, keyCode: UInt32(n[0])))
+      default:
+        throw NSError(domain: "axe-reader", code: 5, userInfo: [NSLocalizedDescriptionKey: "Bad step: \(step)"])
+      }
+    }
+    do {
+      try await FBSimulatorHIDEvent.composite(events).sendAsync(on: hid)
+    } catch {
+      // A session from before a simulator reboot is dead; the next script opens a fresh one.
+      self.hid = nil
+      throw error
+    }
+  }
+
+  // What Xcode's Device Manager toggles: with it off, the on-screen keyboard shows and iOS ignores AXe's typing, which
+  // arrives as a hardware keyboard. CoreSimulator's SimDevice method is private, so it's called through the runtime.
+  func setHardwareKeyboard(_ enabled: Bool) throws {
+    guard let device = simulator?.value(forKey: "device") as? NSObject else {
+      throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+    }
+    let selector = NSSelectorFromString("setHardwareKeyboardEnabled:keyboardType:error:")
+    guard device.responds(to: selector) else {
+      throw NSError(domain: "axe-reader", code: 3, userInfo: [NSLocalizedDescriptionKey: "No hardware keyboard switch"])
+    }
+    typealias Set = @convention(c) (NSObject, Selector, Bool, UInt32, AutoreleasingUnsafeMutablePointer<NSError?>?)
+      -> Bool
+    let set = unsafeBitCast(device.method(for: selector), to: Set.self)
+    var error: NSError?
+    if !set(device, selector, enabled, 0, &error) {
+      throw error ?? NSError(domain: "axe-reader", code: 4, userInfo: [NSLocalizedDescriptionKey: "Switch refused"])
+    }
   }
 
   static func withDefaults(_ info: Any) -> Any {
@@ -136,6 +191,24 @@ struct Main {
           if line.hasPrefix("GET /describe") {
             do {
               body = try await reader.describe(lean: line.hasPrefix("GET /describe?lean"))
+            } catch {
+              status = "500 Error"
+              body = "\(error)".data(using: .utf8)!
+            }
+          } else if line.hasPrefix("GET /hid?") {
+            let query = String(line.dropFirst("GET /hid?".count).prefix { $0 != " " })
+            let script = query.removingPercentEncoding ?? query
+            do {
+              try await reader.sendHID(script)
+              body = "ok".data(using: .utf8)!
+            } catch {
+              status = "500 Error"
+              body = "\(error)".data(using: .utf8)!
+            }
+          } else if line.hasPrefix("GET /keyboard?hardware=") {
+            do {
+              try reader.setHardwareKeyboard(line.hasPrefix("GET /keyboard?hardware=on"))
+              body = "ok".data(using: .utf8)!
             } catch {
               status = "500 Error"
               body = "\(error)".data(using: .utf8)!

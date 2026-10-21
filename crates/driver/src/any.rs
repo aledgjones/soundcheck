@@ -101,6 +101,9 @@ impl Device for AnyDevice {
     async fn intercept_network(&self, on: bool) -> Result<()> {
         each!(self, d => d.intercept_network(on).await)
     }
+    async fn hardware_keyboard(&self, on: bool) -> Result<()> {
+        each!(self, d => d.hardware_keyboard(on).await)
+    }
     async fn network_drop(&self, seconds: u64) -> Result<()> {
         each!(self, d => d.network_drop(seconds).await)
     }

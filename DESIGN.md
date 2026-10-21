@@ -226,7 +226,7 @@ Nothing in a run may wait for a human:
 ### 4.3 Platforms
 
 - **Android:** a persistent reader, an instrumentation APK that holds one `UiAutomation` connection and serves the tree over `adb forward`, plus adb for input. `uiautomator dump` is the fallback. Reads take 10–140 ms against about 3.5 s for `uiautomator dump`.
-- **iOS:** a persistent Swift reader built on AXe's code, which keeps one simulator accessibility session open, plus AXe for touches and typing. `axe describe-ui` is the fallback. About 0.25 s per read, which is the simulator's own floor.
+- **iOS:** a persistent Swift reader built on AXe's code, which keeps one simulator accessibility session and one HID session open, for reads and for all input. `axe describe-ui` is the fallback for reads only. About 0.25 s per read, which is the simulator's own floor, and 0.1 s per tap. It also connects and disconnects the simulator's hardware keyboard (CoreSimulator's `setHardwareKeyboardEnabled`): connected for every spec unless it says `keyboard: software`.
 - **Web:** `chromiumoxide` over the Chrome DevTools protocol, with Chrome's accessibility tree as the element model. It's chosen to keep one binary; we write our own waiting and snapshot code. Chrome runs headless; `soundcheck run --headed` shows it in a window to watch (look only: a click or resize can steer a test).
 - **Readers** are built by the soundcheck build (their `build.sh` scripts) and embedded in the binary. The server installs, starts and supervises them:
   - a timeout on every call;
@@ -234,9 +234,9 @@ Nothing in a run may wait for a human:
   - after a device reboot, the forwards are restored.
 - **Long-lived at both ends.** The readers keep one accessibility connection open on the device, and the server keeps one connection to each reader, so a step never starts a process. Today's speed-up came from exactly this for reads: each `ui.mjs` call still started Node, ran the guard and set up adb.
 - **Input goes through the readers too.** Today every action starts a process: an Android tap is `adb shell input tap` (0.7–0.8 s, and `fill` 2.0 s, measured 2026-10-20), and each iOS touch is a new `axe` process. The readers take input over the same connection instead:
-  - **Android:** `UiAutomation.injectInputEvent` inside the reader, so taps, drags and holds cost milliseconds, and `tap-burst` intervals are timed on the device rather than across adb round trips;
-  - **iOS:** the reader keeps the HID connection open for touches and typing, as it does for reads.
-  - **Before it replaces adb and `axe`,** prove that injected input still reproduces timing races the way raw taps did: rerun a race check that has caught a real bug, on that bug's build. Maestro's settling once hid exactly such a race. adb and `axe` stay as fallbacks.
+  - **Android (done 2026-10-21):** `UiAutomation.injectInputEvent` inside the reader (`/input` scripts in the iOS reader's step format, `/type` through the device's key map), so taps, drags and holds cost milliseconds, and `tap-burst` intervals are timed on the device rather than across adb round trips. No `adb shell input` fallback; an older reader on the device is replaced;
+  - **iOS (done 2026-10-21):** the reader keeps the HID connection open for touches and typing, as it does for reads: a tap fell from about 1.3 s through `axe` to 0.1 s, and a `fill` from 15–58 s to 3–5 s. There's no `axe` fallback for input: a gap is a bug to fix.
+  - **Still owed:** prove that injected input reproduces timing races the way raw taps did: rerun a race check that has caught a real bug, on that bug's build. Maestro's settling once hid exactly such a race.
 - **Parity tests:** every reader against the platform's own tool (`uiautomator`, `axe`, Chrome's snapshot), on a fixed screen set that includes overlays, sheets, dialogs, menus and screens with the keyboard up. A reader change ships only after it passes.
 
 ### 4.4 Ruled out

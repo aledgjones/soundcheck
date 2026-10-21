@@ -10,7 +10,7 @@ The design, and the reasons behind it, are in [DESIGN.md](DESIGN.md).
 - **The run:** a journal and its row states, review, attempts, stalls, fix builds mid-run, and the verdict and triage.
 - **The server:** MCP over local HTTP, the event stream, the live page, the runs index, and exports.
 - **Hooks:** guard, seed, build identity, and the web app's start command.
-- **Drivers:** web (its own headless Chrome), Android (emulators, through a persistent reader APK, with adb for input) and iOS (simulators, through a persistent reader, with AXe for input), and evidence capture on failures.
+- **Drivers:** web (its own headless Chrome), Android (emulators, through a persistent reader APK, with adb for input) and iOS (simulators, through a persistent reader for reads and input), and evidence capture on failures.
 - **The Claude Code plugin:** MCP config, the tester agent, and the `run`, `setup` and `create-test` skills.
 
 ## Install

@@ -171,7 +171,13 @@ impl<D: Device> Driver<D> {
                 .read(false)
                 .await?
                 .iter()
-                .any(|e| e.value.as_deref() == Some(text) || e.label == text);
+                // Case aside: the system capitalises a field's words or sentences as a person types, too.
+                .any(|e| {
+                    e.value
+                        .as_deref()
+                        .is_some_and(|v| v.eq_ignore_ascii_case(text))
+                        || e.label.eq_ignore_ascii_case(text)
+                });
             if landed {
                 return Ok(());
             }

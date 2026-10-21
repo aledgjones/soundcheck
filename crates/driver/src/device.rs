@@ -128,6 +128,11 @@ pub trait Device {
     async fn intercept_network(&self, _on: bool) -> Result<()> {
         Ok(())
     }
+    /// Connects or disconnects the device's hardware keyboard: connected, typing is fast; disconnected, the on-screen
+    /// keyboard shows. Called before the app launches; a platform without one accepts and does nothing.
+    async fn hardware_keyboard(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
     async fn network_drop(&self, _seconds: u64) -> Result<()> {
         Err(self.unsupported("network-drop"))
     }
