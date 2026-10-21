@@ -206,7 +206,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     assert_eq!(reviewed["reviewed"], "annotations/001-draw");
     let status = call(&client, "status", json!({})).await;
     assert_eq!(status["verdict"]["status"], "blocked");
-    assert_eq!(status["problems"][0]["kind"], "blocker");
+    assert_eq!(status["problems"][0]["kind"], "failure");
     assert_eq!(
         status["problems"][0]["title"],
         "Undo leaves the stroke on screen"

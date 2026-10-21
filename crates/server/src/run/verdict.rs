@@ -7,7 +7,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VerdictStatus {
-    /// An open blocker.
+    /// An open failure.
     Blocked,
     /// Something unsettled: a finding to decide, a spec not run, a result still being checked.
     NotReady,
@@ -45,7 +45,7 @@ pub fn verdict(state: &State) -> Verdict {
             .filter(|p| p.kind == kind && p.status == Status::Open)
             .count()
     };
-    let blockers = open(ProblemKind::Blocker);
+    let failures = open(ProblemKind::Failure);
     let findings = open(ProblemKind::Finding);
 
     let mut reasons = Vec::new();
@@ -58,13 +58,13 @@ pub fn verdict(state: &State) -> Verdict {
             });
         }
     };
-    say(blockers, "1 blocker", "blockers");
+    say(failures, "1 failure", "failures");
     say(findings, "1 finding to decide", "findings to decide");
     say(harness_blocked, "1 blocked", "blocked");
     say(checking, "1 being checked", "being checked");
     say(not_run, "1 not run yet", "not run yet");
 
-    let status = if blockers > 0 {
+    let status = if failures > 0 {
         VerdictStatus::Blocked
     } else if reasons.is_empty() {
         VerdictStatus::Ready

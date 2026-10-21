@@ -37,7 +37,7 @@ pub enum Final {
 #[serde(rename_all = "lowercase")]
 pub enum ProblemKind {
     /// Blocks the release until triaged: every upheld FAIL, including a test the app stopped.
-    Blocker,
+    Failure,
     /// Doesn't block but needs a decision: outside the check, or not reproduced.
     Finding,
 }
@@ -46,7 +46,7 @@ pub enum ProblemKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Cause {
-    /// The app stopped it (a crash, a broken screen): the row is filed FAIL, with a blocker.
+    /// The app stopped it (a crash, a broken screen): the row is filed FAIL, and its problem is a failure.
     App,
     /// The environment or harness did (a missing label, a tool that can't reach a control): BLOCKED, with a note.
     Harness,
@@ -100,7 +100,7 @@ impl Posted {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "call", rename_all = "kebab-case")]
 pub enum Call {
-    /// The evidence is conclusive: file the claim. A FAIL becomes a blocker, which needs a plain-words title; a
+    /// The evidence is conclusive: file the claim. A FAIL becomes a failure, which needs a plain-words title; a
     /// BLOCKED needs its cause, and a title too when the app caused it.
     Uphold {
         title: Option<String>,
@@ -113,7 +113,7 @@ pub enum Call {
     /// Resolve an Unsure from the evidence.
     Judge {
         result: Final,
-        /// Needed when the result is FAIL: the blocker's title.
+        /// Needed when the result is FAIL: the problem's title.
         title: Option<String>,
     },
     /// Still unclear after verifying: BLOCKED, and the spec needs rewording.

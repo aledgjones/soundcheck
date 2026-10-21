@@ -298,7 +298,9 @@ impl Run {
         let (attempt, claim) = (*attempt, *claim);
         match (&call, claim) {
             (Call::Uphold { title, .. }, Claim::Fail) if blank(title) => {
-                bail!("upholding a FAIL makes a blocker: give it a title in plain words")
+                bail!(
+                    "upholding a FAIL lists it in Problems as a failure: give it a title in plain words"
+                )
             }
             (Call::Uphold { cause: None, .. }, Claim::Blocked) => {
                 bail!("upholding a BLOCKED needs its cause: app or harness")
@@ -310,7 +312,9 @@ impl Run {
                 },
                 Claim::Blocked,
             ) if blank(title) => {
-                bail!("the app caused it, so it's a blocker: give it a title in plain words")
+                bail!(
+                    "the app stopped the test, so it failed: give the failure a title in plain words"
+                )
             }
             (Call::Uphold { .. }, Claim::Unsure) => {
                 bail!("an Unsure can't be upheld: judge it, verify it or mark the spec unclear")
@@ -327,7 +331,9 @@ impl Run {
                 },
                 _,
             ) if blank(title) => {
-                bail!("judging FAIL makes a blocker: give it a title in plain words")
+                bail!(
+                    "judging FAIL lists it in Problems as a failure: give it a title in plain words"
+                )
             }
             (
                 Call::Judge {
@@ -616,7 +622,7 @@ impl Run {
 
     /// What stops the run finishing: anything running, waiting for review or queued for another attempt.
     pub fn finish_blockers(&self) -> Vec<String> {
-        let mut blockers: Vec<String> = self
+        let mut failures: Vec<String> = self
             .state
             .rows
             .iter()
@@ -629,20 +635,20 @@ impl Run {
                 _ => None,
             })
             .collect();
-        blockers.extend(self.state.pending_finds.iter().map(|f| {
+        failures.extend(self.state.pending_finds.iter().map(|f| {
             format!(
                 "side find {} on {} ({}) needs review",
                 f.id, f.spec, f.platform
             )
         }));
-        blockers
+        failures
     }
 
     pub fn finish(&mut self, now: u64) -> Result<ResultCounts> {
         self.open_for_commands()?;
-        let blockers = self.finish_blockers();
-        if !blockers.is_empty() {
-            bail!("can't finish yet: {}", blockers.join("; "));
+        let failures = self.finish_blockers();
+        if !failures.is_empty() {
+            bail!("can't finish yet: {}", failures.join("; "));
         }
         let mut counts = ResultCounts::default();
         for r in self.state.rows.values() {
@@ -883,23 +889,23 @@ impl State {
                     attempt: *attempt,
                     reason: reason.clone(),
                 };
-                // Every problem a review makes is a blocker: findings come only from side finds and verifications.
-                let blocker = |title: &Option<String>, answers: &[Answer]| {
+                // Every problem a review makes is a failure; findings come only from side finds and verifications.
+                let failure = |title: &Option<String>, answers: &[Answer]| {
                     title.clone().map(|t| (t, summary(answers)))
                 };
                 let (row, problem): (Row, Option<(String, String)>) = match call {
                     Call::Uphold { title, cause } => match claim {
-                        Claim::Fail => (file(Final::Fail), blocker(title, &[Answer::Failed])),
+                        Claim::Fail => (file(Final::Fail), failure(title, &[Answer::Failed])),
                         // BLOCKED means only that the environment or harness stopped the test; if the app did, it failed.
                         _ if *cause == Some(Cause::App) => {
-                            (file(Final::Fail), blocker(title, &[Answer::CouldntCheck]))
+                            (file(Final::Fail), failure(title, &[Answer::CouldntCheck]))
                         }
                         _ => (file(Final::Blocked), None),
                     },
                     Call::Judge { result, title } => (
                         file(*result),
                         if *result == Final::Fail {
-                            blocker(title, &[Answer::Unsure, Answer::Failed])
+                            failure(title, &[Answer::Unsure, Answer::Failed])
                         } else {
                             None
                         },
@@ -945,7 +951,7 @@ impl State {
                         spec: spec.clone(),
                         platform: *platform,
                         attempt: *attempt,
-                        kind: ProblemKind::Blocker,
+                        kind: ProblemKind::Failure,
                         source: ProblemSource::Row,
                         title,
                         detail,

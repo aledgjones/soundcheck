@@ -122,7 +122,7 @@ fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
         .unwrap();
     assert_eq!(result(&run, DRAW, Android), Some(Final::Fail));
     let problem = &run.state().problems[0];
-    assert_eq!(problem.kind, ProblemKind::Blocker);
+    assert_eq!(problem.kind, ProblemKind::Failure);
     assert_eq!(problem.title, "Undo leaves the stroke on screen");
     assert_eq!(problem.detail, "Undo removes the stroke: saw outcome 0");
     assert!(!problem.verified);
@@ -575,7 +575,7 @@ fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
     pass(&mut run, 20, BACK, Android);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::Blocked);
-    assert_eq!(v.reasons, ["1 blocker"]);
+    assert_eq!(v.reasons, ["1 failure"]);
 
     run.finish(30).unwrap();
     let err = run
@@ -655,7 +655,7 @@ fn a_duplicate_follows_its_original() {
     );
     run.triage(30, 2, Decision::Duplicate { of: 1 }, "same undo bug on iOS")
         .unwrap();
-    assert_eq!(run.verdict().reasons[0], "1 blocker");
+    assert_eq!(run.verdict().reasons[0], "1 failure");
     assert!(
         run.triage(31, 1, Decision::Duplicate { of: 2 }, "loop")
             .is_err()
@@ -905,7 +905,7 @@ fn each_build_gets_a_fresh_attempt_budget() {
 }
 
 #[test]
-fn a_blocked_needs_its_cause_and_an_app_cause_is_a_blocker() {
+fn a_blocked_needs_its_cause_and_an_app_cause_is_a_failure() {
     let (mut run, _) = open("blocked-cause");
     let t = run.dispatch(1, BACK, Android, brief).unwrap();
     run.post(2, &t, judged(&[Answer::CouldntCheck])).unwrap();
@@ -920,7 +920,7 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_blocker() {
     let err = run
         .review(3, BACK, Android, call(None, Some(Cause::App)), "crashed")
         .unwrap_err();
-    assert!(err.to_string().contains("give it a title"), "{err}");
+    assert!(err.to_string().contains("give the failure a title"), "{err}");
     run.review(
         3,
         BACK,
@@ -929,13 +929,13 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_blocker() {
         "crashed",
     )
     .unwrap();
-    assert_eq!(run.state().problems[0].kind, ProblemKind::Blocker);
+    assert_eq!(run.state().problems[0].kind, ProblemKind::Failure);
     assert_eq!(
         result(&run, BACK, Android),
         Some(Final::Fail),
         "the app stopped it, so it failed"
     );
-    assert_eq!(run.verdict().reasons[0], "1 blocker");
+    assert_eq!(run.verdict().reasons[0], "1 failure");
 }
 
 #[test]
