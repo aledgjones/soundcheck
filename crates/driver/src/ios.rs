@@ -3,7 +3,7 @@
 //! screenshots, which are in pixels.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Result};
+use crate::device::{Device, DriverError, Health, Result};
 use crate::element::{Element, Rect};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -136,7 +136,14 @@ pub struct Ios {
     reader: Option<PathBuf>,
     /// When the app was last launched: crash reports from before then are someone else's problem.
     launched: std::sync::Mutex<SystemTime>,
+    /// How long the last launch took to show a screen, in milliseconds.
+    last_launch_ms: std::sync::Mutex<Option<u64>>,
 }
+
+/// Health limits for the Mac that runs the simulator, and the app's launch.
+const MIN_FREE_MEMORY_PERCENT: f64 = 10.0;
+const MAX_LOAD_PER_CORE: f64 = 2.0;
+const MAX_LAUNCH_MS: u64 = 20_000;
 
 impl Ios {
     /// Connects to the booted simulator (or `SOUNDCHECK_IOS_UDID`) to drive `bundle_id`. Simulators only:
@@ -172,6 +179,7 @@ impl Ios {
             bundle_id: bundle_id.into(),
             reader,
             launched: std::sync::Mutex::new(SystemTime::now()),
+            last_launch_ms: std::sync::Mutex::new(None),
         };
         ios.no_hardware_keyboard().await?;
         run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
@@ -488,9 +496,22 @@ impl Device for Ios {
             )
             .await;
             *self.launched.lock().unwrap_or_else(|e| e.into_inner()) = SystemTime::now();
+            let started = std::time::Instant::now();
             run("xcrun", &["simctl", "launch", &self.udid, &self.bundle_id]).await?;
-            sleep(Duration::from_secs(3)).await;
-            let json = self.screen_json(true).await.unwrap_or_default();
+            let mut json = String::new();
+            while started.elapsed() < Duration::from_secs(60) {
+                json = self.screen_json(true).await.unwrap_or_default();
+                if has_content(&json) {
+                    break;
+                }
+                sleep(Duration::from_millis(300)).await;
+            }
+            *self
+                .last_launch_ms
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(started.elapsed().as_millis() as u64);
+            // The first screen can still be settling.
+            sleep(Duration::from_secs(1)).await;
             if attempt == 2 || !json.contains("DockFolderViewService") {
                 break;
             }
@@ -580,6 +601,60 @@ impl Device for Ios {
         let root = tree.as_array().and_then(|r| r.first()).unwrap_or(&tree);
         let f = frame(root);
         Ok((f.width, f.height))
+    }
+
+    /// The simulator shares the Mac, so its health is the Mac's, plus the app's launch time.
+    async fn health(&self) -> Result<Health> {
+        let mut health = Health::default();
+        let pressure = run("memory_pressure", &["-Q"]).await?;
+        if let Some(free) = pressure.lines().find_map(|l| {
+            l.strip_prefix("System-wide memory free percentage:")?
+                .trim()
+                .trim_end_matches('%')
+                .parse::<f64>()
+                .ok()
+        }) {
+            health.measure(
+                format!("Mac memory {free:.0}% free"),
+                free < MIN_FREE_MEMORY_PERCENT,
+            );
+        }
+        let load = run("sysctl", &["-n", "vm.loadavg", "hw.ncpu"]).await?;
+        // `{ 1m 5m 15m }` then the core count; the five-minute average, as on Android.
+        let five_minutes = load
+            .split_whitespace()
+            .nth(2)
+            .and_then(|n| n.parse::<f64>().ok());
+        let cores = load
+            .lines()
+            .nth(1)
+            .and_then(|n| n.trim().parse::<f64>().ok());
+        if let (Some(five_minutes), Some(cores)) = (five_minutes, cores) {
+            health.measure(
+                format!("Mac load {five_minutes:.1} on {cores:.0} cores"),
+                five_minutes > cores * MAX_LOAD_PER_CORE,
+            );
+        }
+        if let Some(ms) = *self
+            .last_launch_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            health.measure(
+                format!("launch {:.1} s", ms as f64 / 1000.0),
+                ms > MAX_LAUNCH_MS,
+            );
+        }
+        Ok(health)
+    }
+
+    async fn restart(&self) -> Result<()> {
+        // A reader from before the reboot answers pings but can't read.
+        self.stop_reader();
+        let _ = run("xcrun", &["simctl", "shutdown", &self.udid]).await;
+        run("xcrun", &["simctl", "boot", &self.udid]).await?;
+        run("xcrun", &["simctl", "bootstatus", &self.udid, "-b"]).await?;
+        Ok(())
     }
 
     async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {

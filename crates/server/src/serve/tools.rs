@@ -396,6 +396,9 @@ struct RowStatus<'a> {
     result: Option<crate::run::model::Final>,
     #[serde(skip_serializing_if = "Option::is_none")]
     claim: Option<crate::run::model::Claim>,
+    /// Why the device was degraded during the latest attempt.
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    degraded: &'a [String],
 }
 
 #[tool_router]
@@ -436,6 +439,7 @@ impl Tools {
                 .hub
                 .with_run(|run, now| run.evidence_captured(now, &spec, platform, attempt, files));
         }
+        self.hub.check_health(&spec, platform, attempt).await;
         reply(Ok(
             json!({ "claim": claim, "next": "you're done: stop here" }),
         ))
@@ -465,6 +469,7 @@ impl Tools {
                         attempts: r.attempts,
                         result,
                         claim,
+                        degraded: &r.degraded,
                     }
                 })
                 .collect();

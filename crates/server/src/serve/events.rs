@@ -49,6 +49,25 @@ pub fn summary(entry: &Entry) -> String {
             Some(title) => format!("side find {id} is a finding: {title}"),
             None => format!("side find {id} isn't a problem"),
         },
+        Event::DeviceHealth {
+            spec,
+            platform,
+            degraded,
+            facts,
+            ..
+        } => {
+            if degraded.is_empty() {
+                format!("{platform} healthy after {spec}: {}", facts.join(", "))
+            } else {
+                format!(
+                    "{platform} DEGRADED after {spec}: {} (restarting before the next spec)",
+                    degraded.join(", ")
+                )
+            }
+        }
+        Event::DeviceRestarted {
+            platform, reason, ..
+        } => format!("{platform} restarted: {reason}"),
         Event::EvidenceCaptured {
             spec,
             platform,

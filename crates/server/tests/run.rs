@@ -957,3 +957,48 @@ fn an_unsure_is_judged_pass_or_fail_only() {
             .contains("spec unclear")
     );
 }
+
+fn degraded() -> soundcheck_driver::Health {
+    soundcheck_driver::Health {
+        degraded: vec!["memory 4% free".into()],
+        facts: vec!["memory 4% free".into()],
+    }
+}
+
+#[test]
+fn a_failure_on_a_degraded_device_must_reproduce_on_a_healthy_one() {
+    let (mut run, path) = open("degraded");
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
+        .unwrap();
+    run.device_health(3, DRAW, Android, 1, degraded()).unwrap();
+    let err = run.review(4, DRAW, Android, bug(), "real").unwrap_err();
+    assert!(
+        err.to_string().contains("verify it on a healthy device"),
+        "{err}"
+    );
+    // A harness BLOCKED, or a verification, still goes through.
+    run.review(
+        4,
+        DRAW,
+        Android,
+        Call::Verify { claim: "c".into() },
+        "device was low on memory",
+    )
+    .unwrap();
+    let t2 = run.dispatch(5, DRAW, Android, brief).unwrap();
+    run.post(6, &t2, judged(&[Answer::Failed, Answer::Held]))
+        .unwrap();
+    run.review(7, DRAW, Android, bug(), "reproduced").unwrap();
+    assert!(run.state().problems[0].verified);
+    // The degradation is a note in the record, and survives a replay of the journal.
+    let notes: Vec<String> = run.state().notes.iter().map(|n| n.text.clone()).collect();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.contains("device degraded during attempt 1: memory 4% free"))
+    );
+    drop(run);
+    let replayed = Run::open(plan(false), &path, 8).unwrap();
+    assert_eq!(replayed.state().notes.len(), notes.len());
+}

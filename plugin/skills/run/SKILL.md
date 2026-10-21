@@ -64,6 +64,7 @@ A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `sta
 
 - **Titles are what the person reads first.** Write each as the problem in plain words ("Undo leaves the stroke on screen when zoomed in"), never as the outcome or the tester's wording.
 - **Failure or finding is never your judgement call.** Upheld failures are failures; side finds and things that didn't reproduce are findings. If a failure doesn't seem worth blocking the release, that's for triage with the person, not a reason to file it as something milder.
+- **A degraded device** (`degraded` on the row in `status`, and a `DEGRADED` event): the server samples the device's health after every result and restarts a degraded one before the next spec. A failure seen on a degraded device can't be upheld until it reproduces: call **verify**, and the rerun runs on the restarted device. A BLOCKED with cause `harness` can still be upheld.
 - **Look at the evidence, not just the claim.** Open a screenshot only when the judgments don't settle it, which keeps your context small for a long run.
 - **Side finds** (`side find(s) need review`): `review_find` with a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem.
 - A spec gets at most 3 attempts. After that, file what's known.

@@ -11,7 +11,7 @@ pub mod ops;
 pub mod tools;
 pub mod web;
 
-pub use device::{Device, DriverError};
+pub use device::{Device, DriverError, Health};
 pub use element::{Element, Rect};
 pub use matcher::Matcher;
 pub use ops::Driver;

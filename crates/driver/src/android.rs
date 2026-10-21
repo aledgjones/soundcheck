@@ -1,9 +1,10 @@
 //! The Android driver: an emulator over adb, read through a long-lived reader on the device.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Result};
+use crate::device::{Device, DriverError, Health, Result};
 use crate::element::{Element, Rect};
 use regex::Regex;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -27,7 +28,17 @@ pub struct Android {
     reader_apk: Option<PathBuf>,
     /// The freezing proxies in the `adb reverse` path while a spec may drop the network.
     proxies: tokio::sync::Mutex<Option<Proxies>>,
+    /// The `adb reverse` forwards at connect, as (device port, host port): what a reboot drops and health restores.
+    forwards_at_connect: Vec<(u16, u16)>,
+    /// How long the last launch took, in milliseconds, as `am start -W` reports it.
+    last_launch_ms: std::sync::Mutex<Option<u64>>,
 }
+
+/// Health limits. A degraded emulator on 2026-10-20 had 0.4 of 4 GB free, the system busy while idle, ANRs in
+/// Google's own apps and a 59 s cold launch (normally about 1 s).
+const MIN_FREE_MEMORY: f64 = 0.10;
+const MAX_LOAD_PER_CORE: f64 = 2.0;
+const MAX_LAUNCH_MS: u64 = 15_000;
 
 /// A proxy listens on the forwarded host port plus this, so a forward left pointing at one can always be restored.
 const PROXY_OFFSET: u16 = 20_000;
@@ -206,6 +217,17 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
     out
 }
 
+/// The app an "ANR in" log line names: ActivityManager writes `ANR in com.app (…)`, WindowManager
+/// `ANR in Window{b40aef5 u0 com.app/com.app.Activity}`.
+fn anr_app(line: &str) -> Option<String> {
+    let rest = line.split("ANR in ").nth(1)?;
+    let name = match rest.strip_prefix("Window{") {
+        Some(window) => window.split_whitespace().nth(2)?.split('/').next()?,
+        None => rest.split_whitespace().next()?,
+    };
+    Some(name.trim_end_matches(['}', '.', ',']).to_string())
+}
+
 /// `input text` takes one word: spaces become %s, and the shell's own characters are escaped.
 fn input_text(text: &str) -> String {
     let mut out = String::new();
@@ -275,10 +297,16 @@ impl Android {
             package: package.into(),
             reader_apk,
             proxies: tokio::sync::Mutex::new(None),
+            forwards_at_connect: Vec::new(),
+            last_launch_ms: std::sync::Mutex::new(None),
         };
         // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
         android.restore_forwards().await?;
-        Ok(android)
+        let forwards_at_connect = android.forwards().await?;
+        Ok(Android {
+            forwards_at_connect,
+            ..android
+        })
     }
 
     async fn adb(&self, args: &[&str]) -> Result<String> {
@@ -554,8 +582,20 @@ impl Device for Android {
             .trim()
             .to_string();
         self.adb(&["logcat", "-c"]).await?;
-        self.shell(&format!("am start -n {component}")).await?;
-        sleep(Duration::from_secs(2)).await;
+        // -W waits until the activity has drawn and reports how long that took.
+        let started = self.shell(&format!("am start -W -n {component}")).await?;
+        let total = started.lines().find_map(|l| {
+            l.trim()
+                .strip_prefix("TotalTime:")?
+                .trim()
+                .parse::<u64>()
+                .ok()
+        });
+        *self
+            .last_launch_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = total;
+        sleep(Duration::from_secs(1)).await;
         Ok(())
     }
 
@@ -720,6 +760,138 @@ impl Device for Android {
         Ok(())
     }
 
+    async fn health(&self) -> Result<Health> {
+        let mut health = Health::default();
+        // A reboot drops the forwards, and the app then silently shows stale data: put them back at once.
+        let present: Vec<u16> = self.forwards().await?.into_iter().map(|(d, _)| d).collect();
+        for (device_port, host) in &self.forwards_at_connect {
+            if !present.contains(device_port) {
+                self.adb(&[
+                    "reverse",
+                    &format!("tcp:{device_port}"),
+                    &format!("tcp:{host}"),
+                ])
+                .await?;
+                health
+                    .facts
+                    .push(format!("restored the lost forward for port {device_port}"));
+            }
+        }
+        let meminfo = self.shell("cat /proc/meminfo").await?;
+        let kb = |key: &str| {
+            meminfo.lines().find_map(|l| {
+                l.strip_prefix(key)?
+                    .split_whitespace()
+                    .next()?
+                    .parse::<f64>()
+                    .ok()
+            })
+        };
+        if let (Some(total), Some(available)) = (kb("MemTotal:"), kb("MemAvailable:")) {
+            let free = available / total;
+            health.measure(
+                format!("memory {:.0}% free", free * 100.0),
+                free < MIN_FREE_MEMORY,
+            );
+        }
+        // The five-minute average: a launch alone spikes the one-minute figure past any sensible limit.
+        let load = self.shell("cat /proc/loadavg; nproc").await?;
+        let five_minutes = load
+            .split_whitespace()
+            .nth(1)
+            .and_then(|n| n.parse::<f64>().ok());
+        let cores = load
+            .lines()
+            .nth(1)
+            .and_then(|n| n.trim().parse::<f64>().ok());
+        if let (Some(five_minutes), Some(cores)) = (five_minutes, cores) {
+            health.measure(
+                format!("load {five_minutes:.1} on {cores:.0} cores"),
+                five_minutes > cores * MAX_LOAD_PER_CORE,
+            );
+        }
+        // The log is cleared at each launch, so these are since this spec's launch.
+        let log = self.adb(&["logcat", "-d", "-v", "brief"]).await?;
+        let mut seen = Vec::new();
+        for app in log.lines().filter_map(anr_app) {
+            if app != self.package && !seen.contains(&app) {
+                health.measure(format!("ANR in another app: {app}"), true);
+                seen.push(app);
+            }
+        }
+        if let Some(ms) = *self
+            .last_launch_ms
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+        {
+            health.measure(
+                format!("launch {:.1} s", ms as f64 / 1000.0),
+                ms > MAX_LAUNCH_MS,
+            );
+        }
+        Ok(health)
+    }
+
+    async fn restart(&self) -> Result<()> {
+        let avd = self.adb(&["emu", "avd", "name"]).await?;
+        let avd = avd.lines().next().unwrap_or("").trim().to_string();
+        if avd.is_empty() {
+            return Err(device("the emulator didn't say which AVD it runs"));
+        }
+        let _ = self.adb(&["emu", "kill"]).await;
+        for _ in 0..60 {
+            let devices = run(&self.adb, &["devices"], Duration::from_secs(10)).await?;
+            if !devices.contains(&self.serial) {
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+        let emulator = self
+            .adb
+            .parent()
+            .and_then(Path::parent)
+            .map(|sdk| sdk.join("emulator/emulator"))
+            .ok_or_else(|| device("no emulator binary beside adb"))?;
+        let port = self.serial.strip_prefix("emulator-").unwrap_or("5554");
+        // Its own process group, so it outlives this server; SwiftShader drops taps, so the host GPU.
+        std::process::Command::new(emulator)
+            .args(["-avd", &avd, "-port", port, "-gpu", "host", "-no-snapshot"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .map_err(device)?;
+        let mut booted = false;
+        for _ in 0..180 {
+            if self
+                .shell("getprop sys.boot_completed")
+                .await
+                .is_ok_and(|v| v.trim() == "1")
+            {
+                booted = true;
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
+        }
+        if !booted {
+            return Err(device(format!(
+                "{avd} didn't finish booting within 3 minutes"
+            )));
+        }
+        // Wake and dismiss a keyguard without a PIN; a PIN needs a person.
+        let _ = self.shell("input keyevent 224; wm dismiss-keyguard").await;
+        for (device_port, host) in &self.forwards_at_connect {
+            self.adb(&[
+                "reverse",
+                &format!("tcp:{device_port}"),
+                &format!("tcp:{host}"),
+            ])
+            .await?;
+        }
+        Ok(())
+    }
+
     async fn stress(&self, load: u32, seconds: u64) -> Result<()> {
         let cores: u32 = self.shell("nproc").await?.trim().parse().unwrap_or(4);
         let loops = (f64::from(cores) * f64::from(load) / 100.0).ceil().max(1.0) as u32;
@@ -758,6 +930,22 @@ mod tests {
     fn all_includes_id_only_labels() {
         let labels: Vec<_> = parse(XML, true).into_iter().map(|e| e.label).collect();
         assert!(labels.contains(&"phosphor-react-native-list-regular".to_string()));
+    }
+
+    #[test]
+    fn an_anr_names_its_app_in_either_log_form() {
+        assert_eq!(
+            anr_app(
+                "I/WindowManager(566): ANR in Window{b40aef5 u0 com.android.settings/com.android.settings.Settings}. Reason:x"
+            ),
+            Some("com.android.settings".into())
+        );
+        assert_eq!(
+            anr_app(
+                "E/ActivityManager(566): ANR in com.google.android.calendar (com.google.android.calendar/.Main)"
+            ),
+            Some("com.google.android.calendar".into())
+        );
     }
 
     #[test]

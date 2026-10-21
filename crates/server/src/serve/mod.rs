@@ -95,6 +95,8 @@ pub struct Hub {
     /// A driver per platform, connected on its first device call.
     pub devices: tokio::sync::Mutex<std::collections::HashMap<Platform, Driver<AnyDevice>>>,
     pub stall_ms: u64,
+    /// Devices found degraded after a spec, to restart before the next: platform → (spec, reason).
+    restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
 }
 
 impl Hub {
@@ -109,6 +111,7 @@ impl Hub {
             devices: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             without_devices: Vec::new(),
             stall_ms,
+            restart_due: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -186,6 +189,17 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let due = self
+            .restart_due
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&platform);
+        if let Some((after, reason)) = due {
+            self.on_device(platform, async |d| d.device.restart().await)
+                .await
+                .context("restarting the degraded device")?;
+            self.with_run(|run, now| run.device_restarted(now, platform, &after, &reason))?;
+        }
         let root = &self.suite.root;
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
@@ -223,6 +237,27 @@ impl Hub {
             }
         }
         Err(last)
+    }
+
+    /// Samples the device's health after an attempt posted and journals it with that attempt. A degraded device is
+    /// restarted before the next spec on it.
+    pub async fn check_health(&self, spec: &str, platform: Platform, attempt: u32) {
+        if self.without_devices.contains(&platform) {
+            return;
+        }
+        let Ok(health) = self
+            .on_device(platform, async |d| d.device.health().await)
+            .await
+        else {
+            return;
+        };
+        if !health.degraded.is_empty() {
+            self.restart_due
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(platform, (spec.to_string(), health.degraded.join("; ")));
+        }
+        let _ = self.with_run(|run, now| run.device_health(now, spec, platform, attempt, health));
     }
 
     pub fn fixtures_dir(&self) -> PathBuf {

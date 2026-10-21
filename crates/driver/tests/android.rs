@@ -147,3 +147,54 @@ async fn network_drop_freezes_the_device_connections_then_lets_new_ones_through(
     assert!(adb(&["reverse", "--list"]).contains("tcp:18999 tcp:18999"));
     adb(&["reverse", "--remove", "tcp:18999"]);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn health_measures_the_emulator_and_puts_back_a_lost_forward() {
+    let _turn = EMULATOR.lock().await;
+    adb(&["reverse", "tcp:18998", "tcp:18998"]);
+    let android = match Android::connect("com.android.settings", None).await {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            adb(&["reverse", "--remove", "tcp:18998"]);
+            return;
+        }
+    };
+    android.launch().await.unwrap();
+    adb(&["reverse", "--remove", "tcp:18998"]);
+    let health = android.health().await.unwrap();
+    for fact in [
+        "memory",
+        "load",
+        "launch",
+        "restored the lost forward for port 18998",
+    ] {
+        assert!(
+            health.facts.iter().any(|f| f.starts_with(fact)),
+            "no {fact} in {:?}",
+            health.facts
+        );
+    }
+    assert!(adb(&["reverse", "--list"]).contains("tcp:18998 tcp:18998"));
+    adb(&["reverse", "--remove", "tcp:18998"]);
+    eprintln!("{health:?}");
+}
+
+/// Reboots the emulator: run by hand with `--ignored`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn restart_reboots_the_emulator_and_keeps_its_forwards() {
+    let _turn = EMULATOR.lock().await;
+    let before = adb(&["reverse", "--list"]);
+    let android = Android::connect("com.android.settings", None)
+        .await
+        .unwrap();
+    android.restart().await.unwrap();
+    assert_eq!(adb(&["reverse", "--list"]), before);
+    android.launch().await.unwrap();
+    let driver = Driver::new(android);
+    driver
+        .wait(&m("prefix:Network & internet"), 30_000)
+        .await
+        .unwrap();
+}

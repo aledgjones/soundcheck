@@ -124,11 +124,14 @@ Each spec on each platform moves through `not run → running → needs review �
 
 ### 3.7 Device health
 
-- Sampled between specs: load, free memory, ANRs or crashes in other apps, app launch time.
+- **Sampled after every result,** and journalled with that attempt as evidence:
+  - Android: free memory (degraded under 10%), the five-minute load (over 2 per core), ANRs in other apps since launch, and the app's launch time (`am start -W`, over 15 s);
+  - iOS: the simulator shares the Mac, so the Mac's free memory and load, plus the app's launch time (over 20 s).
+  - Lost `adb reverse` forwards are put back on the spot: a reboot drops them, and the app then silently shows stale data.
 - **When health is degraded:**
-  - results recorded during that time are marked "device degraded", so they count as findings, not bugs, unless reproduced;
-  - the server restarts the emulator or simulator before the next spec, restores port forwards (e.g. `adb reverse`) and reconnects its reader.
-- Health is part of the evidence. A slowly degrading emulator produced one-off failures that looked like app bugs.
+  - the attempt is marked, and a failure seen on it can't be upheld until it reproduces: the coordinator verifies it, and the rerun runs on the restarted device. A harness BLOCKED can still be upheld;
+  - the server restarts the emulator or simulator before the next spec on it, restores its forwards and reconnects its reader. Both are notes in the record.
+- Health is part of the evidence. A slowly degrading emulator produced one-off failures that looked like app bugs (2026-10-20: 0.4 of 4 GB free, the system busy while idle, ANRs in Google's own apps, a 59 s cold launch).
 
 ### 3.8 Fix builds
 

@@ -77,6 +77,8 @@ pub struct RowRecord {
     pub review: Option<(Call, String)>,
     /// Evidence the server saved for the latest attempt.
     pub captured: Vec<String>,
+    /// Why the device was degraded during the latest attempt; empty when it was healthy.
+    pub degraded: Vec<String>,
 }
 
 /// A side find waiting for the coordinator.
@@ -313,6 +315,30 @@ impl Run {
             );
         };
         let (attempt, claim) = (*attempt, *claim);
+        let files_failure = matches!(
+            (&call, claim),
+            (Call::Uphold { .. }, Claim::Fail)
+                | (
+                    Call::Uphold {
+                        cause: Some(Cause::App),
+                        ..
+                    },
+                    Claim::Blocked
+                )
+                | (
+                    Call::Judge {
+                        result: Final::Fail,
+                        ..
+                    },
+                    _
+                )
+        );
+        if files_failure && !record.degraded.is_empty() && !record.verifying {
+            bail!(
+                "the device was degraded during this attempt ({}): verify it on a healthy device before filing a failure",
+                record.degraded.join("; ")
+            );
+        }
         match (&call, claim) {
             (Call::Uphold { title, .. }, Claim::Fail) if blank(title) => {
                 bail!(
@@ -403,6 +429,49 @@ impl Run {
             Event::FindReviewed {
                 id,
                 title,
+                reason: reason.into(),
+            },
+        )
+    }
+
+    /// Records the device's health after an attempt; a degraded device notes it on the row.
+    pub fn device_health(
+        &mut self,
+        now: u64,
+        spec: &str,
+        platform: Platform,
+        attempt: u32,
+        health: soundcheck_driver::Health,
+    ) -> Result<()> {
+        let record = self.record(spec, platform)?;
+        if record.attempts != attempt {
+            bail!("{spec} on {platform} has moved on from attempt {attempt}");
+        }
+        self.commit(
+            now,
+            Event::DeviceHealth {
+                spec: spec.into(),
+                platform,
+                attempt,
+                degraded: health.degraded,
+                facts: health.facts,
+            },
+        )
+    }
+
+    /// Records that the server restarted a degraded device.
+    pub fn device_restarted(
+        &mut self,
+        now: u64,
+        platform: Platform,
+        spec: &str,
+        reason: &str,
+    ) -> Result<()> {
+        self.commit(
+            now,
+            Event::DeviceRestarted {
+                platform,
+                spec: spec.into(),
                 reason: reason.into(),
             },
         )
@@ -773,6 +842,7 @@ impl State {
                         verifying: false,
                         review: None,
                         captured: Vec::new(),
+                        degraded: Vec::new(),
                     },
                 );
             }
@@ -825,6 +895,7 @@ impl State {
                     r.verifying = verify.is_some();
                     r.review = None;
                     r.captured.clear();
+                    r.degraded.clear();
                     r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
@@ -1134,6 +1205,37 @@ impl State {
                     r.captured.extend(files.iter().cloned());
                 }
             }
+            Event::DeviceHealth {
+                spec,
+                platform,
+                attempt,
+                degraded,
+                ..
+            } => {
+                if let Some(r) = self.rows.get_mut(&(spec.clone(), *platform))
+                    && r.attempts == *attempt
+                    && !degraded.is_empty()
+                {
+                    r.degraded = degraded.clone();
+                    self.notes.push(Note {
+                        spec: spec.clone(),
+                        platform: *platform,
+                        text: format!(
+                            "device degraded during attempt {attempt}: {}",
+                            degraded.join("; ")
+                        ),
+                    });
+                }
+            }
+            Event::DeviceRestarted {
+                spec,
+                platform,
+                reason,
+            } => self.notes.push(Note {
+                spec: spec.clone(),
+                platform: *platform,
+                text: format!("device restarted after this spec: {reason}"),
+            }),
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
             Event::Finished { .. } => self.finished = true,

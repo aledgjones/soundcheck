@@ -2,7 +2,7 @@
 
 use crate::Platform;
 use crate::android::Android;
-use crate::device::{Device, Result};
+use crate::device::{Device, Health, Result};
 use crate::element::Element;
 use crate::ios::Ios;
 use crate::web::Web;
@@ -103,6 +103,12 @@ impl Device for AnyDevice {
     }
     async fn network_drop(&self, seconds: u64) -> Result<()> {
         each!(self, d => d.network_drop(seconds).await)
+    }
+    async fn health(&self) -> Result<Health> {
+        each!(self, d => d.health().await)
+    }
+    async fn restart(&self) -> Result<()> {
+        each!(self, d => d.restart().await)
     }
     async fn stress(&self, load: u32, seconds: u64) -> Result<()> {
         each!(self, d => d.stress(load, seconds).await)

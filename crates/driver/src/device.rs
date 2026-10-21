@@ -20,6 +20,26 @@ pub enum DriverError {
 
 pub type Result<T> = std::result::Result<T, DriverError>;
 
+/// How the device was doing, sampled after a result: part of the evidence. A slowly degrading emulator once produced
+/// one-off failures that looked like app bugs.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Health {
+    /// Why the device counts as degraded; empty when it's healthy.
+    pub degraded: Vec<String>,
+    /// What was measured, for the record ("memory 41% free", "launch 1.2 s").
+    pub facts: Vec<String>,
+}
+
+impl Health {
+    /// Records a measurement, and a degradation when it's past its limit.
+    pub fn measure(&mut self, fact: String, degraded: bool) {
+        if degraded {
+            self.degraded.push(fact.clone());
+        }
+        self.facts.push(fact);
+    }
+}
+
 /// What each platform implements: raw reads and inputs. Everything built on them lives in [`crate::Driver`], once.
 /// Coordinates are in the platform's own units, as [`Element::frame`] reports them.
 #[allow(async_fn_in_trait)]
@@ -102,6 +122,15 @@ pub trait Device {
     }
     async fn stress(&self, _load: u32, _seconds: u64) -> Result<()> {
         Err(self.unsupported("stress"))
+    }
+
+    /// Samples the device's health, and repairs what it safely can on the spot (lost port forwards).
+    async fn health(&self) -> Result<Health> {
+        Ok(Health::default())
+    }
+    /// Restarts the emulator or simulator and puts back what the run needs (forwards, the reader).
+    async fn restart(&self) -> Result<()> {
+        Err(self.unsupported("restart"))
     }
 
     fn unsupported(&self, tool: &'static str) -> DriverError {

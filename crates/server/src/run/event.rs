@@ -41,6 +41,22 @@ pub enum Event {
         attempt: u32,
         files: Vec<String>,
     },
+    /// The device's health, sampled after an attempt posted: part of that attempt's evidence.
+    DeviceHealth {
+        spec: String,
+        platform: Platform,
+        attempt: u32,
+        /// Why the device counted as degraded; empty when healthy.
+        degraded: Vec<String>,
+        facts: Vec<String>,
+    },
+    /// The server restarted a degraded device before the next spec.
+    DeviceRestarted {
+        platform: Platform,
+        /// The spec whose attempt found the device degraded.
+        spec: String,
+        reason: String,
+    },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.
     Stalled {
         token: String,
