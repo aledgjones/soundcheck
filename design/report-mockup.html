@@ -23,7 +23,7 @@ a:hover{text-decoration:underline}
 .summary-head{display:flex;flex-direction:column;align-items:center;gap:14px;padding:44px 28px 34px;text-align:center}
 .summary-verdict{display:flex;flex-direction:column;gap:6px;max-width:600px}
 .summary-verdict strong{font-size:24px;font-weight:700}
-.summary-verdict strong.blocked{color:var(--fail)}
+.summary-verdict strong.failing{color:var(--fail)}
 .reasons{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 8px;margin:4px 0 0;padding:0;list-style:none}
 .ringwrap{position:relative;width:176px;height:176px}
 .ring{width:176px;height:176px;transform:rotate(-90deg)}
@@ -217,7 +217,7 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
         <div class="ringlabel"><b>69%</b></div>
       </div>
       <div class="summary-verdict">
-        <strong class="blocked">Blocked</strong>
+        <strong class="failing">Failing</strong>
         <ul class="reasons" aria-label="What's in the way">
           <li class="chip reason bad">1 failure</li>
           <li class="chip reason">1 finding to decide</li>

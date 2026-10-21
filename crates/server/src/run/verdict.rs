@@ -8,7 +8,7 @@ use serde::Serialize;
 #[serde(rename_all = "kebab-case")]
 pub enum VerdictStatus {
     /// An open failure.
-    Blocked,
+    Failing,
     /// Something unsettled: a finding to decide, a spec not run, a result still being checked.
     NotReady,
     Ready,
@@ -65,7 +65,7 @@ pub fn verdict(state: &State) -> Verdict {
     say(not_run, "1 not run yet", "not run yet");
 
     let status = if failures > 0 {
-        VerdictStatus::Blocked
+        VerdictStatus::Failing
     } else if reasons.is_empty() {
         VerdictStatus::Ready
     } else {

@@ -574,7 +574,7 @@ fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
     pass(&mut run, 10, DRAW, Ios);
     pass(&mut run, 20, BACK, Android);
     let v = run.verdict();
-    assert_eq!(v.status, VerdictStatus::Blocked);
+    assert_eq!(v.status, VerdictStatus::Failing);
     assert_eq!(v.reasons, ["1 failure"]);
 
     run.finish(30).unwrap();
@@ -920,7 +920,10 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_failure() {
     let err = run
         .review(3, BACK, Android, call(None, Some(Cause::App)), "crashed")
         .unwrap_err();
-    assert!(err.to_string().contains("give the failure a title"), "{err}");
+    assert!(
+        err.to_string().contains("give the failure a title"),
+        "{err}"
+    );
     run.review(
         3,
         BACK,

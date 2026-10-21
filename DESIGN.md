@@ -355,7 +355,7 @@ The soundcheck repo ships as a Claude Code plugin:
 - **Any open FAIL blocks the release,** whichever spec it's on. There are no special gate tests.
 - **A BLOCKED** goes through review and triage like a FAIL. One blocked by a harness gap, not the app, goes in the run's notes, and its spec counts as not run until a rerun passes.
 - **Verdict:**
-  - **Blocked:** any open failure.
+  - **Failing:** any open failure. (Not "Blocked", which a row means when the environment or harness stopped its test.)
   - **Not ready:** an open (untriaged) problem, specs not run, or results still under review.
   - **Ready:** otherwise.
 - **BLOCKED means the environment or harness stopped the test, never the app** (Aled, 2026-10-21). It isn't a result about the app: the row shows purple with one line saying why, counts as not tested until a rerun passes, and keeps the verdict at Not ready. Reset failures, stuck devices, missing labels and tool gaps are all BLOCKED. If the app stopped the test, it's a FAIL.
