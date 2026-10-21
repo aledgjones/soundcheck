@@ -49,9 +49,10 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
 }
 
 #[test]
-fn the_mcp_config_points_at_the_default_port() {
+fn the_mcp_config_runs_the_stdio_bridge() {
     let config: serde_json::Value = serde_json::from_str(&plugin_file(".mcp.json")).unwrap();
-    assert_eq!(config["soundcheck"]["url"], "http://127.0.0.1:7357/mcp");
+    assert_eq!(config["soundcheck"]["command"], "soundcheck");
+    assert_eq!(config["soundcheck"]["args"], serde_json::json!(["mcp"]));
 }
 
 #[test]

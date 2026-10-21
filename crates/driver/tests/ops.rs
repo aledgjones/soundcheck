@@ -107,6 +107,21 @@ fn m(target: &str) -> Matcher {
 }
 
 #[tokio::test(start_paused = true)]
+async fn tap_at_a_point_taps_it_without_reading_the_screen() {
+    let driver = Driver::new(Fake::new(vec![]));
+    let tapped = driver.tap(&m("at:90,69"), false).await.unwrap();
+    assert_eq!(tapped.label, "at:90,69");
+    assert_eq!(*driver.device.actions.lock().unwrap(), ["tap 90,69"]);
+}
+
+#[test]
+fn a_point_needs_two_numbers() {
+    assert!(Matcher::parse("at:90").is_err());
+    assert!(Matcher::parse("at:x,69").is_err());
+    assert!(Matcher::parse("at: 90, 69.5").is_ok());
+}
+
+#[tokio::test(start_paused = true)]
 async fn tap_waits_for_the_element_then_taps_its_centre() {
     let driver = Driver::new(Fake::new(vec![vec![], vec![], vec![el("Save", 100.0)]]));
     let tapped = driver.tap(&m("Save"), false).await.unwrap();

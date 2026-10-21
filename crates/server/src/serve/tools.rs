@@ -13,6 +13,8 @@ use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
+pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, review, review_find, install_build, triage, pause, resume and finish.";
+
 #[derive(Clone)]
 pub struct Tools {
     hub: Arc<Hub>,
@@ -100,7 +102,7 @@ pub struct TokenParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
     pub token: String,
-    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`.
+    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`. `at:<x>,<y>` taps a point (points on iOS, pixels on Android) for a control `see` can't name.
     pub target: String,
     /// Take the last match, e.g. a dialog's button that shares its label with the row behind it.
     #[serde(default)]
@@ -405,7 +407,7 @@ struct RowStatus<'a> {
     degraded: &'a [String],
 }
 
-#[tool_router]
+#[tool_router(vis = "pub")]
 impl Tools {
     pub fn new(hub: Arc<Hub>) -> Self {
         Tools {
@@ -714,7 +716,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: save a screenshot as evidence; returns its file name to attach to a judgment. Only for visual checks."
+        description = "Tester: save a screenshot as evidence; returns its file name to attach to a judgment and the path to Read it at. Only for visual checks."
     )]
     async fn shot(
         &self,
@@ -729,8 +731,9 @@ impl Tools {
                 )));
             }
             std::fs::create_dir_all(&dir).map_err(|e| DriverError::Device(e.to_string()))?;
-            d.device.screenshot(&dir.join(&name)).await?;
-            Ok(name)
+            let path = dir.join(&name);
+            d.device.screenshot(&path).await?;
+            Ok(format!("{name}: Read it at {}", path.display()))
         })
         .await
     }
@@ -1129,8 +1132,7 @@ impl Tools {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, review, review_find, install_build, triage, pause, resume and finish.",
-        )
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_instructions(INSTRUCTIONS)
     }
 }

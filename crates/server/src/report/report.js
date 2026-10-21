@@ -44,6 +44,50 @@
     applyFilter();
   });
 
+  // Screenshots open in a lightbox; the arrows step through the row's shots and Esc closes it.
+  let box = null;
+  let shots = [];
+  let at = 0;
+  function show(i) {
+    at = (i + shots.length) % shots.length;
+    const img = box.querySelector("img");
+    img.src = shots[at].href;
+    img.alt = shots[at].querySelector("img").alt;
+    box.querySelector(".lightbox-count").textContent =
+      shots.length > 1 ? `${at + 1} of ${shots.length} · ${img.alt}` : img.alt;
+    for (const b of box.querySelectorAll(".lightbox-nav")) b.hidden = shots.length < 2;
+  }
+  function lightbox() {
+    if (box) return box;
+    box = document.createElement("dialog");
+    box.className = "lightbox";
+    box.setAttribute("aria-label", "Screenshot");
+    box.innerHTML =
+      '<img alt=""><p class="lightbox-count"></p>' +
+      '<button class="lightbox-nav prev" aria-label="Previous screenshot">‹</button>' +
+      '<button class="lightbox-nav next" aria-label="Next screenshot">›</button>' +
+      '<button class="lightbox-close" aria-label="Close">✕</button>';
+    box.addEventListener("click", (e) => {
+      if (e.target.closest(".prev")) show(at - 1);
+      else if (e.target.closest(".next")) show(at + 1);
+      else if (e.target.closest(".lightbox-close") || e.target === box) box.close();
+    });
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "ArrowLeft") show(at - 1);
+      else if (e.key === "ArrowRight") show(at + 1);
+    });
+    document.body.append(box);
+    return box;
+  }
+  document.addEventListener("click", (e) => {
+    const a = e.target.closest("a.thumb");
+    if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+    e.preventDefault();
+    shots = [...a.closest(".thumbs").querySelectorAll("a.thumb")];
+    lightbox().showModal();
+    show(shots.indexOf(a));
+  });
+
   tick();
   applyFilter();
   setInterval(tick, 10000);

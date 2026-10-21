@@ -136,6 +136,17 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .thumbs{display:flex;gap:10px;flex-wrap:wrap}
 .thumb img{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
 .thumb{border:0;border-radius:12px;padding:0;background:var(--fill);overflow:hidden;width:88px;height:118px;box-shadow:0 0 0 1px var(--sep);display:grid;place-content:center;font-size:12px;color:var(--label2);text-align:center}
+.lightbox{border:0;padding:0;background:transparent;max-width:100vw;max-height:100vh;width:100vw;height:100vh;overflow:hidden}
+.lightbox::backdrop{background:rgba(0,0,0,.86)}
+.lightbox[open]{display:grid;place-items:center}
+.lightbox img{max-width:calc(100vw - 144px);max-height:calc(100vh - 96px);border-radius:12px;box-shadow:0 8px 40px rgba(0,0,0,.5)}
+.lightbox-count{position:fixed;bottom:16px;left:0;right:0;margin:0;text-align:center;font-size:14px;color:rgba(255,255,255,.8)}
+.lightbox button{position:fixed;border:0;border-radius:50%;width:44px;height:44px;background:rgba(255,255,255,.16);color:#fff;font:22px/1 -apple-system,system-ui,sans-serif;cursor:pointer}
+.lightbox button:hover{background:rgba(255,255,255,.28)}
+.lightbox .prev{left:16px;top:50%;transform:translateY(-50%)}
+.lightbox .next{right:16px;top:50%;transform:translateY(-50%)}
+.lightbox-close{top:16px;right:16px}
+@media (max-width:600px){.lightbox img{max-width:calc(100vw - 32px)}.lightbox .prev,.lightbox .next{top:auto;bottom:48px;transform:none}}
 .evidence-links{display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
 .blocked-block{background:color-mix(in srgb,var(--blocked) 9%,transparent);border-radius:12px;padding:10px 12px}
 .blocked-block .expect{display:block;color:var(--ink);font-weight:600}

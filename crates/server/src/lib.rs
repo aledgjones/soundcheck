@@ -1,3 +1,4 @@
+pub mod bridge;
 pub mod drive;
 pub mod lint;
 pub mod report;

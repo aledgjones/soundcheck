@@ -56,6 +56,11 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
+    /// The plugin's MCP server over stdio: forwards each tool call to the run serving on the port.
+    Mcp {
+        #[arg(long, default_value_t = 7357)]
+        port: u16,
+    },
 }
 
 #[derive(clap::Args)]
@@ -97,6 +102,9 @@ fn main() -> ExitCode {
         Command::Lint { suite } => return lint_command(&suite),
         Command::Run(args) => run_command(args),
         Command::Events { run, after, once } => events_command(&run, after, once),
+        Command::Mcp { port } => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(soundcheck::bridge::bridge(port))),
         Command::Serve {
             suite,
             port,

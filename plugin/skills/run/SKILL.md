@@ -39,7 +39,7 @@ The project's regression skill gives you:
 
 1. `soundcheck lint <suite>`: it must be clean. If it isn't, stop and report; never edit specs mid-run.
 2. Start the server in the background: `soundcheck run <suite> --platforms <list> --scope <features or spec IDs> --label "<release under test>"` (leave out `--scope` for every spec), or `--resume <run folder>` to carry on an earlier run. Wait for its `MCP at http://127.0.0.1:7357/mcp` line; it also prints the run folder. Only specs in scope become rows, one per platform the spec runs on, so the verdict covers exactly the scope. A platform whose installed build can't be identified is built and installed first with the suite's install hook (several minutes; tell the person), and `--install` rebuilds every platform from the current tree. The server refuses to start if a build still can't be identified. Add `--headed` when the person wants to watch a web run: Chrome opens in a window instead of headless. Tell them it's for looking only, since a click or resize in it can steer a test.
-3. If the `mcp__plugin_soundcheck_soundcheck__*` tools aren't available, this session connected before the server was up: ask the person to reconnect soundcheck with `/mcp`, then carry on.
+3. If the `mcp__plugin_soundcheck_soundcheck__*` tools aren't available, the plugin's bridge (`soundcheck mcp`) didn't start: check `soundcheck` is on the PATH and ask the person to reconnect soundcheck with `/mcp`.
 4. Run `soundcheck events <run folder>` under a Monitor. It follows the run until the server stops; each line is one event, and each wakes you. A Monitor lasts at most 30 minutes: re-arm it with `--after <last sequence number you saw>`, so nothing is missed. `--once` prints what has happened so far and exits.
 
 ## 2. Dispatch

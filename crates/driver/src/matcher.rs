@@ -8,13 +8,28 @@ pub enum Matcher {
     Exact(String),
     Prefix(String),
     Regex(Regex),
+    /// A point on screen, for a control the screen reader can't name (a system sheet's button, a backdrop strip).
+    Point(f64, f64),
 }
 
 impl Matcher {
-    /// `re:<pattern>` for a regex, `prefix:<text>` for a prefix, anything else exact.
-    pub fn parse(target: &str) -> Result<Matcher, regex::Error> {
+    /// `re:<pattern>` for a regex, `prefix:<text>` for a prefix, `at:<x>,<y>` for a point in the platform's units,
+    /// anything else exact.
+    pub fn parse(target: &str) -> Result<Matcher, String> {
         if let Some(pattern) = target.strip_prefix("re:") {
-            Ok(Matcher::Regex(Regex::new(pattern)?))
+            Ok(Matcher::Regex(
+                Regex::new(pattern).map_err(|e| e.to_string())?,
+            ))
+        } else if let Some(point) = target.strip_prefix("at:") {
+            point
+                .split_once(',')
+                .and_then(|(x, y)| {
+                    Some(Matcher::Point(
+                        x.trim().parse().ok()?,
+                        y.trim().parse().ok()?,
+                    ))
+                })
+                .ok_or_else(|| "a point is `at:<x>,<y>`, e.g. `at:90,69`".to_string())
         } else if let Some(text) = target.strip_prefix("prefix:") {
             Ok(Matcher::Prefix(text.to_string()))
         } else {
@@ -27,6 +42,7 @@ impl Matcher {
             Matcher::Exact(t) => s == t,
             Matcher::Prefix(t) => s.starts_with(t.as_str()),
             Matcher::Regex(r) => r.is_match(s),
+            Matcher::Point(..) => false,
         }
     }
 
@@ -61,6 +77,7 @@ impl std::fmt::Display for Matcher {
             Matcher::Exact(t) => write!(f, "{t:?}"),
             Matcher::Prefix(t) => write!(f, "prefix {t:?}"),
             Matcher::Regex(r) => write!(f, "regex /{}/", r.as_str()),
+            Matcher::Point(x, y) => write!(f, "the point {x},{y}"),
         }
     }
 }

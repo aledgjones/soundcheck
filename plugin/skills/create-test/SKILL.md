@@ -69,6 +69,10 @@ Erase across two strokes at once; change the eraser width first.
 - A spec never relies on state another spec left behind, and never mentions another spec. A flow that builds on itself (create, rename, delete) is one spec.
 - If no seed scenario gives the starting state, add one: extend the project's seed hook, add the name to `suite.yaml`'s `seeds`, and pick `starts-on` labels unique to it. Boundaries (storage exactly full, one byte over) are seed scenarios too.
 
+## Controls without a label
+
+Testers tap by what `see` reads. An app control with no label is an app bug: give it one in the app and name it in the hints. Only a control the app can't label (a system sheet's button, a backdrop strip) gets a point, written as a target the tester can use: `at:90,69` (points on iOS, pixels on Android), with what's there so a screenshot confirms it.
+
 ## Turning a found bug into a regression spec
 
 Most specs start this way.

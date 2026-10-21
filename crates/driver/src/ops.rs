@@ -112,7 +112,7 @@ impl<D: Device> Driver<D> {
     /// Waits up to 5 s for the element, then taps its centre. `last` takes the last match: a system alert's button
     /// can share its label with the row that opened it.
     pub async fn tap(&self, target: &Matcher, last: bool) -> Result<Element> {
-        let e = self.wait_for(target, TAP_WAIT_MS, last).await?;
+        let e = self.target(target, last).await?;
         let (x, y) = e.tap_point();
         self.device.tap_at(x, y).await?;
         Ok(e)
@@ -120,10 +120,27 @@ impl<D: Device> Driver<D> {
 
     pub async fn hold(&self, target: &Matcher, ms: u64) -> Result<Element> {
         within("hold", ms, 1, GESTURE_MAX_MS, "milliseconds")?;
-        let e = self.wait_for(target, TAP_WAIT_MS, false).await?;
+        let e = self.target(target, false).await?;
         let (x, y) = e.tap_point();
         self.device.hold_at(x, y, ms).await?;
         Ok(e)
+    }
+
+    /// The element to touch: a point names itself, anything else is waited for up to 5 s.
+    async fn target(&self, target: &Matcher, last: bool) -> Result<Element> {
+        if let Matcher::Point(x, y) = *target {
+            return Ok(Element {
+                label: format!("at:{x},{y}"),
+                frame: crate::element::Rect {
+                    x,
+                    y,
+                    ..Default::default()
+                },
+                enabled: true,
+                ..Default::default()
+            });
+        }
+        self.wait_for(target, TAP_WAIT_MS, last).await
     }
 
     pub async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {

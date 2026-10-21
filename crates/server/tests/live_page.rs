@@ -310,7 +310,13 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         "{text}"
     );
     let shot = call(&client, "shot", json!({ "token": token, "name": "saved" })).await;
-    assert_eq!(shot, "saved.png");
+    assert_eq!(
+        shot,
+        format!(
+            "saved.png: Read it at {}",
+            run_dir.join("evidence/saved.png").display()
+        )
+    );
     assert!(run_dir.join("evidence/saved.png").exists());
 
     let posted = call(
