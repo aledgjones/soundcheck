@@ -21,8 +21,18 @@ async fn the_android_driver_reads_and_drives_settings() {
     };
     let driver = Driver::new(android);
     driver.device.launch().await.unwrap();
-    if driver.wait(&m("Network & internet"), 10_000).await.is_err() {
-        let seen: Vec<String> = driver.see(None, true).await.unwrap().iter().map(|e| e.line()).collect();
+    if driver
+        .wait(&m("prefix:Network & internet"), 10_000)
+        .await
+        .is_err()
+    {
+        let seen: Vec<String> = driver
+            .see(None, true)
+            .await
+            .unwrap()
+            .iter()
+            .map(|e| e.line())
+            .collect();
         panic!("Settings didn't open on its home screen: {seen:?}");
     }
 
@@ -54,10 +64,16 @@ async fn the_android_driver_reads_and_drives_settings() {
         .collect();
     assert!(talkback.is_subset(&reader) && talkback.contains("Network & internet"));
 
-    driver.tap(&m("Network & internet"), false).await.unwrap();
+    driver
+        .tap(&m("prefix:Network & internet"), false)
+        .await
+        .unwrap();
     driver.wait(&m("Internet"), 10_000).await.unwrap();
     driver.device.press("Back").await.unwrap();
-    driver.wait(&m("Network & internet"), 10_000).await.unwrap();
+    driver
+        .wait(&m("prefix:Network & internet"), 10_000)
+        .await
+        .unwrap();
 
     let (w, h) = driver.device.screen_size().await.unwrap();
     assert!(w > 100.0 && h > 100.0);

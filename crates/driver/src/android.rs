@@ -15,12 +15,10 @@ const READER_PORT: u16 = 9018;
 /// What a crash or hang looks like in logcat, for `errors`.
 const FAILURES: &str = r"FATAL EXCEPTION|ANR in|handleHostException|already has a parent";
 
-static NODE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<node ([^>]*?)/?>").unwrap());
+static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<node ([^>]*?)/?>").unwrap());
 static ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([\w-]+)="([^"]*)""#).unwrap());
 static BOUNDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]").unwrap());
-/// A label that is only a resource id (`com.example:id/row`) tells a screen reader user nothing.
-static ID_ONLY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[\w.]+:id/").unwrap());
 
 pub struct Android {
     adb: PathBuf,
@@ -43,12 +41,17 @@ fn unescape(s: &str) -> String {
         .replace("&amp;", "&")
 }
 
-/// Parses `uiautomator dump` XML (or the reader's, which adds `important`) into elements.
+/// Parses `uiautomator dump` XML into elements. The reader's default tree is already what a screen reader is given
+/// (Android leaves out views it deems unimportant), so the default view only drops labels that are just a resource or
+/// test id (`phosphor-react-native-list-regular`), which a screen reader never speaks. `all` keeps them.
 pub fn parse(xml: &str, all: bool) -> Vec<Element> {
     let mut out = Vec::new();
-    for node in NODE.captures_iter(xml) {
+    for node in TOKEN.captures_iter(xml) {
+        let Some(body) = node.get(1) else {
+            continue;
+        };
         let attrs: std::collections::HashMap<&str, String> = ATTR
-            .captures_iter(node.get(1).map_or("", |m| m.as_str()))
+            .captures_iter(body.as_str())
             .map(|c| {
                 (
                     c.get(1).unwrap().as_str(),
@@ -58,17 +61,13 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
             .collect();
         let get = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
         let flag = |k: &str| get(k) == "true";
-        if !all && attrs.contains_key("important") && !flag("important") {
-            continue;
-        }
         let (desc, text, id) = (get("content-desc"), get("text"), get("resource-id"));
-        let label = [desc, text, id]
-            .into_iter()
-            .find(|s| !s.is_empty())
-            .unwrap_or("");
-        if label.is_empty() || (!all && label == id && ID_ONLY.is_match(id)) {
-            continue;
-        }
+        let spoken = [desc, text].into_iter().find(|s| !s.trim().is_empty());
+        let label = match (spoken, all) {
+            (Some(s), _) => s,
+            (None, true) if !id.is_empty() => id,
+            _ => continue,
+        };
         let Some(b) = BOUNDS.captures(get("bounds")) else {
             continue;
         };
@@ -541,16 +540,16 @@ impl Device for Android {
 mod tests {
     use super::*;
 
-    const XML: &str = r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="x" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" important="false" bounds="[0,0][1600,2560]"><node index="0" text="Send diagnostic info" resource-id="" class="android.widget.TextView" package="x" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" important="false" bounds="[10,10][300,40]" /><node index="1" text="" resource-id="com.example:id/switch" class="android.widget.Switch" package="x" content-desc="Send diagnostic info" checkable="true" checked="true" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" important="true" bounds="[400,10][500,40]" /><node index="2" text="Opener" resource-id="" class="android.widget.EditText" package="x" content-desc="Title" checkable="false" checked="false" clickable="true" enabled="false" focusable="true" focused="true" scrollable="false" long-clickable="false" password="false" selected="false" important="true" bounds="[0,100][800,160]" /><node index="3" text="" resource-id="com.example:id/row" class="android.view.View" package="x" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" important="true" bounds="[0,200][800,260]" /></node></hierarchy>"#;
+    const XML: &str = r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focused="false" selected="false" bounds="[0,0][1600,2560]"><node index="1" text="" resource-id="com.example:id/switch" class="android.widget.Switch" content-desc="Send diagnostic info" checkable="true" checked="true" clickable="true" enabled="true" focused="false" selected="false" bounds="[400,10][500,40]" /><node index="2" text="Opener" resource-id="" class="android.widget.EditText" content-desc="Title" checkable="false" checked="false" clickable="true" enabled="false" focused="true" selected="false" bounds="[0,100][800,160]" /><node index="3" text="" resource-id="phosphor-react-native-list-regular" class="android.view.View" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focused="false" selected="false" bounds="[0,200][80,260]" /><node index="4" text="Off screen" resource-id="" class="android.widget.TextView" content-desc="" bounds="[0,0][0,0]" /></node></hierarchy>"#;
 
     #[test]
-    fn a_screen_reader_view_leaves_out_what_talkback_skips() {
+    fn the_default_view_is_what_a_screen_reader_speaks() {
         let seen = parse(XML, false);
         let labels: Vec<_> = seen.iter().map(|e| e.label.as_str()).collect();
         assert_eq!(
             labels,
             ["Send diagnostic info", "Title"],
-            "the hidden duplicate and the id-only row are left out"
+            "id-only and off-screen nodes are left out"
         );
         assert_eq!(seen[0].checked, Some(true));
         assert_eq!(seen[0].role.as_deref(), Some("Switch"));
@@ -560,12 +559,9 @@ mod tests {
     }
 
     #[test]
-    fn all_includes_everything_with_a_label() {
-        assert_eq!(
-            parse(XML, true).len(),
-            4,
-            "including the row labelled only by its id"
-        );
+    fn all_includes_id_only_labels() {
+        let labels: Vec<_> = parse(XML, true).into_iter().map(|e| e.label).collect();
+        assert!(labels.contains(&"phosphor-react-native-list-regular".to_string()));
     }
 
     #[test]

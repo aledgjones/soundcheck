@@ -208,7 +208,8 @@ Nothing in a run may wait for a human:
 ### 4.2 Element model
 
 - Each element has label, value, id, role, frame, tap point, enabled, and checked/selected/expanded/focused.
-- **It matches what a screen reader gets.** Android leaves out views marked not important for accessibility; `see --all` opts back in. A hidden duplicate label once took a tap meant for the real switch.
+- **It matches what a screen reader gets.** On Android the reader asks for the tree a screen reader is given: without the flag that includes views marked not important, so Android itself decides importance, as `uiautomator dump --compressed` does. Labels that are only a resource or test id are left out too, since a screen reader never speaks them. `see --all` gives everything. A hidden duplicate label once took a tap meant for the real switch.
+  - Filtering on each node's own importance flag doesn't work: on React Native every node reports "not important" (2026-10-21, Solo Scores read empty). Android's own tree is the reliable source.
   - This is the default from v1, once proven on the parity screen set.
   - Expect a few label fixes in the app.
 - **Label matching is explicit:** exact by default, with prefix or regex only when asked. An implicit match let `gone "Shuffle Order"` pass while `Shuffle Order…` was on screen.

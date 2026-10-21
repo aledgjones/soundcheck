@@ -83,6 +83,15 @@ public class Reader extends Instrumentation {
   }
 
   private String dump(boolean all) {
+    // The default view is the tree a screen reader is given: without views marked not important, as Android itself
+    // decides importance (`uiautomator dump --compressed`). `all` asks for everything, as `uiautomator dump` does.
+    AccessibilityServiceInfo info = automation.getServiceInfo();
+    if (all) {
+      info.flags |= AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+    } else {
+      info.flags &= ~AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS;
+    }
+    automation.setServiceInfo(info);
     try {
       // Unlike uiautomator, never fail on a screen that never settles (a pulsing coach mark): read it anyway.
       automation.waitForIdle(100, 1500);
@@ -132,8 +141,6 @@ public class Reader extends Instrumentation {
     flag(xml, "long-clickable", n.isLongClickable());
     flag(xml, "password", n.isPassword());
     flag(xml, "selected", n.isSelected());
-    // What a screen reader skips; the driver leaves these out unless asked for everything.
-    flag(xml, "important", n.isImportantForAccessibility());
     xml.append(" bounds=\"[").append(bounds.left).append(',').append(bounds.top).append("][")
         .append(bounds.right).append(',').append(bounds.bottom).append("]\">");
     int childIndex = 0;
