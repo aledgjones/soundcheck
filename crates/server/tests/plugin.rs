@@ -39,6 +39,7 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
         "pause",
         "resume",
         "finish",
+        "export",
     ] {
         assert!(
             skill.contains(&format!("{PREFIX}{tool}")),

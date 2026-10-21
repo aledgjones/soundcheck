@@ -134,6 +134,7 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .call b{font-weight:600}
 .call .muted{display:block;font-size:14px}
 .thumbs{display:flex;gap:10px;flex-wrap:wrap}
+.thumb img{width:100%;height:100%;object-fit:cover;object-position:top;display:block}
 .thumb{border:0;border-radius:12px;padding:0;background:var(--fill);overflow:hidden;width:88px;height:118px;box-shadow:0 0 0 1px var(--sep);display:grid;place-content:center;font-size:12px;color:var(--label2);text-align:center}
 .evidence-links{display:flex;gap:14px;flex-wrap:wrap;font-size:14px}
 .blocked-block{background:color-mix(in srgb,var(--blocked) 9%,transparent);border-radius:12px;padding:10px 12px}
@@ -181,3 +182,16 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
 .attn-only .check:not([data-attn]){display:none}
 .nowbar .warn,.ago.warn{color:var(--partial);font-weight:600}
 .empty{padding:20px 28px;color:var(--label2);font-size:15px}
+/* The runs index */
+.runs{margin-top:28px;overflow:hidden}
+.run-row{display:grid;grid-template-columns:56px 1fr minmax(0,260px);gap:18px;align-items:center;padding:14px 24px;color:inherit;text-decoration:none;position:relative}
+.run-row+.run-row::before{content:"";position:absolute;top:0;left:24px;right:0;height:1px;background:var(--sep)}
+a.run-row:hover{background:var(--fill);text-decoration:none}
+.run-ring .ring{width:44px;height:44px}
+.run-ring .ring circle{stroke-width:16}
+.run-text{display:flex;flex-direction:column;min-width:0}
+.run-text .muted{font-size:14px}
+.run-verdict{display:flex;flex-direction:column;text-align:right;font-size:14px}
+.run-verdict strong{font-size:16px}
+.run-verdict strong.failing,.summary-verdict strong.failing{color:var(--fail)}
+@media (max-width:734px){.run-row{grid-template-columns:44px 1fr;padding:12px 16px}.run-verdict{grid-column:2;text-align:left}}

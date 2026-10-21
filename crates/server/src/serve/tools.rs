@@ -267,12 +267,25 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Triage still works afterwards."
+        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it."
     )]
     async fn finish(&self) -> Result<CallToolResult, ErrorData> {
+        let hub = self.hub.clone();
         reply(self.hub.with_run(|run, now| {
             let counts = run.finish(now)?;
-            Ok(json!({ "results": counts, "verdict": run.verdict() }))
+            let report = hub.export(run, now)?;
+            Ok(json!({ "results": counts, "verdict": run.verdict(), "report": report }))
+        }))
+    }
+
+    #[tool(
+        description = "Coordinator: write a self-contained copy of the report (screenshots embedded) into the run's folder, stamped in progress or final. Do it after triage too."
+    )]
+    async fn export(&self) -> Result<CallToolResult, ErrorData> {
+        let hub = self.hub.clone();
+        reply(self.hub.with_run(|run, now| {
+            let report = hub.export(run, now)?;
+            Ok(json!({ "report": report }))
         }))
     }
 }

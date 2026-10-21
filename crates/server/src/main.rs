@@ -173,7 +173,7 @@ fn run_command(
     });
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let hub = serve::Hub::new(suite, run, label, stall_ms);
+        let hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
         let server = serve::start(hub, port).await?;
         let url = format!("http://{}", server.addr);
         let info = serde_json::json!({

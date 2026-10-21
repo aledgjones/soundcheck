@@ -11,6 +11,12 @@ use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 async fn server() -> (serve::Server, String) {
+    let (server, url, _) = server_in().await;
+    (server, url)
+}
+
+/// A server whose run folder sits in its own reports folder, beside an earlier run.
+async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     let suite = suite::load(&root);
     let plan = Plan {
@@ -29,14 +35,19 @@ async fn server() -> (serve::Server, String) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("soundcheck-serve-{}-{nanos}", std::process::id()));
+    let dir = std::env::temp_dir()
+        .join(format!("soundcheck-serve-{}-{nanos}", std::process::id()))
+        .join("20261021-090000");
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(Hub::new(suite, run, "v0.0.0 · test".into(), 120_000), 0)
-        .await
-        .unwrap();
+    let server = serve::start(
+        Hub::new(suite, run, "v0.0.0 · test".into(), dir.clone(), 120_000),
+        0,
+    )
+    .await
+    .unwrap();
     let url = format!("http://{}", server.addr);
-    (server, url)
+    (server, url, dir)
 }
 
 async fn client(url: &str) -> RunningService<RoleClient, ClientConfig> {
@@ -272,5 +283,78 @@ async fn the_event_stream_replays_then_follows() {
     );
 
     client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
+    let (server, url, dir) = server_in().await;
+    // An earlier run beside this one, with its own export.
+    let earlier = dir.parent().unwrap().join("20261020-090000");
+    std::fs::create_dir_all(&earlier).unwrap();
+    std::fs::write(
+        earlier.join("summary.json"),
+        json!({"label": "v2.16.1 · candidate", "started": 1, "finished": true,
+               "verdict": {"status": "ready", "reasons": []},
+               "counts": {"total": 2, "pass": 2, "fail": 0, "blocked": 0}})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(earlier.join("report.html"), "<h1>earlier</h1>").unwrap();
+
+    let client = client(&url).await;
+    call(
+        &client,
+        "pause",
+        json!({ "reason": "a summary needs an event" }),
+    )
+    .await;
+    call(&client, "resume", json!({})).await;
+    let finished = call(&client, "finish", json!({})).await;
+    let report = std::fs::read_to_string(finished["report"].as_str().unwrap()).unwrap();
+    assert!(report.contains("Final report, exported"));
+    assert!(
+        !report.contains("class=\"nowbar\""),
+        "an export has no live bar"
+    );
+    assert!(dir.join("summary.json").exists());
+
+    let index = reqwest::get(format!("{url}/runs"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let (newer, older) = (
+        index.find("v0.0.0 · test").unwrap(),
+        index.find("v2.16.1 · candidate").unwrap(),
+    );
+    assert!(newer < older, "newest first");
+    assert!(index.contains("href=\"runs/20261020-090000/report.html\""));
+    let past = reqwest::get(format!("{url}/runs/20261020-090000/report.html"))
+        .await
+        .unwrap();
+    assert_eq!(past.text().await.unwrap(), "<h1>earlier</h1>");
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn evidence_is_served_from_the_run_folder_only() {
+    let (server, url, dir) = server_in().await;
+    std::fs::create_dir_all(dir.join("evidence")).unwrap();
+    std::fs::write(dir.join("evidence/undo.png"), b"png").unwrap();
+    let ok = reqwest::get(format!("{url}/files/evidence/undo.png"))
+        .await
+        .unwrap();
+    assert_eq!(ok.status(), 200);
+    assert_eq!(ok.headers()["content-type"], "image/png");
+    for bad in ["..%2Fjournal.jsonl", ".hidden", "missing.png"] {
+        let r = reqwest::get(format!("{url}/files/evidence/{bad}"))
+            .await
+            .unwrap();
+        assert_eq!(r.status(), 404, "{bad}");
+    }
     server.shutdown.cancel();
 }

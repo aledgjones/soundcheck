@@ -114,6 +114,8 @@ fn the_page_shows_failures_findings_and_checks() {
         run: &run,
         label: "v2.16.2 · candidate",
         live: true,
+        run_dir: None,
+        export: None,
     });
     if let Ok(path) = std::env::var("SOUNDCHECK_REPORT_SAMPLE") {
         std::fs::write(path, &html).unwrap();
@@ -148,6 +150,11 @@ fn an_export_has_no_live_bar() {
         run: &run,
         label: "v2.16.2",
         live: false,
+        run_dir: None,
+        export: Some(report::Export {
+            at: 0,
+            finished: false,
+        }),
     });
     assert!(!html.contains("class=\"nowbar\""));
     assert!(html.contains("data-live=\"false\""));
@@ -159,4 +166,38 @@ fn text_from_testers_is_escaped() {
         report::esc("<b>\"x\" & 'y'</b>"),
         "&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;"
     );
+}
+
+#[test]
+fn an_export_embeds_its_screenshots() {
+    let (suite, mut run) = sample();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soundcheck-evidence-{nanos}"));
+    std::fs::create_dir_all(dir.join("evidence")).unwrap();
+    std::fs::write(dir.join("evidence/back.png"), [0x89, b'P', b'N', b'G']).unwrap();
+    let t = run
+        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .unwrap();
+    let mut posted = judged(&[(Answer::Held, "fine"), (Answer::Held, "fine")]);
+    posted.judgments[0].evidence.push("back.png".into());
+    run.post(2, &t, posted).unwrap();
+    let page = |export: Option<report::Export>| Page {
+        suite: &suite,
+        run: &run,
+        label: "x",
+        live: export.is_none(),
+        run_dir: Some(&dir),
+        export,
+    };
+    let live = report::document(&page(None));
+    assert!(live.contains("src=\"files/evidence/back.png\""));
+    let exported = report::document(&page(Some(report::Export {
+        at: 3,
+        finished: false,
+    })));
+    assert!(exported.contains("src=\"data:image/png;base64,iVBORw==\""));
+    assert!(exported.contains("In progress, exported"));
 }

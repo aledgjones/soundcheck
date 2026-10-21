@@ -10,7 +10,7 @@ use crate::run::journal::Entry;
 use crate::suite::Suite;
 use anyhow::Result;
 use axum::body::{Body, Bytes};
-use axum::extract::{Query, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -19,6 +19,7 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde::Deserialize;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
@@ -35,17 +36,20 @@ pub struct Hub {
     pub suite: Suite,
     /// The release under test, shown as the page's title.
     pub label: String,
+    /// The run's folder: journal, evidence, summary and exports. Its siblings are earlier runs.
+    pub run_dir: PathBuf,
     run: Mutex<Run>,
     events: broadcast::Sender<Entry>,
     pub stall_ms: u64,
 }
 
 impl Hub {
-    pub fn new(suite: Suite, run: Run, label: String, stall_ms: u64) -> Arc<Hub> {
+    pub fn new(suite: Suite, run: Run, label: String, run_dir: PathBuf, stall_ms: u64) -> Arc<Hub> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Hub {
             suite,
             label,
+            run_dir,
             run: Mutex::new(run),
             events,
             stall_ms,
@@ -57,10 +61,37 @@ impl Hub {
         let mut run = self.run.lock().unwrap_or_else(|e| e.into_inner());
         let before = run.last_seq();
         let result = f(&mut run, now_ms());
-        for entry in run.entries_after(before) {
+        let fresh = run.entries_after(before);
+        for entry in fresh {
             let _ = self.events.send(entry.clone());
         }
+        if !fresh.is_empty() {
+            let _ = std::fs::write(
+                self.run_dir.join(SUMMARY_FILE),
+                report::run_summary(&run, &self.label).to_string(),
+            );
+        }
         result
+    }
+
+    fn page<'a>(&'a self, run: &'a Run, export: Option<report::Export>) -> report::Page<'a> {
+        report::Page {
+            suite: &self.suite,
+            run,
+            label: &self.label,
+            live: export.is_none(),
+            run_dir: Some(&self.run_dir),
+            export,
+        }
+    }
+
+    /// Writes the self-contained copy of the report into the run's folder and returns its path.
+    pub fn export(&self, run: &Run, now: u64) -> Result<PathBuf> {
+        let finished = run.state().finished;
+        let html = report::document(&self.page(run, Some(report::Export { at: now, finished })));
+        let path = self.run_dir.join(EXPORT_FILE);
+        std::fs::write(&path, html)?;
+        Ok(path)
     }
 
     fn stall_silent_testers(&self) {
@@ -102,6 +133,9 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/events", get(events_stream))
         .route("/", get(page))
         .route("/fragment", get(fragment))
+        .route("/files/evidence/{name}", get(evidence_file))
+        .route("/runs", get(runs_index))
+        .route("/runs/{name}/report.html", get(past_report))
         .layer(middleware::from_fn_with_state(addr.port(), local_only))
         .with_state(hub.clone());
 
@@ -157,32 +191,76 @@ fn is_local(port: u16, headers: &axum::http::HeaderMap) -> bool {
     host_ok && origin_ok
 }
 
+pub const SUMMARY_FILE: &str = "summary.json";
+pub const EXPORT_FILE: &str = "report.html";
+
 async fn page(State(hub): State<Arc<Hub>>) -> Response {
     let html = hub
-        .with_run(|run, _| {
-            Ok(report::document(&report::Page {
-                suite: &hub.suite,
-                run,
-                label: &hub.label,
-                live: true,
-            }))
-        })
+        .with_run(|run, _| Ok(report::document(&hub.page(run, None))))
         .unwrap_or_default();
     axum::response::Html(html).into_response()
 }
 
 async fn fragment(State(hub): State<Arc<Hub>>) -> Response {
     let html = hub
-        .with_run(|run, _| {
-            Ok(report::content(&report::Page {
-                suite: &hub.suite,
-                run,
-                label: &hub.label,
-                live: true,
-            }))
-        })
+        .with_run(|run, _| Ok(report::content(&hub.page(run, None))))
         .unwrap_or_default();
     axum::response::Html(html).into_response()
+}
+
+async fn evidence_file(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Response {
+    if !report::safe_name(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let path = hub.run_dir.join(report::EVIDENCE_DIR).join(&name);
+    let kind = match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("json" | "jsonl") => "application/json",
+        _ => "text/plain; charset=utf-8",
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, kind)], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Every run beside this one, newest first, from their summaries.
+async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
+    let current = hub
+        .run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut runs = Vec::new();
+    if let Some(reports) = hub.run_dir.parent()
+        && let Ok(entries) = std::fs::read_dir(reports)
+    {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Ok(text) = std::fs::read_to_string(entry.path().join(SUMMARY_FILE))
+                && let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text)
+            {
+                let exported = entry.path().join(EXPORT_FILE).exists();
+                runs.push((name, summary, exported));
+            }
+        }
+    }
+    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    axum::response::Html(report::index(&runs, &current)).into_response()
+}
+
+async fn past_report(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Response {
+    if !report::safe_name(&name) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    let Some(reports) = hub.run_dir.parent() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tokio::fs::read_to_string(reports.join(&name).join(EXPORT_FILE)).await {
+        Ok(html) => axum::response::Html(html).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 #[derive(Deserialize)]

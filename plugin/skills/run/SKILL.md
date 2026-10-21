@@ -17,6 +17,7 @@ allowed-tools:
   - mcp__plugin_soundcheck_soundcheck__pause
   - mcp__plugin_soundcheck_soundcheck__resume
   - mcp__plugin_soundcheck_soundcheck__finish
+  - mcp__plugin_soundcheck_soundcheck__export
 ---
 
 # Run a suite
@@ -83,6 +84,8 @@ When the person has a fix built and installed on a platform, the run carries on 
 
 When `status` shows nothing running, queued or waiting for review, call `finish`. It refuses, and names what's in the way, if anything is still open.
 
+Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline). Call `export` again after triage, so the kept copy shows the decisions; `export` also works mid-run, stamped in progress.
+
 ## 7. Triage, with the person
 
 Go through the open problems with the person, usually at the end, one at a time: what failed (the outcome, expected versus observed), how sure you are (verified or a single attempt), and your suggestion. They decide; you record it with `triage`:
@@ -92,4 +95,4 @@ Go through the open problems with the person, usually at the end, one at a time:
 - **defer:** create a ticket; it's accepted for this release;
 - **duplicate:** of an earlier problem, which it then follows.
 
-The verdict (`status`) is Ready only when nothing is open. Report it to the person in one line, with its reasons if it isn't Ready.
+The verdict (`status`) is Ready only when nothing is open. Export once triage is done. Report it to the person in one line, with its reasons if it isn't Ready.

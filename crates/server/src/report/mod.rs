@@ -7,7 +7,9 @@ use crate::serve::events;
 use crate::suite::Suite;
 use crate::suite::config::Platform;
 use crate::suite::spec::Spec;
+use base64::Engine;
 use std::fmt::Write;
+use std::path::Path;
 
 const CSS: &str = include_str!("report.css");
 const JS: &str = include_str!("report.js");
@@ -23,6 +25,28 @@ pub struct Page<'a> {
     pub label: &'a str,
     /// The live page follows the event stream; an export is a still copy.
     pub live: bool,
+    /// Where the run keeps its evidence; screenshots are linked from it live and embedded in an export.
+    pub run_dir: Option<&'a Path>,
+    /// Set for an export: when it was made, and whether the run had finished.
+    pub export: Option<Export>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct Export {
+    pub at: u64,
+    pub finished: bool,
+}
+
+/// Screenshots and other evidence a tester or the server saved for a row.
+pub const EVIDENCE_DIR: &str = "evidence";
+
+/// A file name evidence can use: no folders, nothing hidden.
+pub fn safe_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('.')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 pub fn esc(s: &str) -> String {
@@ -172,6 +196,17 @@ fn header(page: &Page) -> String {
     }
     if let Some(last) = entries.last() {
         facts.push(format!("<span>Updated {}</span>", time(last.at)));
+    }
+    if let Some(export) = page.export {
+        facts.push(format!(
+            "<span>{} {}</span>",
+            if export.finished {
+                "Final report, exported"
+            } else {
+                "In progress, exported"
+            },
+            time(export.at)
+        ));
     }
     format!(
         "<header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>{}</h1><div class=\"facts\">{}</div></div></header>",
@@ -547,7 +582,7 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
             }
         );
         out.push_str(&outcomes(spec, posted, r, in_block));
-        out.push_str(&evidence(posted));
+        out.push_str(&evidence(page, posted));
     }
     out
 }
@@ -592,7 +627,30 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> St
     out
 }
 
-fn evidence(posted: &Posted) -> String {
+fn image(page: &Page, name: &str) -> Option<String> {
+    if !safe_name(name) {
+        return None;
+    }
+    let dir = page.run_dir?;
+    let path = dir.join(EVIDENCE_DIR).join(name);
+    if page.export.is_some() {
+        let bytes = std::fs::read(&path).ok()?;
+        let kind = match path.extension().and_then(|e| e.to_str()) {
+            Some("png") => "image/png",
+            Some("jpg" | "jpeg") => "image/jpeg",
+            _ => return None,
+        };
+        Some(format!(
+            "data:{kind};base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        ))
+    } else {
+        path.exists()
+            .then(|| format!("files/{EVIDENCE_DIR}/{name}"))
+    }
+}
+
+fn evidence(page: &Page, posted: &Posted) -> String {
     let shots: Vec<&String> = posted
         .judgments
         .iter()
@@ -606,7 +664,18 @@ fn evidence(posted: &Posted) -> String {
     if !shots.is_empty() {
         out.push_str("<div class=\"thumbs\" aria-label=\"Screenshots\" style=\"margin-top:12px\">");
         for s in shots {
-            let _ = write!(out, "<div class=\"thumb\">{}</div>", esc(s));
+            match image(page, s) {
+                Some(src) => {
+                    let _ = write!(
+                        out,
+                        "<a class=\"thumb\" href=\"{src}\" target=\"_blank\" rel=\"noopener\"><img src=\"{src}\" alt=\"{}\"></a>",
+                        esc(s)
+                    );
+                }
+                None => {
+                    let _ = write!(out, "<div class=\"thumb\">{}</div>", esc(s));
+                }
+            }
         }
         out.push_str("</div>");
     }
@@ -796,5 +865,87 @@ fn timeline(page: &Page) -> String {
     format!(
         "<section class=\"block\"><h2>Timeline</h2><div class=\"card timeline\"><details class=\"fold\" id=\"timeline\"><summary>Show all {} events</summary><ol>{lines}</ol></details></div></section>",
         entries.len()
+    )
+}
+
+/// What the runs index shows for a run, rewritten after every event.
+pub fn run_summary(run: &Run, label: &str) -> serde_json::Value {
+    let state = run.state();
+    let mut t = Tally::default();
+    for r in state.rows.values() {
+        t.add(r);
+    }
+    let entries = run.entries_after(0);
+    serde_json::json!({
+        "label": label,
+        "started": entries.first().map(|e| e.at),
+        "updated": entries.last().map(|e| e.at),
+        "finished": state.finished,
+        "verdict": verdict(state),
+        "counts": { "total": t.total, "pass": t.pass, "fail": t.fail, "blocked": t.blocked },
+    })
+}
+
+/// The list of runs: each opens its live page (the current run) or its export.
+pub fn index(runs: &[(String, serde_json::Value, bool)], current: &str) -> String {
+    let mut rows = String::new();
+    for (name, s, exported) in runs {
+        let count = |k: &str| s["counts"][k].as_u64().unwrap_or(0) as u32;
+        let t = Tally {
+            total: count("total"),
+            pass: count("pass"),
+            fail: count("fail"),
+            blocked: count("blocked"),
+            ..Tally::default()
+        };
+        let status = s["verdict"]["status"].as_str().unwrap_or("not-ready");
+        let (class, word) = match status {
+            "failing" => ("failing", "Failing"),
+            "ready" => ("", "Ready"),
+            _ => ("", "Not ready"),
+        };
+        let reasons = s["verdict"]["reasons"]
+            .as_array()
+            .map(|r| {
+                r.iter()
+                    .filter_map(|x| x.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+            })
+            .unwrap_or_default();
+        let href = if name == current {
+            Some("./".to_string())
+        } else if *exported {
+            Some(format!("runs/{}/report.html", esc(name)))
+        } else {
+            None
+        };
+        let when = s["started"].as_u64().map(time).unwrap_or_default();
+        let live = if name == current && !s["finished"].as_bool().unwrap_or(false) {
+            " <span class=\"chip ticket\">Live</span>"
+        } else {
+            ""
+        };
+        let inner = format!(
+            "<span class=\"run-ring\">{}</span><span class=\"run-text\"><b>{}</b>{live}<span class=\"muted\">{} · {when}</span></span><span class=\"run-verdict\"><strong class=\"{class}\">{word}</strong><span class=\"muted\">{}</span></span>",
+            ring(&t),
+            esc(s["label"].as_str().unwrap_or(name)),
+            esc(name),
+            esc(&reasons)
+        );
+        match href {
+            Some(href) => {
+                let _ = write!(rows, "<a class=\"run-row\" href=\"{href}\">{inner}</a>");
+            }
+            None => {
+                let _ = write!(rows, "<div class=\"run-row\">{inner}</div>");
+            }
+        }
+    }
+    if rows.is_empty() {
+        rows = "<p class=\"empty\">No runs yet.</p>".into();
+    }
+    format!(
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><title>Runs · soundcheck</title><style>{CSS}</style></head><body><div id=\"live\" data-live=\"false\"><main><header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>Runs</h1></div></header><section class=\"card runs\">{rows}</section></main></div><script>{JS}</script></body></html>\n"
     )
 }
