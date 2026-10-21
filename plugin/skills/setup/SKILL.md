@@ -49,6 +49,7 @@ platforms:
   android:
     app-id: com.example.app
     account: android-tester@example.com
+    ready: [Home] # what shows once the app is signed in; the run checks it before starting
   ios:
     app-id: com.example.app
     account: ios-tester@example.com

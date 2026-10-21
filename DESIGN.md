@@ -63,13 +63,14 @@ How they talk:
 
 ### 3.2 A run
 
-1. **`soundcheck run <suite>`** (the coordinator starts it):
-   - lint the suite and refuse if it's invalid;
-   - check the suite's pinned version;
-   - run the project's `guard` hook;
-   - connect to or boot the devices;
-   - read build identity;
-   - open the live page.
+1. **`soundcheck run <suite>`** (the coordinator starts it) runs a **preflight**: a fixed checklist, printed as each step passes, journalled for the timeline, and refusing to start at the first failure with what to fix. Deterministic on purpose: preparation is never an agent's judgement call.
+   - lint the suite and check its pinned version;
+   - run the project's `guard` hook (the project decides what "safe and up" means, e.g. local only, backend answering);
+   - read each platform's build identity; build and install with the `install` hook where it's unknown (every platform with `--install`), and refuse if it's still unknown;
+   - connect each device, launch the app and wait for the platform's `ready` labels from `suite.yaml` (signed in, past onboarding);
+   - then open the live page.
+
+   The project supplies every specific (hooks, `ready` labels); soundcheck supplies the sequence and the generic checks, so it stays project-agnostic.
 2. **Dispatch, one spec at a time per platform:** the coordinator calls `dispatch(spec, platform)`.
    - The server runs the project's `seed` hook, relaunches the app, then checks the spec's `starts-on` elements are on screen. A failure there is a **reset error**: retried automatically (twice), never counted as an attempt and never blamed on the tester or the app; if it persists, the spec is filed BLOCKED "reset failed" with the server's capture.
    - It returns the rendered prompt: the spec, its `_feature.md`, the platform hints, the result contract and a spec token. The prompt is recorded in the journal.
@@ -271,7 +272,8 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `platforms`:
   - app IDs per platform;
   - for web: base URL, a start hook, browsers and viewports;
-  - the account each platform signs in with.
+  - the account each platform signs in with;
+  - `ready`: labels that prove the launched app is ready to test (signed in, past onboarding), checked by the preflight.
 - `hooks`: the commands in 5.3.
 - `specs`: the folder holding the feature folders (default: the suite folder itself).
 - `seeds`: the seed scenario names the `seed` hook accepts, so lint can check every spec's seed.
