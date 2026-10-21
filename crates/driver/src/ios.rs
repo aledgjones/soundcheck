@@ -614,25 +614,26 @@ impl Device for Ios {
                 .parse::<f64>()
                 .ok()
         }) {
-            health.measure(
+            health.host(
                 format!("Mac memory {free:.0}% free"),
                 free < MIN_FREE_MEMORY_PERCENT,
             );
         }
         let load = run("sysctl", &["-n", "vm.loadavg", "hw.ncpu"]).await?;
-        // `{ 1m 5m 15m }` then the core count; the five-minute average, as on Android.
-        let five_minutes = load
+        // `{ 1m 5m 15m }` then the core count. The one-minute average: the five-minute one still holds a simulator's
+        // boot minutes after it has settled.
+        let one_minute = load
             .split_whitespace()
-            .nth(2)
+            .nth(1)
             .and_then(|n| n.parse::<f64>().ok());
         let cores = load
             .lines()
             .nth(1)
             .and_then(|n| n.trim().parse::<f64>().ok());
-        if let (Some(five_minutes), Some(cores)) = (five_minutes, cores) {
-            health.measure(
-                format!("Mac load {five_minutes:.1} on {cores:.0} cores"),
-                five_minutes > cores * MAX_LOAD_PER_CORE,
+        if let (Some(one_minute), Some(cores)) = (one_minute, cores) {
+            health.host(
+                format!("Mac load {one_minute:.1} on {cores:.0} cores"),
+                one_minute > cores * MAX_LOAD_PER_CORE,
             );
         }
         if let Some(ms) = *self

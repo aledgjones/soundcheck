@@ -129,8 +129,9 @@ Each spec on each platform moves through `not run → running → needs review �
 
 - **Sampled after every result,** and journalled with that attempt as evidence:
   - Android: free memory (degraded under 10%), busy CPU over two seconds while the app sits idle (over 80%; not the load average, which post-boot disk work keeps near 20 with the CPU idle), ANRs in other apps since launch, and the app's launch time (`am start -W`, over 15 s);
-  - iOS: the simulator shares the Mac, so the Mac's free memory and load, plus the app's launch time (over 20 s).
+  - iOS: the app's launch time (over 20 s). The simulator shares the Mac, so the Mac's free memory (under 10%) and its one-minute load (over 2 per core) are sampled too, as host signals.
   - Lost `adb reverse` forwards are put back on the spot: a reboot drops them, and the app then silently shows stale data.
+- **When the host is busy** (a host signal past its limit), and while a degraded device restarts: dispatch refuses with `held:` rather than blocking (a tool call times out long before a boot settles), and the server watches the host every 15 s for up to 10 minutes, then journals the platform's `ready` event, the coordinator's cue to dispatch again. A host that never settles isn't held for again for 15 minutes. The wait is a note in the record. A restart never answers a busy host: a booting simulator adds load, and on the first run (2026-10-21) restarts for the Mac's five-minute load fed a boot storm (`amsengagementd` and News at 100% each, load 140) that marked the next spec degraded too.
 - **When health is degraded:**
   - the attempt is marked, and a failure seen on it can't be upheld until it reproduces: the coordinator verifies it, and the rerun runs on the restarted device. A harness BLOCKED can still be upheld;
   - the server restarts the emulator or simulator before the next spec on it, waits for it to settle, restores its forwards and reconnects its reader. Both are notes in the record. At most one restart per platform in 15 minutes, so a device that stays degraded is noted rather than rebooted in a loop.

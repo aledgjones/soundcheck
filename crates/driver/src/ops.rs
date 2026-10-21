@@ -199,7 +199,7 @@ impl<D: Device> Driver<D> {
             BURST_INTERVAL_MS.1,
             "milliseconds",
         )?;
-        let e = self.wait_for(target, TAP_WAIT_MS, false).await?;
+        let e = self.target(target, false).await?;
         let (x, y) = e.tap_point();
         self.device.tap_burst(x, y, count, interval_ms).await?;
         Ok(e)
@@ -297,14 +297,22 @@ impl<D: Device> Driver<D> {
         Ok(Comparison::new(p, s, req.tolerance))
     }
 
+    /// Looks in what a screen reader gets first, then in everything `see` shows with `all`: a view marked not
+    /// important (the score's page) is still a target by its id.
     async fn find(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {
-        let elements = self.device.read(false).await?;
-        let mut matching = elements.into_iter().filter(|e| target.matches(e));
-        Ok(if last {
-            matching.next_back()
-        } else {
-            matching.next()
-        })
+        for all in [false, true] {
+            let elements = self.device.read(all).await?;
+            let mut matching = elements.into_iter().filter(|e| target.matches(e));
+            let found = if last {
+                matching.next_back()
+            } else {
+                matching.next()
+            };
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
     }
 
     async fn wait_for(&self, target: &Matcher, timeout_ms: u64, last: bool) -> Result<Element> {

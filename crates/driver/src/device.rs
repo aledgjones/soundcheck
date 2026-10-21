@@ -24,17 +24,28 @@ pub type Result<T> = std::result::Result<T, DriverError>;
 /// one-off failures that looked like app bugs.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Health {
-    /// Why the device counts as degraded; empty when it's healthy.
+    /// Why the device counts as degraded; empty when it's healthy. A restart can fix these.
     pub degraded: Vec<String>,
+    /// Why the machine running the device is busy (its load, its memory). A restart can't fix these and makes them
+    /// worse, since a booting simulator adds load, so the server waits them out instead.
+    pub busy: Vec<String>,
     /// What was measured, for the record ("memory 41% free", "launch 1.2 s").
     pub facts: Vec<String>,
 }
 
 impl Health {
-    /// Records a measurement, and a degradation when it's past its limit.
+    /// Records a measurement of the device, and a degradation when it's past its limit.
     pub fn measure(&mut self, fact: String, degraded: bool) {
         if degraded {
             self.degraded.push(fact.clone());
+        }
+        self.facts.push(fact);
+    }
+
+    /// Records a measurement of the host, and that it's busy when it's past its limit.
+    pub fn host(&mut self, fact: String, busy: bool) {
+        if busy {
+            self.busy.push(fact.clone());
         }
         self.facts.push(fact);
     }
@@ -138,5 +149,20 @@ pub trait Device {
             tool,
             platform: self.platform(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_busy_host_isnt_a_degraded_device() {
+        let mut health = Health::default();
+        health.host("Mac load 46.2 on 10 cores".into(), true);
+        health.measure("launch 1.2 s".into(), false);
+        assert!(health.degraded.is_empty());
+        assert_eq!(health.busy, ["Mac load 46.2 on 10 cores"]);
+        assert_eq!(health.facts.len(), 2);
     }
 }

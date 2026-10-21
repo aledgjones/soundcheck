@@ -80,6 +80,8 @@ pub struct RowRecord {
     pub captured: Vec<String>,
     /// Why the device was degraded during the latest attempt; empty when it was healthy.
     pub degraded: Vec<String>,
+    /// What the coordinator wants the next attempt told, after fixing a harness gap.
+    pub rerun_note: Option<String>,
 }
 
 /// A side find waiting for the coordinator.
@@ -386,8 +388,13 @@ impl Run {
                 },
                 _,
             ) => bail!("an Unsure is judged PASS or FAIL; if it can't be, mark the spec unclear"),
-            (Call::Verify { .. } | Call::SendBack, _) if record.budget >= MAX_ATTEMPTS => {
+            (Call::Verify { .. } | Call::SendBack | Call::Harness { rerun: Some(_), .. }, _)
+                if record.budget >= MAX_ATTEMPTS =>
+            {
                 bail!("{spec} has used all {MAX_ATTEMPTS} attempts: file what's known")
+            }
+            (Call::Harness { rerun: Some(note) }, _) if note.trim().is_empty() => {
+                bail!("say what the rerun should be told, or leave rerun out to file it BLOCKED")
             }
             (Call::Verify { claim }, _) if claim.trim().is_empty() => {
                 bail!("say what the verification should reproduce")
@@ -456,6 +463,28 @@ impl Run {
                 attempt,
                 degraded: health.degraded,
                 facts: health.facts,
+            },
+        )
+    }
+
+    /// Records that the server held a spec while the host was busy.
+    pub fn host_busy(
+        &mut self,
+        now: u64,
+        platform: Platform,
+        spec: &str,
+        reason: &str,
+        waited_ms: u64,
+        settled: bool,
+    ) -> Result<()> {
+        self.commit(
+            now,
+            Event::HostBusy {
+                platform,
+                spec: spec.into(),
+                reason: reason.into(),
+                waited_ms,
+                settled,
             },
         )
     }
@@ -872,6 +901,7 @@ impl State {
                         review: None,
                         captured: Vec::new(),
                         degraded: Vec::new(),
+                        rerun_note: None,
                     },
                 );
             }
@@ -904,6 +934,25 @@ impl State {
         id
     }
 
+    /// The screenshots of a row's latest attempt, if it's `attempt`: what the tester attached, then the server's.
+    fn shots(&self, key: &(String, Platform), attempt: u32) -> Vec<String> {
+        let Some(r) = self.rows.get(key).filter(|r| r.attempts == attempt) else {
+            return Vec::new();
+        };
+        let mut shots: Vec<String> = Vec::new();
+        let attached = r
+            .posted
+            .iter()
+            .flat_map(|p| &p.judgments)
+            .flat_map(|j| &j.evidence);
+        for name in attached.chain(r.captured.iter().filter(|f| f.ends_with(".png"))) {
+            if !shots.contains(name) {
+                shots.push(name.clone());
+            }
+        }
+        shots
+    }
+
     /// Applies one journalled event. Commands validated it before it was written, so this never fails.
     fn apply(&mut self, plan: &Plan, entry: &Entry) {
         match &entry.event {
@@ -925,6 +974,7 @@ impl State {
                     r.review = None;
                     r.captured.clear();
                     r.degraded.clear();
+                    r.rerun_note = None;
                     r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
@@ -978,6 +1028,7 @@ impl State {
                             verified: true,
                             reason: "a verification attempt passed".into(),
                             status: Status::Open,
+                            evidence: Vec::new(),
                         });
                     }
                     let reason = if verify.is_some() {
@@ -1086,6 +1137,8 @@ impl State {
                         None,
                     ),
                     Call::SendBack => (Row::Queued { verify: None }, None),
+                    Call::Harness { rerun: None } => (file(Final::Blocked), None),
+                    Call::Harness { rerun: Some(_) } => (Row::Queued { verify: None }, None),
                 };
                 if let (
                     Row::Filed {
@@ -1093,7 +1146,7 @@ impl State {
                         ..
                     },
                     None,
-                    Call::Uphold { .. },
+                    Call::Uphold { .. } | Call::Harness { .. },
                 ) = (&row, &problem, call)
                 {
                     self.notes.push(Note {
@@ -1104,6 +1157,7 @@ impl State {
                 }
                 if let Some((title, detail)) = problem {
                     let id = self.next_id();
+                    let evidence = self.shots(&key, *attempt);
                     self.problems.push(Problem {
                         id,
                         spec: spec.clone(),
@@ -1116,11 +1170,15 @@ impl State {
                         verified: verify.is_some(),
                         reason: reason.clone(),
                         status: Status::Open,
+                        evidence,
                     });
                 }
                 let r = self.rows.get_mut(&key).unwrap();
                 r.row = row;
                 r.review = Some((call.clone(), reason.clone()));
+                if let Call::Harness { rerun } = call {
+                    r.rerun_note.clone_from(rerun);
+                }
             }
             Event::FindReviewed { id, title, reason } => {
                 let Some(pos) = self.pending_finds.iter().position(|f| f.id == *id) else {
@@ -1128,6 +1186,8 @@ impl State {
                 };
                 let pending = self.pending_finds.remove(pos);
                 if let Some(title) = title {
+                    let evidence =
+                        self.shots(&(pending.spec.clone(), pending.platform), pending.attempt);
                     self.problems.push(Problem {
                         id: pending.id,
                         spec: pending.spec,
@@ -1140,6 +1200,7 @@ impl State {
                         verified: false,
                         reason: reason.clone(),
                         status: Status::Open,
+                        evidence,
                     });
                 }
             }
@@ -1274,6 +1335,21 @@ impl State {
                 spec: spec.clone(),
                 platform: *platform,
                 text: format!("device restarted after this spec: {reason}"),
+            }),
+            Event::HostBusy {
+                spec,
+                platform,
+                reason,
+                waited_ms,
+                settled,
+            } => self.notes.push(Note {
+                spec: spec.clone(),
+                platform: *platform,
+                text: format!(
+                    "held {} s before this spec ({reason}){}",
+                    waited_ms / 1000,
+                    if *settled { "" } else { "; ran anyway" }
+                ),
             }),
             // A record for the timeline; nothing about the rows changes.
             Event::Preflight { .. } => {}

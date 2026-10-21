@@ -192,6 +192,52 @@ fn a_verification_that_passes_files_a_not_reproduced_finding() {
 }
 
 #[test]
+fn a_harness_call_files_any_claim_blocked_with_a_note() {
+    let (mut run, _) = open("harness");
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Held, Answer::Unsure]))
+        .unwrap();
+    run.review(
+        3,
+        DRAW,
+        Android,
+        Call::Harness { rerun: None },
+        "no software keyboard",
+    )
+    .unwrap();
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
+    assert!(run.state().problems.is_empty());
+    assert!(
+        run.state().notes[0]
+            .text
+            .contains("harness gap: no software keyboard")
+    );
+}
+
+#[test]
+fn a_harness_rerun_tells_the_next_attempt_and_files_nothing_when_it_passes() {
+    let (mut run, _) = open("harness-rerun");
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::CouldntCheck, Answer::Held]))
+        .unwrap();
+    let call = Call::Harness {
+        rerun: Some("Tap the page with at:516,700.".into()),
+    };
+    run.review(3, DRAW, Android, call, "tap-burst took no point")
+        .unwrap();
+    assert_eq!(
+        run.row(DRAW, Android).unwrap().rerun_note.as_deref(),
+        Some("Tap the page with at:516,700.")
+    );
+    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
+    assert_eq!(run.row(DRAW, Android).unwrap().rerun_note, None);
+    run.post(5, &t2, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert!(run.state().problems.is_empty());
+}
+
+#[test]
 fn a_reproduced_verification_is_upheld_as_verified() {
     let (mut run, _) = open("verified");
     let t = run.dispatch(1, DRAW, Android, brief).unwrap();
@@ -962,6 +1008,7 @@ fn degraded() -> soundcheck_driver::Health {
     soundcheck_driver::Health {
         degraded: vec!["memory 4% free".into()],
         facts: vec!["memory 4% free".into()],
+        ..Default::default()
     }
 }
 

@@ -538,16 +538,33 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
             ..
         } => {
             let call = reason.unwrap_or(filed);
+            // The failure's screenshots sit in the red block, under its last failed outcome.
+            let shots = page
+                .run
+                .state()
+                .problems
+                .iter()
+                .rev()
+                .find(|p| {
+                    p.spec == spec.id && p.platform == platform && p.kind == ProblemKind::Failure
+                })
+                .map(|p| thumbs(page, &p.evidence))
+                .unwrap_or_default();
             if let Some(posted) = &r.posted {
-                for j in posted.judgments.iter().filter(|j| {
-                    matches!(
-                        j.answer,
-                        Answer::Failed | Answer::CouldntCheck | Answer::Unsure
-                    )
-                }) {
+                let failed: Vec<_> = posted
+                    .judgments
+                    .iter()
+                    .filter(|j| {
+                        matches!(
+                            j.answer,
+                            Answer::Failed | Answer::CouldntCheck | Answer::Unsure
+                        )
+                    })
+                    .collect();
+                for (i, j) in failed.iter().enumerate() {
                     let _ = write!(
                         out,
-                        "<div class=\"failed-outcome\"><span class=\"expect\">{}</span><span class=\"saw\">{}</span><span class=\"callline\">{}{}</span></div>",
+                        "<div class=\"failed-outcome\"><span class=\"expect\">{}</span><span class=\"saw\">{}</span><span class=\"callline\">{}{}</span>{}</div>",
                         esc(outcome(j.outcome)),
                         esc(&j.observed),
                         if r.verifying {
@@ -555,7 +572,12 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
                         } else {
                             ""
                         },
-                        esc(call)
+                        esc(call),
+                        if i + 1 == failed.len() {
+                            shots.as_str()
+                        } else {
+                            ""
+                        }
                     );
                 }
             }
@@ -576,10 +598,11 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
     for f in findings_for(page, &spec.id, platform) {
         let _ = write!(
             out,
-            "<div class=\"finding-block\"><span class=\"expect\">Finding: {}</span><span class=\"saw\">{} <a href=\"#problem-{}\">In Problems</a></span></div>",
+            "<div class=\"finding-block\"><span class=\"expect\">Finding: {}</span><span class=\"saw\">{} <a href=\"#problem-{}\">In Problems</a></span>{}</div>",
             esc(&f.title),
             esc(&f.detail),
-            f.id
+            f.id,
+            thumbs(page, &f.evidence)
         );
     }
     if let Some(posted) = &r.posted {
@@ -659,6 +682,31 @@ fn image(page: &Page, name: &str) -> Option<String> {
     }
 }
 
+/// A row of screenshot thumbnails; each opens in the page's lightbox.
+fn thumbs<S: AsRef<str>>(page: &Page, shots: &[S]) -> String {
+    if shots.is_empty() {
+        return String::new();
+    }
+    let mut out =
+        String::from("<div class=\"thumbs\" aria-label=\"Screenshots\" style=\"margin-top:12px\">");
+    for s in shots.iter().map(AsRef::as_ref) {
+        match image(page, s) {
+            Some(src) => {
+                let _ = write!(
+                    out,
+                    "<a class=\"thumb\" href=\"{src}\" target=\"_blank\" rel=\"noopener\"><img src=\"{src}\" alt=\"{}\"></a>",
+                    esc(s)
+                );
+            }
+            None => {
+                let _ = write!(out, "<div class=\"thumb\">{}</div>", esc(s));
+            }
+        }
+    }
+    out.push_str("</div>");
+    out
+}
+
 fn evidence(page: &Page, posted: &Posted, captured: &[String]) -> String {
     let mut shots: Vec<&String> = posted
         .judgments
@@ -672,24 +720,7 @@ fn evidence(page: &Page, posted: &Posted, captured: &[String]) -> String {
     }
     let mut out =
         String::from("<details class=\"fold\"><summary>Evidence and tester's notes</summary>");
-    if !shots.is_empty() {
-        out.push_str("<div class=\"thumbs\" aria-label=\"Screenshots\" style=\"margin-top:12px\">");
-        for s in shots {
-            match image(page, s) {
-                Some(src) => {
-                    let _ = write!(
-                        out,
-                        "<a class=\"thumb\" href=\"{src}\" target=\"_blank\" rel=\"noopener\"><img src=\"{src}\" alt=\"{}\"></a>",
-                        esc(s)
-                    );
-                }
-                None => {
-                    let _ = write!(out, "<div class=\"thumb\">{}</div>", esc(s));
-                }
-            }
-        }
-        out.push_str("</div>");
-    }
+    out.push_str(&thumbs(page, &shots));
     for t in texts {
         let label = if t.ends_with("-tree.txt") {
             "Element tree"
@@ -745,7 +776,7 @@ fn problems(page: &Page) -> String {
             .map(|d| platform_name(d.platform).to_string())
             .collect();
         let feature = feature_name(p.spec.split('/').next().unwrap_or(""));
-        let mut body = format!("<p>{}</p>", esc(&p.detail));
+        let mut body = format!("<p>{}</p>{}", esc(&p.detail), thumbs(page, &p.evidence));
         if p.verified && p.source == ProblemSource::Row {
             body.push_str("<p>Verified: reproduced on another attempt from a fresh seed.</p>");
         }

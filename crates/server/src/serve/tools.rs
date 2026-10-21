@@ -515,6 +515,12 @@ impl Tools {
         if let Err(e) = hub.with_run(|run, _| run.check_dispatch(&p.spec, p.platform)) {
             return reply(Err(e));
         }
+        if let Some(reason) = hub.hold(&p.spec, p.platform).await {
+            return reply(Err(anyhow::anyhow!(
+                "held: {reason}. Dispatch again after the `{} ready` event",
+                p.platform
+            )));
+        }
         let seeded = match hub.prepare(spec, p.platform).await {
             Ok(context) => context,
             Err(e) => {
@@ -536,8 +542,21 @@ impl Tools {
             .and_then(|f| f.context.as_deref());
         reply(hub.with_run(|run, now| {
             let mut brief = String::new();
+            let rerun = run
+                .state()
+                .rows
+                .get(&(p.spec.clone(), p.platform))
+                .and_then(|r| r.rerun_note.clone());
             let token = run.dispatch(now, &p.spec, p.platform, |token, verify| {
-                brief = prompt::render(spec, context, p.platform, token, verify, seeded.as_deref());
+                brief = prompt::render(
+                    spec,
+                    context,
+                    p.platform,
+                    token,
+                    verify,
+                    rerun.as_deref(),
+                    seeded.as_deref(),
+                );
                 brief.clone()
             })?;
             Ok(json!({ "token": token, "model": spec.front.model, "brief": brief }))
@@ -545,7 +564,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: your call on a result waiting for review: uphold, verify (a fresh attempt told the claim), send-back, judge (an Unsure only) or spec-unclear. Every call needs a one-line reason."
+        description = "Coordinator: your call on a result waiting for review: uphold, verify (a fresh attempt told the claim), send-back, judge (an Unsure only), spec-unclear, or harness (the harness stopped it: filed BLOCKED, or with rerun a fresh attempt told the note). Every call needs a one-line reason."
     )]
     async fn review(
         &self,

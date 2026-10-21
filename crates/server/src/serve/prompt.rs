@@ -9,6 +9,7 @@ pub fn render(
     platform: Platform,
     token: &str,
     verify: Option<&str>,
+    rerun: Option<&str>,
     seeded: Option<&str>,
 ) -> String {
     let mut out = String::new();
@@ -25,6 +26,12 @@ pub fn render(
         let _ = writeln!(
             out,
             "## This is a verification\n\nAn earlier attempt reported: {claim}\nTry to reproduce exactly that, then judge every outcome as usual.\n"
+        );
+    }
+    if let Some(note) = rerun {
+        let _ = writeln!(
+            out,
+            "## Before you start\n\nAn earlier attempt was stopped by the harness, not the app; that's been fixed. {note}\n"
         );
     }
     if let Some(seeded) = seeded.map(str::trim).filter(|s| !s.is_empty()) {

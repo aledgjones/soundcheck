@@ -57,6 +57,16 @@ pub enum Event {
         spec: String,
         reason: String,
     },
+    /// The server held a spec while the machine running the devices was busy; a restart doesn't fix that.
+    HostBusy {
+        platform: Platform,
+        /// The spec that waited.
+        spec: String,
+        reason: String,
+        waited_ms: u64,
+        /// Whether it settled, or the wait ran out and the spec went ahead anyway.
+        settled: bool,
+    },
     /// The checks that passed before the run started (or resumed): suite, guard, builds, devices, app ready.
     Preflight {
         checks: Vec<String>,

@@ -68,6 +68,21 @@ pub fn summary(entry: &Entry) -> String {
         Event::DeviceRestarted {
             platform, reason, ..
         } => format!("{platform} restarted: {reason}"),
+        Event::HostBusy {
+            platform,
+            spec,
+            reason,
+            waited_ms,
+            settled,
+        } => format!(
+            "{platform} ready: held {} s before {spec} ({reason}){}",
+            waited_ms / 1000,
+            if *settled {
+                ""
+            } else {
+                "; the Mac didn't settle, so specs go ahead anyway"
+            }
+        ),
         Event::EvidenceCaptured {
             spec,
             platform,

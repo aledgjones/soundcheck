@@ -118,6 +118,10 @@ pub enum Call {
     },
     /// Still unclear after verifying: BLOCKED, and the spec needs rewording.
     SpecUnclear,
+    /// The harness, the environment or the spec's wording stopped the check, whatever the tester claimed. Without
+    /// `rerun` it's filed BLOCKED (not tested) with a harness-gap note. With it, once the gap is fixed, a fresh
+    /// attempt is queued with `rerun` passed to the tester, and a pass files nothing.
+    Harness { rerun: Option<String> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -145,6 +149,9 @@ pub struct Problem {
     pub verified: bool,
     pub reason: String,
     pub status: Status,
+    /// Screenshots from the attempt it came from, shown with the problem.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<String>,
 }
 
 /// Where triage left a problem. Open until the person and the coordinator decide.

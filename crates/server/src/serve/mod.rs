@@ -107,10 +107,17 @@ pub struct Hub {
     restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
     /// When each platform's device was last restarted, so a device that stays degraded isn't rebooted in a loop.
     last_restart: Mutex<std::collections::HashMap<Platform, u64>>,
+    /// Platforms whose dispatches wait, for a restart or a busy host to settle: platform → why.
+    held: Mutex<std::collections::HashMap<Platform, String>>,
+    /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
+    gave_up: Mutex<std::collections::HashMap<Platform, u64>>,
 }
 
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
+/// How long dispatches wait for a busy host before going ahead; a simulator's boot settled in about four minutes.
+const HOST_WAIT_MAX_MS: u64 = 10 * 60_000;
+const HOST_WAIT_POLL_MS: u64 = 15_000;
 
 impl Hub {
     pub fn new(suite: Suite, run: Run, label: String, run_dir: PathBuf, stall_ms: u64) -> Arc<Hub> {
@@ -127,6 +134,8 @@ impl Hub {
             headed: false,
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
+            held: Mutex::new(std::collections::HashMap::new()),
+            gave_up: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -204,21 +213,6 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let due = self
-            .restart_due
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&platform);
-        if let Some((after, reason)) = due {
-            self.on_device(platform, async |d| d.device.restart().await)
-                .await
-                .context("restarting the degraded device")?;
-            self.last_restart
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .insert(platform, now_ms());
-            self.with_run(|run, now| run.device_restarted(now, platform, &after, &reason))?;
-        }
         let root = &self.suite.root;
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
@@ -258,8 +252,113 @@ impl Hub {
         Err(last)
     }
 
+    /// Why a dispatch on `platform` must wait, after starting what it waits for: a due restart, or a busy host. The
+    /// dispatch refuses straight away rather than blocking (a tool call times out long before a boot settles), and
+    /// the platform's `ready` event says when to dispatch again.
+    pub async fn hold(self: &Arc<Self>, spec: &str, platform: Platform) -> Option<String> {
+        if self.without_devices.contains(&platform) {
+            return None;
+        }
+        if let Some(reason) = self
+            .held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&platform)
+        {
+            return Some(reason.clone());
+        }
+        let due = self
+            .restart_due
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&platform);
+        if let Some((after, reason)) = due {
+            let held =
+                format!("restarting the {platform} device, degraded after {after} ({reason})");
+            self.hold_for(platform, &held);
+            let hub = self.clone();
+            let spec = spec.to_string();
+            tokio::spawn(async move {
+                let restarted = hub
+                    .on_device(platform, async |d| d.device.restart().await)
+                    .await;
+                hub.last_restart
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(platform, now_ms());
+                if restarted.is_ok() {
+                    let _ = hub
+                        .with_run(|run, now| run.device_restarted(now, platform, &after, &reason));
+                }
+                hub.watch_host(&spec, platform, "restarted".into()).await;
+            });
+            return Some(held);
+        }
+        let gave_up_lately = self
+            .gave_up
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&platform)
+            .is_some_and(|at| now_ms().saturating_sub(*at) < RESTART_COOLDOWN_MS);
+        if gave_up_lately {
+            return None;
+        }
+        let busy = self.host_busy(platform).await;
+        if busy.is_empty() {
+            return None;
+        }
+        let held = format!("the Mac is busy ({})", busy.join(", "));
+        self.hold_for(platform, &held);
+        let hub = self.clone();
+        let spec = spec.to_string();
+        tokio::spawn(async move { hub.watch_host(&spec, platform, busy.join(", ")).await });
+        Some(held)
+    }
+
+    fn hold_for(&self, platform: Platform, reason: &str) {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(platform, reason.to_string());
+    }
+
+    async fn host_busy(&self, platform: Platform) -> Vec<String> {
+        self.on_device(platform, async |d| d.device.health().await)
+            .await
+            .map(|h| h.busy)
+            .unwrap_or_default()
+    }
+
+    /// Waits for the host to settle, up to [`HOST_WAIT_MAX_MS`], then releases the platform and journals its
+    /// `ready` event, which is the coordinator's cue to dispatch again.
+    async fn watch_host(&self, spec: &str, platform: Platform, mut reason: String) {
+        let started = now_ms();
+        let settled = loop {
+            let busy = self.host_busy(platform).await;
+            if busy.is_empty() {
+                break true;
+            }
+            reason = busy.join(", ");
+            if now_ms().saturating_sub(started) >= HOST_WAIT_MAX_MS {
+                self.gave_up
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(platform, now_ms());
+                break false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(HOST_WAIT_POLL_MS)).await;
+        };
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&platform);
+        let waited = now_ms().saturating_sub(started);
+        let _ =
+            self.with_run(|run, now| run.host_busy(now, platform, spec, &reason, waited, settled));
+    }
+
     /// Samples the device's health after an attempt posted and journals it with that attempt. A degraded device is
-    /// restarted before the next spec on it.
+    /// restarted before the next spec on it; a busy host is waited out before the next spec instead.
     pub async fn check_health(&self, spec: &str, platform: Platform, attempt: u32) {
         if self.without_devices.contains(&platform) {
             return;

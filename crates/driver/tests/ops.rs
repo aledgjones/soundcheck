@@ -217,6 +217,16 @@ async fn tap_burst_taps_count_times() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn tap_burst_takes_a_point() {
+    let driver = Driver::new(Fake::new(vec![]));
+    driver.tap_burst(&m("at:516,700"), 2, 80).await.unwrap();
+    assert_eq!(
+        *driver.device.actions.lock().unwrap(),
+        ["tap 516,700", "tap 516,700"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn a_platform_without_a_tool_refuses_it_clearly() {
     let driver = Driver::new(Fake::new(vec![vec![]]));
     let err = driver.network_drop(30).await.unwrap_err().to_string();
