@@ -75,7 +75,8 @@ pub struct TriageParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct InstallBuildParams {
     pub platform: Platform,
-    pub build: Build,
+    /// The build installed; leave it out to have the project's build-identity hook read it.
+    pub build: Option<Build>,
     /// Rows you judge the change may affect, each with a reason. Native changes and open problems rerun anyway.
     #[serde(default)]
     pub reruns: Vec<Rerun>,
@@ -520,9 +521,16 @@ impl Tools {
         &self,
         Parameters(p): Parameters<InstallBuildParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let build = match p.build {
+            Some(build) => build,
+            None => match self.hub.read_build(p.platform).await {
+                Ok(build) => build,
+                Err(e) => return reply(Err(e)),
+            },
+        };
         reply(self.hub.with_run(|run, now| {
-            let reruns = run.install_build(now, p.platform, p.build, p.reruns)?;
-            Ok(json!({ "reruns": reruns }))
+            let reruns = run.install_build(now, p.platform, build.clone(), p.reruns)?;
+            Ok(json!({ "build": build, "reruns": reruns }))
         }))
     }
 

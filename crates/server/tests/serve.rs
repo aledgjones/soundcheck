@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use soundcheck::run::{Plan, PlannedSpec, Run};
 use soundcheck::serve::{self, Hub};
 use soundcheck::suite;
+use soundcheck::suite::config::Platform;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -357,4 +358,71 @@ async fn evidence_is_served_from_the_run_folder_only() {
         assert_eq!(r.status(), 404, "{bad}");
     }
     server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn the_build_identity_hook_records_each_platforms_build() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-builds-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in [
+        "annotations/_feature.md",
+        "annotations/001-draw.spec.md",
+        "annotations/002-back.spec.md",
+    ] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    let config: String = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("build-identity:") {
+                // iOS has no build installed: its hook fails.
+                r#"  build-identity: "test {platform} = 'ios' && exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-'{platform}'\", \"version\": \"2.16.2\"}'""#.to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+    let suite = suite::load(&suite_dir);
+    assert!(suite.problems.is_empty(), "{:?}", suite.problems);
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s.front.platforms.clone(),
+                outcomes: s.outcomes.clone(),
+            })
+            .collect(),
+        parallel: false,
+    };
+    let run_dir = base.join("reports/run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let hub = Hub::new(suite, run, "builds".into(), run_dir, 120_000);
+
+    let problems = hub.read_builds(&[Platform::Android, Platform::Ios]).await;
+    assert_eq!(problems.len(), 1);
+    assert!(problems[0].starts_with("ios:"), "{problems:?}");
+    let android = hub
+        .with_run(|run, _| Ok(run.state().builds.get(&Platform::Android).cloned()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(android.commit, "abc1234def");
+    assert_eq!(android.fingerprint.as_deref(), Some("fp-android"));
+    assert_eq!(android.label(), "2.16.2 (abc1234)");
+
+    // Reading the same build again changes nothing.
+    let before = hub.with_run(|run, _| Ok(run.last_seq())).unwrap();
+    assert!(hub.read_builds(&[Platform::Android]).await.is_empty());
+    assert_eq!(hub.with_run(|run, _| Ok(run.last_seq())).unwrap(), before);
 }

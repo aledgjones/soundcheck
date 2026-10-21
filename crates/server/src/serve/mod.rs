@@ -8,6 +8,7 @@ pub mod tools;
 use crate::report;
 use crate::run::Run;
 use crate::run::journal::Entry;
+use crate::run::model::Build;
 use crate::suite::Suite;
 use crate::suite::config::Platform;
 use crate::suite::spec::Spec;
@@ -162,6 +163,50 @@ impl Hub {
             }
         }
         Err(last)
+    }
+
+    /// Asks the project's build-identity hook which build is installed on a platform.
+    pub async fn read_build(&self, platform: Platform) -> Result<Build> {
+        let config = self
+            .suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let command = hooks::fill(&config.hooks.build_identity, "", &platform.to_string());
+        let out = hooks::run(&self.suite.root, &command, hooks::GUARD_TIMEOUT).await?;
+        let build: Build = serde_json::from_str(out.trim()).with_context(|| {
+            format!(
+                "the build-identity hook should print {{\"commit\": ...}}, but printed {:?}",
+                out.trim()
+            )
+        })?;
+        if build.commit.trim().is_empty() {
+            anyhow::bail!("the build-identity hook gave no commit");
+        }
+        Ok(build)
+    }
+
+    /// Records the build each platform has now, as the hook reports it. A platform whose hook fails is left
+    /// unknown and named in the result, rather than stopping the run.
+    pub async fn read_builds(&self, platforms: &[Platform]) -> Vec<String> {
+        let mut problems = Vec::new();
+        for &platform in platforms {
+            match self.read_build(platform).await {
+                Ok(build) => {
+                    let result = self.with_run(|run, now| {
+                        if run.state().builds.get(&platform) == Some(&build) {
+                            return Ok(());
+                        }
+                        run.install_build(now, platform, build, vec![]).map(|_| ())
+                    });
+                    if let Err(e) = result {
+                        problems.push(format!("{platform}: {e:#}"));
+                    }
+                }
+                Err(e) => problems.push(format!("{platform}: {e:#}")),
+            }
+        }
+        problems
     }
 
     /// Saves what the device shows now for an attempt's non-pass: a screenshot, the element tree and the errors.
