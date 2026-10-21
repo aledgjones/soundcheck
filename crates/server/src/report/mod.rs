@@ -145,6 +145,15 @@ fn time(at: u64) -> String {
     )
 }
 
+fn date_time(at: u64) -> String {
+    let secs = at / 1000;
+    format!(
+        "<time data-at=\"{at}\" data-format=\"date\">{:02}:{:02} UTC</time>",
+        (secs / 3600) % 24,
+        (secs / 60) % 60
+    )
+}
+
 fn ago(since: u64, warn_ms: u64) -> String {
     format!("<span class=\"ago\" data-since=\"{since}\" data-warn=\"{warn_ms}\"></span>")
 }
@@ -920,17 +929,16 @@ pub fn index(runs: &[(String, serde_json::Value, bool)], current: &str) -> Strin
         } else {
             None
         };
-        let when = s["started"].as_u64().map(time).unwrap_or_default();
+        let when = s["started"].as_u64().map(date_time).unwrap_or_default();
         let live = if name == current && !s["finished"].as_bool().unwrap_or(false) {
             " <span class=\"chip ticket\">Live</span>"
         } else {
             ""
         };
         let inner = format!(
-            "<span class=\"run-ring\">{}</span><span class=\"run-text\"><b>{}</b>{live}<span class=\"muted\">{} · {when}</span></span><span class=\"run-verdict\"><strong class=\"{class}\">{word}</strong><span class=\"muted\">{}</span></span>",
+            "<span class=\"run-ring\">{}</span><span class=\"run-text\"><span class=\"run-title\"><b>{}</b>{live}</span><span class=\"muted\">{when}</span></span><span class=\"run-verdict\"><strong class=\"{class}\">{word}</strong><span class=\"muted\">{}</span></span>",
             ring(&t),
             esc(s["label"].as_str().unwrap_or(name)),
-            esc(name),
             esc(&reasons)
         );
         match href {

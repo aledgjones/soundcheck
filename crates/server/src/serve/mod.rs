@@ -246,6 +246,12 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
             }
         }
     }
+    // The current run comes from memory: before its first event it has no summary on disk.
+    runs.retain(|(name, _, _)| *name != current);
+    let live = hub
+        .with_run(|run, _| Ok(report::run_summary(run, &hub.label)))
+        .unwrap_or_default();
+    runs.push((current.clone(), live, false));
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     axum::response::Html(report::index(&runs, &current)).into_response()
 }

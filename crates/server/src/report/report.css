@@ -195,3 +195,4 @@ a.run-row:hover{background:var(--fill);text-decoration:none}
 .run-verdict strong{font-size:16px}
 .run-verdict strong.failing,.summary-verdict strong.failing{color:var(--fail)}
 @media (max-width:734px){.run-row{grid-template-columns:44px 1fr;padding:12px 16px}.run-verdict{grid-column:2;text-align:left}}
+.run-title{display:flex;align-items:center;gap:8px;flex-wrap:wrap}

@@ -7,7 +7,11 @@
   function tick() {
     for (const t of document.querySelectorAll("time[data-at]")) {
       const d = new Date(Number(t.dataset.at));
-      t.textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      t.textContent =
+        t.dataset.format === "date"
+          ? `${d.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${hm}`
+          : hm;
     }
     const now = Date.now();
     for (const a of document.querySelectorAll(".ago[data-since]")) {
