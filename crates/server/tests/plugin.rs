@@ -32,6 +32,7 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
     for tool in [
         "status",
         "dispatch",
+        "add_specs",
         "review",
         "review_find",
         "install_build",

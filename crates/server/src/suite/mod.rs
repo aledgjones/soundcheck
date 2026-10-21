@@ -25,7 +25,7 @@ impl Problem {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Feature {
     pub name: String,
     /// `_feature.md`: how to get there, label hints, platform differences.
@@ -33,7 +33,7 @@ pub struct Feature {
 }
 
 /// A suite as read from disk; whatever couldn't be read is in `problems`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Suite {
     pub root: PathBuf,
     /// The feature folders' folder, relative to `root` (empty when they sit in it).

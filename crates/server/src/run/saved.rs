@@ -60,7 +60,7 @@ pub fn plan_for(suite: &Suite, platforms: &[Platform], scope: &[String]) -> Resu
 
 /// Writes `run.json` and snapshots the suite's config and specs into the run folder.
 pub fn save(run_dir: &Path, info: &RunInfo, suite: &Suite) -> Result<()> {
-    std::fs::write(run_dir.join(INFO_FILE), serde_json::to_string_pretty(info)?)?;
+    write_info(run_dir, info)?;
     let snapshot = run_dir.join(SNAPSHOT_DIR);
     std::fs::create_dir_all(&snapshot)?;
     std::fs::copy(
@@ -79,6 +79,66 @@ pub fn save(run_dir: &Path, info: &RunInfo, suite: &Suite) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+/// The scope after adding `more` to `saved`: a union, so no row is dropped. An empty scope already has every spec.
+pub fn merge_scope(saved: &[String], more: &[String]) -> Vec<String> {
+    let mut scope = saved.to_vec();
+    if scope.is_empty() {
+        return scope;
+    }
+    for item in more {
+        if !scope.contains(item) {
+            scope.push(item.clone());
+        }
+    }
+    scope
+}
+
+/// A resumed run's plan as saved, the specs `more` adds to it, and the scope covering both. `more` is checked like
+/// a starting scope.
+pub fn resume_plan(
+    suite: &Suite,
+    platforms: &[Platform],
+    saved: &[String],
+    more: &[String],
+) -> Result<(Plan, Vec<PlannedSpec>, Vec<String>)> {
+    let wanted = if more.is_empty() {
+        Vec::new()
+    } else {
+        plan_for(suite, platforms, more)?.specs
+    };
+    let before = plan_for(suite, platforms, saved)?;
+    let added = wanted
+        .into_iter()
+        .filter(|s| !before.specs.iter().any(|b| b.id == s.id))
+        .collect();
+    Ok((before, added, merge_scope(saved, more)))
+}
+
+/// Copies added specs into the run's snapshot, with their feature's `_feature.md` if the snapshot lacks it.
+pub fn snapshot_specs(run_dir: &Path, suite: &Suite, ids: &[String]) -> Result<()> {
+    let from = suite.root.join(&suite.specs_dir);
+    let to = run_dir.join(SNAPSHOT_DIR).join(&suite.specs_dir);
+    for id in ids {
+        let file = format!("{id}.spec.md");
+        let spec_to = to.join(&file);
+        let feature_dir = spec_to.parent().context("a spec ID names its feature")?;
+        std::fs::create_dir_all(feature_dir)?;
+        std::fs::copy(from.join(&file), &spec_to)
+            .with_context(|| format!("snapshotting {file}"))?;
+        let feature = feature_dir.join(suite::FEATURE_FILE);
+        let source = from.join(id).with_file_name(suite::FEATURE_FILE);
+        if !feature.exists() && source.exists() {
+            std::fs::copy(source, feature)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn write_info(run_dir: &Path, info: &RunInfo) -> Result<()> {
+    std::fs::write(run_dir.join(INFO_FILE), serde_json::to_string_pretty(info)?)?;
     Ok(())
 }
 

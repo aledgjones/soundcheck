@@ -87,6 +87,9 @@ struct RunArgs {
     /// Tester silence between tool calls before its spec counts as stalled.
     #[arg(long, default_value_t = 120)]
     stall_seconds: u64,
+    /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
+    #[arg(long, default_value_t = 600)]
+    first_call_seconds: u64,
     /// Show web's Chrome in a window to watch the run, rather than headless. Look only: a click or resize in it can
     /// steer a test.
     #[arg(long)]
@@ -158,6 +161,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         label,
         no_open,
         stall_seconds,
+        first_call_seconds,
         headed,
         install,
     } = args;
@@ -200,17 +204,39 @@ fn run_command(args: RunArgs) -> Result<()> {
     let saved = resume
         .as_deref()
         .and_then(|dir| soundcheck::run::saved::read_info(dir).ok());
+    // On resume, `--platforms` only adds: dropping a platform would orphan its rows in the journal.
     let platforms: Vec<Platform> = match (platforms.is_empty(), &saved) {
-        (false, _) => platforms,
+        (false, Some(info)) => {
+            let mut all = info.platforms.clone();
+            for p in platforms {
+                if !all.contains(&p) {
+                    all.push(p);
+                }
+            }
+            all
+        }
+        (false, None) => platforms,
         (true, Some(info)) => info.platforms.clone(),
         (true, None) => config.platforms.keys().copied().collect(),
     };
-    let scope: Vec<String> = match (scope.is_empty(), &saved) {
-        (true, Some(info)) => info.scope.clone(),
-        _ => scope.to_vec(),
+    let added: Vec<Platform> = saved.as_ref().map_or_else(Vec::new, |info| {
+        platforms
+            .iter()
+            .copied()
+            .filter(|p| !info.platforms.contains(p))
+            .collect()
+    });
+    // Likewise `--scope` only adds, so no row in the journal is orphaned: the run opens with its saved scope and
+    // new specs join through the journal.
+    let (plan, added_specs, scope) = match &saved {
+        Some(info) => soundcheck::run::saved::resume_plan(&suite, &platforms, &info.scope, scope)?,
+        None => (
+            soundcheck::run::saved::plan_for(&suite, &platforms, scope)?,
+            Vec::new(),
+            scope.to_vec(),
+        ),
     };
     let label = label.or_else(|| saved.as_ref().map(|i| i.label.clone()));
-    let plan = soundcheck::run::saved::plan_for(&suite, &platforms, &scope)?;
     let resuming = resume.is_some();
     let run_dir = match resume {
         Some(dir) => dir,
@@ -230,6 +256,37 @@ fn run_command(args: RunArgs) -> Result<()> {
         let interrupted = run.interrupt_running(serve::now_ms())?;
         if interrupted > 0 {
             println!("{interrupted} spec(s) were running when the server stopped: queued again");
+        }
+        // Specs first: a platform added with them may have rows only among the new specs.
+        if !added_specs.is_empty() {
+            let ids: Vec<String> = added_specs.iter().map(|s| s.id.clone()).collect();
+            soundcheck::run::saved::snapshot_specs(&run_dir, &suite, &ids)?;
+            run.add_specs(serve::now_ms(), added_specs)?;
+            println!("added {} to the run: their rows join it", ids.join(", "));
+        }
+        if !added.is_empty() {
+            run.add_platforms(serve::now_ms(), added.clone())?;
+            println!(
+                "added {} to the run: its specs in scope join it",
+                added
+                    .iter()
+                    .map(Platform::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        if let Some(info) = saved
+            .as_ref()
+            .filter(|i| i.scope != scope || !added.is_empty())
+        {
+            soundcheck::run::saved::write_info(
+                &run_dir,
+                &soundcheck::run::saved::RunInfo {
+                    platforms: platforms.clone(),
+                    scope: scope.clone(),
+                    ..info.clone()
+                },
+            )?;
         }
     }
     let stall_ms = stall_seconds * 1000;
@@ -287,6 +344,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         let mut hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
+            only.start_ms = first_call_seconds * 1000;
         }
         // Results count only for an identified build, so a platform without one is built before anything runs.
         let has_install_hook = config_has_install;

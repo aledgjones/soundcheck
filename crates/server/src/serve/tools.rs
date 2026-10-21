@@ -13,7 +13,7 @@ use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
-pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, review, review_find, install_build, triage, pause, resume and finish.";
+pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, add_specs, review, review_find, install_build, triage, pause, resume and finish.";
 
 #[derive(Clone)]
 pub struct Tools {
@@ -94,6 +94,12 @@ pub struct ReasonParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct AddSpecsParams {
+    /// Spec IDs or features, as `--scope` takes them, e.g. `annotations/003-eraser` or `viewer`.
+    pub specs: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct TokenParams {
     /// Your spec token.
     pub token: String,
@@ -135,9 +141,16 @@ pub struct WaitParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct SleepParams {
+    pub token: String,
+    /// Milliseconds, at most 30000.
+    pub ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ShotParams {
     pub token: String,
-    /// A file name for the screenshot, e.g. `undo-after`; attach it to a judgment's evidence.
+    /// A short name for the screenshot, e.g. `undo-after`; the reply gives the saved file name to attach as evidence.
     pub name: String,
 }
 
@@ -192,24 +205,8 @@ pub struct ViewportParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct BurstParams {
-    pub token: String,
-    pub target: String,
-    pub count: u32,
-    pub interval_ms: u64,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SecondsParams {
     pub token: String,
-    pub seconds: u64,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-pub struct StressParams {
-    pub token: String,
-    /// Percent of the device's CPU.
-    pub load: u32,
     pub seconds: u64,
 }
 
@@ -368,12 +365,7 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
             format!("pressed {key}")
         }
         Step::Pause { ms } => {
-            if *ms > 30_000 {
-                return Err(DriverError::Invalid(format!(
-                    "pause takes milliseconds: {ms} is over 30000"
-                )));
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(*ms)).await;
+            pause(*ms).await?;
             format!("paused {ms} ms")
         }
         Step::Goto { url } => {
@@ -382,6 +374,19 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
         }
     })
 }
+
+/// A plain timed pause, capped so a seconds value passed as milliseconds can't hang a spec.
+async fn pause(ms: u64) -> Result<(), DriverError> {
+    if ms > MAX_PAUSE_MS {
+        return Err(DriverError::Invalid(format!(
+            "takes milliseconds: {ms} is over {MAX_PAUSE_MS}"
+        )));
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+    Ok(())
+}
+
+const MAX_PAUSE_MS: u64 = 30_000;
 
 fn matcher(target: &str) -> Result<Matcher, DriverError> {
     Matcher::parse(target).map_err(|e| DriverError::Invalid(format!("{target}: {e}")))
@@ -423,19 +428,42 @@ impl Tools {
         &self,
         Parameters(p): Parameters<PostResultParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let posted = Posted {
+        let (spec, platform, attempt) = match self.attempt_of(&p.token) {
+            Ok(row) => row,
+            Err(e) => return reply(Err(e)),
+        };
+        let mut posted = Posted {
             judgments: p.judgments,
             side_finds: p.side_finds,
             notes: p.notes,
         };
-        let posted = self.hub.with_run(|run, now| {
-            let (spec, platform) = run.running(&p.token)?;
-            let attempt = run.row(&spec, platform).map_or(0, |r| r.attempts);
-            let claim = run.post(now, &p.token, posted)?;
-            Ok((claim, spec, platform, attempt))
-        });
-        let (claim, spec, platform, attempt) = match posted {
-            Ok(posted) => posted,
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let base = report::evidence_base(&spec, attempt, platform);
+        let mut missing = Vec::new();
+        let lists = posted
+            .judgments
+            .iter_mut()
+            .map(|j| &mut j.evidence)
+            .chain(posted.side_finds.iter_mut().map(|f| &mut f.evidence));
+        for list in lists {
+            for name in list.iter_mut() {
+                match report::resolve_evidence(&dir, &base, name) {
+                    Some(file) => *name = file,
+                    None => missing.push(name.clone()),
+                }
+            }
+        }
+        if !missing.is_empty() {
+            return reply(Err(anyhow::anyhow!(
+                "no saved evidence named {}: attach the names `shot` returned, or take the screenshot again",
+                missing.join(", ")
+            )));
+        }
+        let claim = match self
+            .hub
+            .with_run(|run, now| run.post(now, &p.token, posted))
+        {
+            Ok(claim) => claim,
             Err(e) => return reply(Err(e)),
         };
         // Save the evidence now: the next spec's seed wipes the device, and review comes later.
@@ -484,7 +512,16 @@ impl Tools {
             let finds: Vec<_> = state
                 .pending_finds
                 .iter()
-                .map(|f| json!({ "id": f.id, "spec": f.spec, "platform": f.platform, "find": f.find }))
+                .map(|f| {
+                    json!({
+                        "id": f.id,
+                        "summary": f.find.summary,
+                        "spec": f.spec,
+                        "platform": f.platform,
+                        "observed": f.find.observed,
+                        "evidence": f.find.evidence,
+                    })
+                })
                 .collect();
             Ok(json!({
                 "verdict": verdict::verdict(state),
@@ -508,7 +545,8 @@ impl Tools {
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
-        let Some(spec) = hub.suite.specs.iter().find(|s| s.id == p.spec) else {
+        let suite = hub.suite();
+        let Some(spec) = suite.specs.iter().find(|s| s.id == p.spec) else {
             return reply(Err(anyhow::anyhow!("no spec {} in the suite", p.spec)));
         };
         // Check first, so a refused dispatch never resets a device.
@@ -534,8 +572,7 @@ impl Tools {
                 )));
             }
         };
-        let context = hub
-            .suite
+        let context = suite
             .features
             .iter()
             .find(|f| f.name == spec.feature)
@@ -624,6 +661,22 @@ impl Tools {
         reply(self.hub.with_run(|run, now| {
             let reruns = run.install_build(now, p.platform, build.clone(), p.reruns)?;
             Ok(json!({ "build": build, "reruns": reruns }))
+        }))
+    }
+
+    #[tool(
+        description = "Coordinator: add specs to the run, live: spec IDs or features, read from the suite as it is now. Each new spec gets a row on every platform of the run it runs on; rows already in the run are kept. A finished run opens again. Returns the rows added."
+    )]
+    async fn add_specs(
+        &self,
+        Parameters(p): Parameters<AddSpecsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(self.hub.add_specs(&p.specs).map(|rows| {
+            let rows: Vec<_> = rows
+                .into_iter()
+                .map(|(spec, platform)| json!({ "spec": spec, "platform": platform }))
+                .collect();
+            json!({ "added": rows })
         }))
     }
 
@@ -735,6 +788,33 @@ impl Tools {
     }
 
     #[tool(
+        description = "Tester: do nothing for `ms` milliseconds (at most 30000), e.g. to let an animation or a sync settle before you look. To wait for something to appear, use wait."
+    )]
+    async fn sleep(
+        &self,
+        Parameters(p): Parameters<SleepParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let checked = self.hub.with_run(|run, now| {
+            run.running(&p.token)?;
+            run.call_started(now, &p.token);
+            Ok(())
+        });
+        if let Err(e) = checked {
+            return reply(Err(e));
+        }
+        let result = pause(p.ms).await;
+        let _ = self.hub.with_run(|run, now| {
+            run.call_finished(now, &p.token);
+            Ok(())
+        });
+        reply(
+            result
+                .map(|()| json!(format!("slept {} ms", p.ms)))
+                .map_err(anyhow::Error::from),
+        )
+    }
+
+    #[tool(
         description = "Tester: save a screenshot as evidence; returns its file name to attach to a judgment and the path to Read it at. Only for visual checks."
     )]
     async fn shot(
@@ -742,17 +822,26 @@ impl Tools {
         Parameters(p): Parameters<ShotParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
-        let name = format!("{}.png", p.name.trim_end_matches(".png"));
+        let (spec, platform, attempt) = match self.attempt_of(&p.token) {
+            Ok(row) => row,
+            Err(e) => return reply(Err(e)),
+        };
+        // One evidence folder serves every spec, platform and attempt, so a shot's name carries its row.
+        let name = report::shot_file(&report::evidence_base(&spec, attempt, platform), &p.name);
         self.device(&p.token, async |d| {
             if !report::safe_name(&name) {
                 return Err(DriverError::Invalid(format!(
-                    "{name}: use letters, digits, - and _ only"
+                    "{}: use letters, digits, - and _ only",
+                    p.name
                 )));
             }
             std::fs::create_dir_all(&dir).map_err(|e| DriverError::Device(e.to_string()))?;
             let path = dir.join(&name);
             d.device.screenshot(&path).await?;
-            Ok(format!("{name}: Read it at {}", path.display()))
+            Ok(format!(
+                "saved as {name}: attach this name; Read it at {}",
+                path.display()
+            ))
         })
         .await
     }
@@ -1043,6 +1132,15 @@ impl Tools {
         Parameters(p): Parameters<PreviewCompareParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let (spec, platform, attempt) = match self.attempt_of(&p.token) {
+            Ok(row) => row,
+            Err(e) => return reply(Err(e)),
+        };
+        let name = format!(
+            "{}-{}",
+            report::evidence_base(&spec, attempt, platform),
+            p.name
+        );
         self.device(&p.token, async |d| {
             if !report::safe_name(&p.name) {
                 return Err(DriverError::Invalid(
@@ -1075,11 +1173,11 @@ impl Tools {
                 }),
                 tolerance: 2,
             };
-            let result = d.preview_compare(&request, &dir, &p.name).await?;
+            let result = d.preview_compare(&request, &dir, &name).await?;
             Ok(json!({
                 "result": result.summary(),
                 "passed": result.passed,
-                "evidence": [format!("{}-preview.png", p.name), format!("{}-saved.png", p.name)],
+                "evidence": [format!("{name}-preview.png"), format!("{name}-saved.png")],
             }))
         })
         .await
@@ -1115,6 +1213,15 @@ impl Tools {
 }
 
 impl Tools {
+    /// The token's spec, platform and attempt.
+    fn attempt_of(&self, token: &str) -> anyhow::Result<(String, Platform, u32)> {
+        self.hub.with_run(|run, _| {
+            let (spec, platform) = run.running(token)?;
+            let attempt = run.row(&spec, platform).map_or(0, |r| r.attempts);
+            Ok((spec, platform, attempt))
+        })
+    }
+
     /// Runs a device operation for the platform the token's spec is on, counting it as the tester's activity.
     async fn device<T: Serialize>(
         &self,

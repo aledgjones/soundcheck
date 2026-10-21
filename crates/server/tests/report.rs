@@ -201,3 +201,44 @@ fn an_export_embeds_its_screenshots() {
     assert!(exported.contains("src=\"data:image/png;base64,iVBORw==\""));
     assert!(exported.contains("In progress, exported"));
 }
+
+#[test]
+fn a_bare_evidence_name_from_an_older_journal_shows_its_png() {
+    let (suite, mut run) = sample();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soundcheck-bare-evidence-{nanos}"));
+    std::fs::create_dir_all(dir.join("evidence")).unwrap();
+    std::fs::write(dir.join("evidence/erased.png"), [0x89, b'P', b'N', b'G']).unwrap();
+    let t = run
+        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .unwrap();
+    let mut posted = judged(&[(Answer::Held, "fine"), (Answer::Held, "fine")]);
+    posted.judgments[0].evidence.push("erased".into());
+    run.post(2, &t, posted).unwrap();
+    let page = Page {
+        suite: &suite,
+        run: &run,
+        label: "x",
+        live: true,
+        run_dir: Some(&dir),
+        export: None,
+    };
+    let live = report::document(&page);
+    assert!(live.contains("src=\"files/evidence/erased.png\""), "{live}");
+}
+
+#[test]
+fn a_shot_is_named_under_its_attempts_prefix() {
+    let base = report::evidence_base("annotations/003-eraser", 1, Ios);
+    assert_eq!(base, "annotations-003-eraser-1-ios");
+    for given in ["wide", "wide.png", "annotations-003-eraser-1-ios-wide.png"] {
+        assert_eq!(
+            report::shot_file(&base, given),
+            "annotations-003-eraser-1-ios-wide.png",
+            "{given}"
+        );
+    }
+}

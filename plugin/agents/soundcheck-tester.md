@@ -10,6 +10,7 @@ tools:
   - mcp__plugin_soundcheck_soundcheck__gone
   - mcp__plugin_soundcheck_soundcheck__check
   - mcp__plugin_soundcheck_soundcheck__wait
+  - mcp__plugin_soundcheck_soundcheck__sleep
   - mcp__plugin_soundcheck_soundcheck__shot
   - mcp__plugin_soundcheck_soundcheck__errors
   - mcp__plugin_soundcheck_soundcheck__tap

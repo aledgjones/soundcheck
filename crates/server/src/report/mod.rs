@@ -49,6 +49,30 @@ pub fn safe_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
+/// The prefix every evidence file of one attempt shares, e.g. `annotations-003-eraser-1-ios`.
+pub fn evidence_base(spec: &str, attempt: u32, platform: Platform) -> String {
+    format!("{}-{attempt}-{platform}", spec.replace('/', "-"))
+}
+
+/// The file a tester's screenshot `name` is saved as: under its attempt's prefix, ending `.png`.
+pub fn shot_file(base: &str, name: &str) -> String {
+    let name = name.trim_end_matches(".png");
+    let name = name.strip_prefix(&format!("{base}-")).unwrap_or(name);
+    format!("{base}-{name}.png")
+}
+
+/// The evidence file a tester's `name` refers to, if it was saved: its attempt's own file first, then the name as
+/// given (or with `.png`), which covers the server's captures and older runs' unprefixed shots.
+pub fn resolve_evidence(dir: &Path, base: &str, name: &str) -> Option<String> {
+    [
+        shot_file(base, name),
+        name.to_string(),
+        format!("{name}.png"),
+    ]
+    .into_iter()
+    .find(|f| safe_name(f) && dir.join(f).is_file())
+}
+
 pub fn esc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -665,11 +689,12 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> St
 }
 
 fn image(page: &Page, name: &str) -> Option<String> {
-    if !safe_name(name) {
-        return None;
-    }
-    let dir = page.run_dir?;
-    let path = dir.join(EVIDENCE_DIR).join(name);
+    let dir = page.run_dir?.join(EVIDENCE_DIR);
+    // Older journals hold names as the tester typed them, sometimes without `.png`.
+    let name = [name.to_string(), format!("{name}.png")]
+        .into_iter()
+        .find(|f| safe_name(f) && dir.join(f).is_file())?;
+    let path = dir.join(&name);
     if page.export.is_some() {
         let bytes = std::fs::read(&path).ok()?;
         let kind = match path.extension().and_then(|e| e.to_str()) {
@@ -682,8 +707,7 @@ fn image(page: &Page, name: &str) -> Option<String> {
             base64::engine::general_purpose::STANDARD.encode(bytes)
         ))
     } else {
-        path.exists()
-            .then(|| format!("files/{EVIDENCE_DIR}/{name}"))
+        Some(format!("files/{EVIDENCE_DIR}/{name}"))
     }
 }
 

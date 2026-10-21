@@ -10,6 +10,7 @@ allowed-tools:
   - Read
   - mcp__plugin_soundcheck_soundcheck__status
   - mcp__plugin_soundcheck_soundcheck__dispatch
+  - mcp__plugin_soundcheck_soundcheck__add_specs
   - mcp__plugin_soundcheck_soundcheck__review
   - mcp__plugin_soundcheck_soundcheck__review_find
   - mcp__plugin_soundcheck_soundcheck__triage
@@ -68,7 +69,7 @@ A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `sta
 - **Failure or finding is never your judgement call.** Upheld failures are failures; side finds and things that didn't reproduce are findings. If a failure doesn't seem worth blocking the release, that's for triage with the person, not a reason to file it as something milder.
 - **A degraded device** (`degraded` on the row in `status`, and a `DEGRADED` event): the server samples the device's health after every result and restarts a degraded one before the next spec. A failure seen on a degraded device can't be upheld until it reproduces: call **verify**, and the rerun runs on the restarted device. A BLOCKED with cause `harness` can still be upheld.
 - **Look at the evidence, not just the claim.** Open a screenshot only when the judgments don't settle it, which keeps your context small for a long run.
-- **Side finds** (`side find(s) need review`): `review_find` with a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem.
+- **Side finds** (`side find(s) need review: id <n>: <summary>`; `status` lists the waiting ones under `side_finds_waiting`): `review_find` with that `id` and a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem.
 - A spec gets at most 3 attempts. After that, file what's known.
 
 ## 4. Pause, resume, stop
@@ -90,6 +91,10 @@ When every row in scope has a result and nothing is running, queued or waiting f
 Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline) for sharing. Call `export` again after triage, so the shared copy shows the decisions; `export` also works mid-run, stamped in progress. Nobody needs an export just to look: every run, finished or not, opens from its folder (`/runs` on a run's server, or `soundcheck serve <suite>`).
 
 If the server dies, start it again with `soundcheck run <suite> --resume <run folder>`: it keeps the run's platforms, scope and label, and puts any spec that was running back first without using an attempt.
+
+To add a platform to a paused or finished run (the person wants both platforms in one report), resume it with `--platforms <list>`: platforms the run doesn't have yet get rows for its saved scope after their preflight, and a finished run opens again, so dispatch the new rows and `finish` once more. Platforms already in the run are kept either way.
+
+To add specs mid-run (ones the person wants covered too, or a spec written since the run started), call `add_specs` with spec IDs or features: their rows join on every platform of the run they run on, live, and a finished run opens again. Resuming with `--scope <list>` does the same; specs already in the run are kept either way.
 
 ## 7. Triage, with the person
 

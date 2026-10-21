@@ -7,9 +7,9 @@ pub mod reports;
 pub mod tools;
 
 use crate::report;
-use crate::run::Run;
 use crate::run::journal::Entry;
 use crate::run::model::Build;
+use crate::run::{Run, saved};
 use crate::suite::Suite;
 use crate::suite::config::{Platform, PlatformConfig};
 use crate::suite::spec::Spec;
@@ -32,7 +32,7 @@ use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, DriverError, Matcher};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -89,7 +89,8 @@ pub fn now_ms() -> u64 {
 }
 
 pub struct Hub {
-    pub suite: Suite,
+    /// Swapped whole when specs join mid-run, so a reader keeps a consistent copy.
+    suite: RwLock<Arc<Suite>>,
     /// The release under test, shown as the page's title.
     pub label: String,
     /// The run's folder: journal, evidence, summary and exports. Its siblings are earlier runs.
@@ -101,6 +102,8 @@ pub struct Hub {
     /// A driver per platform, connected on its first device call.
     pub devices: tokio::sync::Mutex<std::collections::HashMap<Platform, Driver<AnyDevice>>>,
     pub stall_ms: u64,
+    /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
+    pub start_ms: u64,
     /// Web's Chrome in a window to watch, rather than headless.
     pub headed: bool,
     /// Devices found degraded after a spec, to restart before the next: platform → (spec, reason).
@@ -118,12 +121,13 @@ const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
 /// How long dispatches wait for a busy host before going ahead; a simulator's boot settled in about four minutes.
 const HOST_WAIT_MAX_MS: u64 = 10 * 60_000;
 const HOST_WAIT_POLL_MS: u64 = 15_000;
+pub const START_STALL_MS: u64 = 10 * 60_000;
 
 impl Hub {
     pub fn new(suite: Suite, run: Run, label: String, run_dir: PathBuf, stall_ms: u64) -> Arc<Hub> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Hub {
-            suite,
+            suite: RwLock::new(Arc::new(suite)),
             label,
             run_dir,
             run: Mutex::new(run),
@@ -131,6 +135,7 @@ impl Hub {
             devices: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             without_devices: Vec::new(),
             stall_ms,
+            start_ms: START_STALL_MS,
             headed: false,
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
@@ -171,9 +176,106 @@ impl Hub {
         result
     }
 
-    fn page<'a>(&'a self, run: &'a Run, export: Option<report::Export>) -> report::Page<'a> {
+    /// The suite specs are dispatched from: as loaded at start, plus any specs added since.
+    pub fn suite(&self) -> Arc<Suite> {
+        self.suite.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Adds spec IDs or features to the run, live, from the suite as it is on disk now; returns the rows added.
+    /// Each new spec joins the snapshot and `run.json`'s scope, so the run folder stays self-contained.
+    pub fn add_specs(&self, requested: &[String]) -> Result<Vec<(String, Platform)>> {
+        if requested.is_empty() {
+            anyhow::bail!("name at least one spec ID or feature");
+        }
+        let info = saved::read_info(&self.run_dir)?;
+        let live = crate::suite::load(&info.suite);
+        for item in requested {
+            let covered = live
+                .specs
+                .iter()
+                .filter(|s| s.id == *item || s.feature == *item)
+                .map(|s| s.front.platforms.iter().any(|p| info.platforms.contains(p)))
+                .collect::<Vec<_>>();
+            if covered.is_empty() {
+                let file = live.specs_dir.join(format!("{item}.spec.md"));
+                if let Some(p) = live.problems.iter().find(|p| p.path == file) {
+                    anyhow::bail!("{item} doesn't lint clean: {}", p.message);
+                }
+                anyhow::bail!("{item}: no feature or spec by that name");
+            }
+            if !covered.contains(&true) {
+                anyhow::bail!("{item} runs on none of the run's platforms");
+            }
+        }
+        let in_run: Vec<String> =
+            self.with_run(|run, _| Ok(run.plan().specs.iter().map(|s| s.id.clone()).collect()))?;
+        let new: Vec<&Spec> = live
+            .specs
+            .iter()
+            .filter(|s| requested.iter().any(|i| *i == s.id || *i == s.feature))
+            .filter(|s| s.front.platforms.iter().any(|p| info.platforms.contains(p)))
+            .filter(|s| !in_run.contains(&s.id))
+            .collect();
+        if new.is_empty() {
+            anyhow::bail!("{} is already in the run", requested.join(", "));
+        }
+        let files: Vec<PathBuf> = new
+            .iter()
+            .flat_map(|s| {
+                [
+                    live.specs_dir.join(format!("{}.spec.md", s.id)),
+                    live.specs_dir
+                        .join(&s.feature)
+                        .join(crate::suite::FEATURE_FILE),
+                ]
+            })
+            .collect();
+        let problems: Vec<String> = crate::lint::lint(&live, crate::VERSION)
+            .into_iter()
+            .filter(|p| files.contains(&p.path))
+            .map(|p| format!("{}: {}", p.path.display(), p.message))
+            .collect();
+        if !problems.is_empty() {
+            anyhow::bail!("they don't lint clean: {}", problems.join("; "));
+        }
+        let ids: Vec<String> = new.iter().map(|s| s.id.clone()).collect();
+        let planned = saved::plan_for(&live, &info.platforms, &ids)?.specs;
+        saved::snapshot_specs(&self.run_dir, &live, &ids)?;
+        saved::write_info(
+            &self.run_dir,
+            &saved::RunInfo {
+                scope: saved::merge_scope(&info.scope, &ids),
+                ..info.clone()
+            },
+        )?;
+        {
+            let mut suite = self.suite.write().unwrap_or_else(|e| e.into_inner());
+            let mut next = (**suite).clone();
+            for spec in &new {
+                next.specs.retain(|s| s.id != spec.id);
+                next.specs.push((*spec).clone());
+                if !next.features.iter().any(|f| f.name == spec.feature)
+                    && let Some(feature) = live.features.iter().find(|f| f.name == spec.feature)
+                {
+                    next.features.push(feature.clone());
+                }
+            }
+            next.specs
+                .sort_by(|a, b| (&a.feature, &a.id).cmp(&(&b.feature, &b.id)));
+            next.features.sort_by(|a, b| a.name.cmp(&b.name));
+            *suite = Arc::new(next);
+        }
+        self.with_run(|run, now| run.add_specs(now, planned))
+    }
+
+    fn page<'a>(
+        &'a self,
+        suite: &'a Suite,
+        run: &'a Run,
+        export: Option<report::Export>,
+    ) -> report::Page<'a> {
         report::Page {
-            suite: &self.suite,
+            suite,
             run,
             label: &self.label,
             live: export.is_none(),
@@ -194,8 +296,8 @@ impl Hub {
         }
         let mut devices = self.devices.lock().await;
         if let std::collections::hash_map::Entry::Vacant(slot) = devices.entry(platform) {
-            let config = self
-                .suite
+            let suite = self.suite();
+            let config = suite
                 .config
                 .as_ref()
                 .and_then(|c| c.platforms.get(&platform));
@@ -208,12 +310,12 @@ impl Hub {
     /// Resets a platform for a spec: guard, seed, relaunch, then its starts-on labels. Tried three times; the
     /// error after the last says why, and the caller files the spec BLOCKED as a reset failure.
     pub async fn prepare(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
-        let config = self
-            .suite
+        let suite = self.suite();
+        let config = suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let root = &self.suite.root;
+        let root = &suite.root;
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
             let attempt = async {
@@ -398,17 +500,16 @@ impl Hub {
     }
 
     pub fn fixtures_dir(&self) -> PathBuf {
-        let dir = self.suite.config.as_ref().and_then(|c| c.fixtures.clone());
-        self.suite
-            .root
-            .join(dir.unwrap_or_else(|| "fixtures".into()))
+        let suite = self.suite();
+        let dir = suite.config.as_ref().and_then(|c| c.fixtures.clone());
+        suite.root.join(dir.unwrap_or_else(|| "fixtures".into()))
     }
 
     /// Runs the project's check or act hook: `<hook> <name> <args...>`, each quoted for the shell. A failing call
     /// is still evidence, so its exit and output come back rather than an error.
     pub async fn project_hook(&self, kind: &str, name: &str, args: &[String]) -> Result<String> {
-        let config = self
-            .suite
+        let suite = self.suite();
+        let config = suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
@@ -425,7 +526,7 @@ impl Hub {
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
         let command = format!("{hook} {}", quoted.join(" "));
-        match hooks::run(&self.suite.root, &command, hooks::SEED_TIMEOUT).await {
+        match hooks::run(&suite.root, &command, hooks::SEED_TIMEOUT).await {
             Ok(out) => Ok(out),
             Err(e) => Ok(format!("{kind} failed: {e:#}")),
         }
@@ -433,13 +534,13 @@ impl Hub {
 
     /// Asks the project's build-identity hook which build is installed on a platform.
     pub async fn read_build(&self, platform: Platform) -> Result<Build> {
-        let config = self
-            .suite
+        let suite = self.suite();
+        let config = suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let command = hooks::fill(&config.hooks.build_identity, "", &platform.to_string());
-        let out = hooks::run(&self.suite.root, &command, hooks::GUARD_TIMEOUT).await?;
+        let out = hooks::run(&suite.root, &command, hooks::GUARD_TIMEOUT).await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
             format!(
                 "the build-identity hook should print {{\"commit\": ...}}, but printed {:?}",
@@ -454,8 +555,8 @@ impl Hub {
 
     /// Builds and installs the current tree on a platform with the project's install hook.
     pub async fn install(&self, platform: Platform) -> Result<()> {
-        let config = self
-            .suite
+        let suite = self.suite();
+        let config = suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
@@ -463,7 +564,7 @@ impl Hub {
             anyhow::bail!("suite.yaml has no install hook, so builds are installed by hand");
         };
         let command = hooks::fill(install, "", &platform.to_string());
-        hooks::run(&self.suite.root, &command, hooks::INSTALL_TIMEOUT)
+        hooks::run(&suite.root, &command, hooks::INSTALL_TIMEOUT)
             .await
             .with_context(|| format!("the install hook failed on {platform}"))?;
         Ok(())
@@ -499,7 +600,7 @@ impl Hub {
         if std::fs::create_dir_all(&dir).is_err() {
             return Vec::new();
         }
-        let base = format!("{}-{attempt}-{platform}", spec.replace('/', "-"));
+        let base = report::evidence_base(spec, attempt, platform);
         let names = [
             format!("{base}-screen.png"),
             format!("{base}-tree.txt"),
@@ -541,21 +642,26 @@ impl Hub {
     /// Writes the self-contained copy of the report into the run's folder and returns its path.
     pub fn export(&self, run: &Run, now: u64) -> Result<PathBuf> {
         let finished = run.state().finished;
-        let html = report::document(&self.page(run, Some(report::Export { at: now, finished })));
+        let html = report::document(&self.page(
+            &self.suite(),
+            run,
+            Some(report::Export { at: now, finished }),
+        ));
         let path = self.run_dir.join(EXPORT_FILE);
         std::fs::write(&path, html)?;
         Ok(path)
     }
 
     fn stall_silent_testers(&self) {
-        let silence = self.stall_ms;
+        let (silence, start) = (self.stall_ms, self.start_ms);
         let _ = self.with_run(|run, now| {
-            for token in run.stalled(now, silence) {
-                run.stall(
-                    now,
-                    &token,
-                    &format!("no tool call for {} s", silence / 1000),
-                )?;
+            for token in run.stalled(now, silence, start) {
+                let reason = if run.started(&token) {
+                    format!("no tool call for {} s", silence / 1000)
+                } else {
+                    format!("no first tool call {} s after dispatch", start / 1000)
+                };
+                run.stall(now, &token, &reason)?;
             }
             Ok(())
         });
@@ -686,14 +792,14 @@ pub const EXPORT_FILE: &str = "report.html";
 
 async fn page(State(hub): State<Arc<Hub>>) -> Response {
     let html = hub
-        .with_run(|run, _| Ok(report::document(&hub.page(run, None))))
+        .with_run(|run, _| Ok(report::document(&hub.page(&hub.suite(), run, None))))
         .unwrap_or_default();
     axum::response::Html(html).into_response()
 }
 
 async fn fragment(State(hub): State<Arc<Hub>>) -> Response {
     let html = hub
-        .with_run(|run, _| Ok(report::content(&hub.page(run, None))))
+        .with_run(|run, _| Ok(report::content(&hub.page(&hub.suite(), run, None))))
         .unwrap_or_default();
     axum::response::Html(html).into_response()
 }

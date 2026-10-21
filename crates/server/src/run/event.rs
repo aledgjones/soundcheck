@@ -19,6 +19,9 @@ pub enum Event {
     Posted {
         token: String,
         posted: Posted,
+        /// The ids its side finds get, in order, for `review_find`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        find_ids: Vec<u32>,
     },
     Reviewed {
         spec: String,
@@ -98,6 +101,14 @@ pub enum Event {
         platform: Platform,
         build: Build,
         reruns: Vec<Rerun>,
+    },
+    /// Platforms added on resume: their rows for the run's scope join it, and a finished run opens again.
+    PlatformsAdded {
+        platforms: Vec<Platform>,
+    },
+    /// Specs added to the scope, on resume or mid-run: their rows join it, and a finished run opens again.
+    SpecsAdded {
+        specs: Vec<String>,
     },
     Paused {
         reason: String,

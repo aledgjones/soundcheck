@@ -74,6 +74,8 @@ pub struct RowRecord {
     pub posted: Option<Posted>,
     /// Whether the latest attempt was a verification.
     pub verifying: bool,
+    /// The claim the latest verification was sent to check; only a FAIL that doesn't reproduce is a finding.
+    pub verified_claim: Option<Claim>,
     /// The coordinator's call on the latest attempt, with its reason.
     pub review: Option<(Call, String)>,
     /// Evidence the server saved for the latest attempt.
@@ -82,6 +84,26 @@ pub struct RowRecord {
     pub degraded: Vec<String>,
     /// What the coordinator wants the next attempt told, after fixing a harness gap.
     pub rerun_note: Option<String>,
+}
+
+impl RowRecord {
+    fn new() -> RowRecord {
+        RowRecord {
+            row: Row::NotRun,
+            attempts: 0,
+            budget: 0,
+            sightings: 0,
+            build: None,
+            dispatched_at: None,
+            posted: None,
+            verifying: false,
+            verified_claim: None,
+            review: None,
+            captured: Vec::new(),
+            degraded: Vec::new(),
+            rerun_note: None,
+        }
+    }
 }
 
 /// A side find waiting for the coordinator.
@@ -121,6 +143,8 @@ pub struct State {
 struct Activity {
     last: u64,
     in_call: u32,
+    /// Whether the tester has made its first tool call; until then the longer start limit applies.
+    started: bool,
 }
 
 pub struct Run {
@@ -155,6 +179,7 @@ impl Run {
                     Activity {
                         last: now,
                         in_call: 0,
+                        started: true,
                     },
                 );
             }
@@ -215,6 +240,7 @@ impl Run {
             Activity {
                 last: now,
                 in_call: 0,
+                started: false,
             },
         );
         Ok(token)
@@ -286,11 +312,15 @@ impl Run {
             );
         }
         let claim = posted.claim();
+        let find_ids = (0..posted.side_finds.len() as u32)
+            .map(|i| self.state.next_id + i)
+            .collect();
         self.commit(
             now,
             Event::Posted {
                 token: token.into(),
                 posted,
+                find_ids,
             },
         )?;
         self.activity.remove(token);
@@ -643,6 +673,7 @@ impl Run {
         if let Some(a) = self.activity.get_mut(token) {
             a.in_call += 1;
             a.last = now;
+            a.started = true;
         }
     }
 
@@ -653,16 +684,25 @@ impl Run {
         }
     }
 
-    /// Tokens whose tester has been silent between calls for at least `silence_ms`.
-    pub fn stalled(&self, now: u64, silence_ms: u64) -> Vec<String> {
+    /// Tokens whose tester has been silent between calls for at least `silence_ms`, or, before its first call, for
+    /// at least `start_ms` since dispatch: a slow network can delay a tester's first call by minutes.
+    pub fn stalled(&self, now: u64, silence_ms: u64, start_ms: u64) -> Vec<String> {
         let mut tokens: Vec<String> = self
             .activity
             .iter()
-            .filter(|(_, a)| a.in_call == 0 && now.saturating_sub(a.last) >= silence_ms)
+            .filter(|(_, a)| {
+                let limit = if a.started { silence_ms } else { start_ms };
+                a.in_call == 0 && now.saturating_sub(a.last) >= limit
+            })
             .map(|(t, _)| t.clone())
             .collect();
         tokens.sort();
         tokens
+    }
+
+    /// Whether a running token's tester has made any tool call yet.
+    pub fn started(&self, token: &str) -> bool {
+        self.activity.get(token).is_some_and(|a| a.started)
     }
 
     pub fn stall(&mut self, now: u64, token: &str, reason: &str) -> Result<()> {
@@ -768,6 +808,56 @@ impl Run {
                 reason: reason.into(),
             },
         )
+    }
+
+    /// On resume: platforms the run didn't cover join it, with rows from the plan. A finished run opens again,
+    /// since its new rows haven't run.
+    pub fn add_platforms(&mut self, now: u64, platforms: Vec<Platform>) -> Result<()> {
+        if platforms.is_empty() {
+            bail!("no platforms to add");
+        }
+        for platform in &platforms {
+            if !self.state.rows.keys().any(|(_, p)| p == platform) {
+                bail!("no spec in the run's scope runs on {platform}");
+            }
+        }
+        self.commit(now, Event::PlatformsAdded { platforms })
+    }
+
+    /// Specs the run didn't cover join it, each with a row per platform it runs on; returns the rows added. A
+    /// finished run opens again, since its new rows haven't run.
+    pub fn add_specs(
+        &mut self,
+        now: u64,
+        specs: Vec<PlannedSpec>,
+    ) -> Result<Vec<(String, Platform)>> {
+        let specs: Vec<PlannedSpec> = specs
+            .into_iter()
+            .filter(|s| !self.plan.specs.iter().any(|p| p.id == s.id))
+            .collect();
+        if specs.is_empty() {
+            bail!("every spec named is already in the run");
+        }
+        if let Some(s) = specs.iter().find(|s| s.platforms.is_empty()) {
+            bail!("{} runs on none of the run's platforms", s.id);
+        }
+        self.commit(
+            now,
+            Event::SpecsAdded {
+                specs: specs.iter().map(|s| s.id.clone()).collect(),
+            },
+        )?;
+        let mut added = Vec::new();
+        for spec in specs {
+            for &platform in &spec.platforms {
+                self.state
+                    .rows
+                    .insert((spec.id.clone(), platform), RowRecord::new());
+                added.push((spec.id.clone(), platform));
+            }
+            self.plan.specs.push(spec);
+        }
+        Ok(added)
     }
 
     pub fn pause(&mut self, now: u64, reason: &str) -> Result<()> {
@@ -887,23 +977,9 @@ impl State {
         };
         for spec in &plan.specs {
             for &platform in &spec.platforms {
-                state.rows.insert(
-                    (spec.id.clone(), platform),
-                    RowRecord {
-                        row: Row::NotRun,
-                        attempts: 0,
-                        budget: 0,
-                        sightings: 0,
-                        build: None,
-                        dispatched_at: None,
-                        posted: None,
-                        verifying: false,
-                        review: None,
-                        captured: Vec::new(),
-                        degraded: Vec::new(),
-                        rerun_note: None,
-                    },
-                );
+                state
+                    .rows
+                    .insert((spec.id.clone(), platform), RowRecord::new());
             }
         }
         state
@@ -983,7 +1059,7 @@ impl State {
                     };
                 }
             }
-            Event::Posted { token, posted } => {
+            Event::Posted { token, posted, .. } => {
                 let Some(key) = self.running_token(token) else {
                     return;
                 };
@@ -1009,7 +1085,9 @@ impl State {
                 }
                 let claim = posted.claim();
                 if claim == Claim::Pass {
-                    if let Some(original) = &verify {
+                    if let Some(original) = &verify
+                        && self.rows[&key].verified_claim == Some(Claim::Fail)
+                    {
                         let r = &self.rows[&key];
                         let title = format!(
                             "Not reproduced ({} of {}): {original}",
@@ -1176,6 +1254,9 @@ impl State {
                 let r = self.rows.get_mut(&key).unwrap();
                 r.row = row;
                 r.review = Some((call.clone(), reason.clone()));
+                if let Call::Verify { .. } = call {
+                    r.verified_claim = Some(claim);
+                }
                 if let Call::Harness { rerun } = call {
                     r.rerun_note.clone_from(rerun);
                 }
@@ -1356,6 +1437,8 @@ impl State {
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
             Event::Finished { .. } => self.finished = true,
+            // The rows themselves come from the plan, which already has the platforms and specs.
+            Event::PlatformsAdded { .. } | Event::SpecsAdded { .. } => self.finished = false,
         }
     }
 }

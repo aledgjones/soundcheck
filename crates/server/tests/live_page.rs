@@ -313,17 +313,23 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     assert_eq!(
         shot,
         format!(
-            "saved.png: Read it at {}",
-            run_dir.join("evidence/saved.png").display()
+            "saved as annotations-001-draw-1-web-saved.png: attach this name; Read it at {}",
+            run_dir
+                .join("evidence/annotations-001-draw-1-web-saved.png")
+                .display()
         )
     );
-    assert!(run_dir.join("evidence/saved.png").exists());
+    assert!(
+        run_dir
+            .join("evidence/annotations-001-draw-1-web-saved.png")
+            .exists()
+    );
 
     let posted = call(
         &client,
         "post_result",
         json!({ "token": token, "judgments": [
-            { "outcome": 0, "answer": "held", "observed": "Saved showed.", "evidence": ["saved.png"] },
+            { "outcome": 0, "answer": "held", "observed": "Saved showed.", "evidence": ["saved"] },
             { "outcome": 1, "answer": "failed", "observed": "Redo stayed greyed out." }
         ]}),
     )
@@ -354,7 +360,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         .await
         .unwrap();
     assert!(
-        html.contains("src=\"files/evidence/saved.png\""),
+        html.contains("src=\"files/evidence/annotations-001-draw-1-web-saved.png\""),
         "the page shows the screenshot"
     );
     assert!(

@@ -192,6 +192,32 @@ fn a_verification_that_passes_files_a_not_reproduced_finding() {
 }
 
 #[test]
+fn a_verified_unsure_that_passes_files_only_a_pass() {
+    let (mut run, _) = open("verify-unsure");
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Held, Answer::Unsure]))
+        .unwrap();
+    run.review(
+        3,
+        DRAW,
+        Android,
+        Call::Verify {
+            claim: "redo may not restore the stroke's colour".into(),
+        },
+        "can't tell from the tree",
+    )
+    .unwrap();
+    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
+    run.post(5, &t2, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert!(
+        run.state().problems.is_empty(),
+        "an Unsure isn't a claim of a bug"
+    );
+}
+
+#[test]
 fn a_harness_call_files_any_claim_blocked_with_a_note() {
     let (mut run, _) = open("harness");
     let t = run.dispatch(1, DRAW, Android, brief).unwrap();
@@ -397,12 +423,12 @@ fn only_silence_between_calls_counts_as_a_stall() {
     let t = run.dispatch(0, DRAW, Android, brief).unwrap();
     run.call_started(10_000, &t);
     assert!(
-        run.stalled(500_000, 120_000).is_empty(),
+        run.stalled(500_000, 120_000, 600_000).is_empty(),
         "a long seed or wait isn't a stall"
     );
     run.call_finished(500_000, &t);
-    assert!(run.stalled(600_000, 120_000).is_empty());
-    assert_eq!(run.stalled(620_000, 120_000), vec![t.clone()]);
+    assert!(run.stalled(600_000, 120_000, 600_000).is_empty());
+    assert_eq!(run.stalled(620_000, 120_000, 600_000), vec![t.clone()]);
 
     run.stall(620_000, &t, "no tool call for 2 min").unwrap();
     assert_eq!(
@@ -414,6 +440,28 @@ fn only_silence_between_calls_counts_as_a_stall() {
             .is_err(),
         "a stalled token can't post"
     );
+}
+
+#[test]
+fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
+    let (mut run, _) = open("slow-start");
+    let t = run.dispatch(0, DRAW, Android, brief).unwrap();
+    assert!(
+        run.stalled(300_000, 120_000, 600_000).is_empty(),
+        "a slow first call isn't a stall"
+    );
+    assert!(!run.started(&t));
+    run.call_started(300_000, &t);
+    run.call_finished(301_000, &t);
+    assert!(run.started(&t));
+    assert!(run.stalled(420_000, 120_000, 600_000).is_empty());
+    assert_eq!(run.stalled(421_000, 120_000, 600_000), vec![t.clone()]);
+
+    run.post(422_000, &t, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    let silent = run.dispatch(500_000, BACK, Android, brief).unwrap();
+    assert!(run.stalled(1_099_000, 120_000, 600_000).is_empty());
+    assert_eq!(run.stalled(1_100_000, 120_000, 600_000), vec![silent]);
 }
 
 #[test]
@@ -494,6 +542,11 @@ fn a_side_find_is_reviewed_on_its_own() {
         Some(Final::Pass),
         "the row keeps its own result"
     );
+    let line = soundcheck::serve::events::summary(run.entries_after(0).last().unwrap());
+    assert!(
+        line.ends_with("1 side find(s) need review: id 1: Eraser width resets"),
+        "review_find needs the id: {line}"
+    );
     assert!(
         run.finish(3)
             .unwrap_err()
@@ -545,6 +598,147 @@ fn pause_stops_dispatch_until_resumed() {
 }
 
 #[test]
+fn a_platform_added_on_resume_reopens_a_finished_run() {
+    let android_only = || {
+        let mut p = plan(false);
+        for spec in &mut p.specs {
+            spec.platforms.retain(|p| *p == Android);
+        }
+        p
+    };
+    let path = journal("add-platform");
+    let mut run = Run::open(android_only(), &path, 0).unwrap();
+    for (at, spec) in [(1, DRAW), (3, BACK)] {
+        let t = run.dispatch(at, spec, Android, brief).unwrap();
+        let held = vec![
+            Answer::Held;
+            run.plan()
+                .specs
+                .iter()
+                .find(|s| s.id == spec)
+                .unwrap()
+                .outcomes
+                .len()
+        ];
+        run.post(at + 1, &t, judged(&held)).unwrap();
+    }
+    run.finish(5).unwrap();
+    drop(run);
+
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    assert!(run.state().finished);
+    assert!(
+        run.add_platforms(6, vec![Platform::Web])
+            .unwrap_err()
+            .to_string()
+            .contains("no spec in the run's scope runs on web")
+    );
+    run.add_platforms(6, vec![Ios]).unwrap();
+    assert!(!run.state().finished, "its new rows haven't run");
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(run.row(DRAW, Ios).unwrap().row, Row::NotRun);
+    let t = run.dispatch(7, DRAW, Ios, brief).unwrap();
+    run.post(8, &t, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    drop(run);
+
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    assert!(!run.state().finished, "the reopening replays");
+    let counts = run.finish(9).unwrap();
+    assert_eq!((counts.pass, counts.not_run), (3, 0));
+}
+
+#[test]
+fn specs_added_keep_the_old_rows_and_reopen_a_finished_run() {
+    let draw_only = || {
+        let mut p = plan(false);
+        p.specs.retain(|s| s.id == DRAW);
+        p
+    };
+    let path = journal("add-specs");
+    let mut run = Run::open(draw_only(), &path, 0).unwrap();
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    run.finish(3).unwrap();
+
+    let back = plan(false)
+        .specs
+        .into_iter()
+        .find(|s| s.id == BACK)
+        .unwrap();
+    assert!(
+        run.add_specs(4, vec![plan(false).specs[0].clone()])
+            .unwrap_err()
+            .to_string()
+            .contains("already in the run")
+    );
+    let added = run.add_specs(4, vec![back]).unwrap();
+    assert_eq!(added, vec![(BACK.to_string(), Android)]);
+    assert!(!run.state().finished, "its new rows haven't run");
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(run.row(BACK, Android).unwrap().row, Row::NotRun);
+    drop(run);
+
+    let lines = std::fs::read_to_string(&path).unwrap();
+    assert!(lines.contains(r#""event":"specs-added","specs":["annotations/002-back"]"#));
+    // On resume the plan comes from the widened scope, so it already has the rows.
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    assert!(!run.state().finished, "the reopening replays");
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    let t = run.dispatch(5, BACK, Android, brief).unwrap();
+    run.post(6, &t, judged(&[Answer::Held])).unwrap();
+    let counts = run.finish(7).unwrap();
+    assert_eq!(counts.pass, 2);
+}
+
+#[test]
+fn resuming_with_a_scope_adds_to_the_saved_one() {
+    use soundcheck::run::saved::{merge_scope, resume_plan};
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    let suite = soundcheck::suite::load(&root);
+    let saved = vec![DRAW.to_string()];
+
+    let (before, added, scope) =
+        resume_plan(&suite, &[Android, Ios], &saved, &[BACK.into(), DRAW.into()]).unwrap();
+    assert_eq!(
+        before
+            .specs
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![DRAW],
+        "the run opens as it was saved"
+    );
+    assert_eq!(
+        added
+            .iter()
+            .map(|s| (s.id.as_str(), s.platforms.clone()))
+            .collect::<Vec<_>>(),
+        vec![(BACK, vec![Android])],
+        "only specs new to the run, on the run's platforms"
+    );
+    assert_eq!(scope, vec![DRAW.to_string(), BACK.to_string()]);
+
+    let (_, added, scope) = resume_plan(&suite, &[Android], &saved, &[]).unwrap();
+    assert!(added.is_empty(), "no --scope changes nothing");
+    assert_eq!(scope, saved);
+
+    let refused = resume_plan(&suite, &[Android], &saved, &["annotations/404-nope".into()])
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("no feature or spec by that name"),
+        "{refused}"
+    );
+
+    assert!(
+        merge_scope(&[], &[BACK.into()]).is_empty(),
+        "an empty scope already has every spec"
+    );
+}
+
+#[test]
 fn a_reopened_journal_carries_on_where_it_stopped() {
     let (mut run, path) = open("replay");
     let t = run.dispatch(1, DRAW, Android, brief).unwrap();
@@ -559,7 +753,7 @@ fn a_reopened_journal_carries_on_where_it_stopped() {
         Row::NeedsReview { .. }
     ));
     assert!(
-        run.stalled(1_000 + 119_000, 120_000).is_empty(),
+        run.stalled(1_000 + 119_000, 120_000, 600_000).is_empty(),
         "the clock restarts on reopen"
     );
     run.review(4, DRAW, Android, bug(), "real").unwrap();

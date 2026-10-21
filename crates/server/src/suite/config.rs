@@ -38,7 +38,7 @@ impl std::str::FromStr for Platform {
 }
 
 /// `suite.yaml`: everything a project tells soundcheck about itself.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SuiteConfig {
     /// The soundcheck version this suite is written for, e.g. `0.1`.
@@ -60,7 +60,7 @@ pub struct SuiteConfig {
     pub tickets: Option<Tickets>,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct PlatformConfig {
     pub app_id: Option<String>,
@@ -77,7 +77,7 @@ pub struct PlatformConfig {
 }
 
 /// Shell commands: exit 0 for ok, JSON on stdout where data comes back.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Hooks {
     pub guard: String,
@@ -91,7 +91,7 @@ pub struct Hooks {
     pub act: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Models {
     pub default: String,
@@ -105,7 +105,7 @@ impl Default for Models {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Tickets {
     /// A link with `{id}` in place of the ticket ID.

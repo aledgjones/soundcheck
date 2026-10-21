@@ -51,6 +51,11 @@ pub const TOOLS: &[Tool] = &[
     basic("gone", ALL, "fail if an element is on screen"),
     basic("check", ALL, "several expect/gone assertions on one read"),
     basic("wait", ALL, "wait for an element to appear"),
+    basic(
+        "sleep",
+        ALL,
+        "do nothing for N ms (at most 30000), e.g. to let an animation or a sync settle",
+    ),
     basic("shot", ALL, "save a screenshot"),
     basic("errors", ALL, "crashes and app errors since launch"),
     basic("tap", ALL, "tap an element"),

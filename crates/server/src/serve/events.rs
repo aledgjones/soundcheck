@@ -1,6 +1,7 @@
 use crate::run::event::Event;
 use crate::run::journal::Entry;
 use crate::run::model::Claim;
+use crate::suite::config::Platform;
 
 /// One plain line per journal entry, for the coordinator's Monitor: every line wakes it.
 pub fn summary(entry: &Entry) -> String {
@@ -19,7 +20,11 @@ pub fn summary(entry: &Entry) -> String {
                 ""
             }
         ),
-        Event::Posted { token, posted } => {
+        Event::Posted {
+            token,
+            posted,
+            find_ids,
+        } => {
             let outcome = match posted.claim() {
                 Claim::Pass => "PASS: filed",
                 Claim::Fail => "FAIL: needs review",
@@ -28,7 +33,17 @@ pub fn summary(entry: &Entry) -> String {
             };
             let finds = match posted.side_finds.len() {
                 0 => String::new(),
-                n => format!("; {n} side find(s) need review"),
+                // Journals from before side finds carried their ids.
+                n if find_ids.len() != n => format!("; {n} side find(s) need review"),
+                n => format!(
+                    "; {n} side find(s) need review: {}",
+                    find_ids
+                        .iter()
+                        .zip(&posted.side_finds)
+                        .map(|(id, f)| format!("id {id}: {}", f.summary))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ),
             };
             format!("{token} posted {outcome}{finds}")
         }
@@ -113,6 +128,18 @@ pub fn summary(entry: &Entry) -> String {
             "build {} installed on {platform}: {} spec(s) to rerun",
             build.label(),
             reruns.len()
+        ),
+        Event::PlatformsAdded { platforms } => format!(
+            "added {}: their specs join the run, which is open again",
+            platforms
+                .iter()
+                .map(Platform::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Event::SpecsAdded { specs } => format!(
+            "added {}: their rows join the run, not run yet",
+            specs.join(", ")
         ),
         Event::Paused { reason } => format!("paused: {reason}"),
         Event::Resumed => "resumed".into(),

@@ -2,7 +2,7 @@ use super::config::Platform;
 use serde::Deserialize;
 
 /// One test case: `<feature>/NNN-name.spec.md`. Its path is its identity and its order.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Spec {
     /// `annotations/001-draw`
     pub id: String,
@@ -15,7 +15,7 @@ pub struct Spec {
     pub pinned: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Frontmatter {
     pub title: String,

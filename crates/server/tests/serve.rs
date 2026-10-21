@@ -145,6 +145,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         "post_result",
         "status",
         "dispatch",
+        "add_specs",
         "review",
         "review_find",
         "install_build",
@@ -477,6 +478,271 @@ async fn a_tester_can_run_the_projects_data_checks() {
         stale.as_str().unwrap().starts_with("refused: token nope"),
         "{stale}"
     );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn status_names_each_waiting_side_find_by_id() {
+    let (server, url) = server().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    call(
+        &client,
+        "post_result",
+        json!({
+            "token": token,
+            "judgments": [{ "outcome": 0, "answer": "held", "observed": "the collection showed each time" }],
+            "side_finds": [{ "summary": "Back flashes white", "observed": "a white frame on the third back" }]
+        }),
+    )
+    .await;
+    let status = call(&client, "status", json!({})).await;
+    let find = &status["side_finds_waiting"][0];
+    assert_eq!(find["id"], 1);
+    assert_eq!(find["summary"], "Back flashes white");
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_tester_can_sleep_without_stalling() {
+    let (server, url) = server().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    let slept = call(&client, "sleep", json!({ "token": token, "ms": 10 })).await;
+    assert_eq!(slept, "slept 10 ms");
+    let absurd = call(&client, "sleep", json!({ "token": token, "ms": 60_000 })).await;
+    assert!(absurd.as_str().unwrap().contains("over 30000"), "{absurd}");
+    let stale = call(&client, "sleep", json!({ "token": "nope", "ms": 10 })).await;
+    assert!(
+        stale.as_str().unwrap().starts_with("refused: token nope"),
+        "{stale}"
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn post_result_resolves_evidence_to_the_attempts_own_shot() {
+    let (server, url, dir) = server_in().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    std::fs::create_dir_all(dir.join("evidence")).unwrap();
+    std::fs::write(
+        dir.join("evidence/annotations-002-back-1-android-wide.png"),
+        b"png",
+    )
+    .unwrap();
+    let posted = call(
+        &client,
+        "post_result",
+        json!({
+            "token": token,
+            "judgments": [{ "outcome": 0, "answer": "held", "observed": "the collection showed", "evidence": ["wide"] }],
+            "side_finds": [{ "summary": "Back flashes white", "observed": "a white frame", "evidence": ["wide.png"] }]
+        }),
+    )
+    .await;
+    assert_eq!(posted["claim"], "PASS", "{posted}");
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(
+        status["side_finds_waiting"][0]["evidence"][0],
+        "annotations-002-back-1-android-wide.png"
+    );
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(
+        journal.contains("\"evidence\":[\"annotations-002-back-1-android-wide.png\"]"),
+        "{journal}"
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn post_result_refuses_evidence_that_was_never_saved() {
+    let (server, url) = server().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    let refused = call(
+        &client,
+        "post_result",
+        json!({
+            "token": token,
+            "judgments": [{ "outcome": 0, "answer": "held", "observed": "the collection showed", "evidence": ["wide2"] }]
+        }),
+    )
+    .await;
+    let refused = refused.as_str().unwrap();
+    assert!(
+        refused.starts_with("refused: no saved evidence named wide2"),
+        "{refused}"
+    );
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(
+        status["finish_blockers"][0], "annotations/002-back is running on android",
+        "the row waits for a corrected result"
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
+    use soundcheck::run::saved;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-add-{}-{nanos}", std::process::id()));
+    let root = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(root.join("annotations")).unwrap();
+    std::fs::copy(good.join("suite.yaml"), root.join("suite.yaml")).unwrap();
+    for file in ["_feature.md", "001-draw.spec.md", "002-back.spec.md"] {
+        std::fs::copy(
+            good.join("annotations").join(file),
+            root.join("annotations").join(file),
+        )
+        .unwrap();
+    }
+    let suite = suite::load(&root);
+    let info = saved::RunInfo {
+        suite: root.clone(),
+        label: "v0.0.0 · test".into(),
+        platforms: vec![Platform::Android, Platform::Ios],
+        scope: vec!["annotations/001-draw".into()],
+    };
+    let dir = base.join("reports").join("20261021-090000");
+    std::fs::create_dir_all(&dir).unwrap();
+    saved::save(&dir, &info, &suite).unwrap();
+    let plan = saved::plan_for(&suite, &info.platforms, &info.scope).unwrap();
+    let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let server = serve::start(
+        Hub::without_devices(
+            suite,
+            run,
+            info.label.clone(),
+            dir.clone(),
+            120_000,
+            info.platforms.clone(),
+        ),
+        0,
+    )
+    .await
+    .unwrap();
+    let client = client(&format!("http://{}", server.addr)).await;
+
+    let refused = call(
+        &client,
+        "add_specs",
+        json!({ "specs": ["annotations/404-nope"] }),
+    )
+    .await;
+    assert!(
+        refused
+            .as_str()
+            .unwrap()
+            .contains("annotations/404-nope: no feature or spec by that name"),
+        "{refused}"
+    );
+    let refused = call(
+        &client,
+        "add_specs",
+        json!({ "specs": ["annotations/001-draw"] }),
+    )
+    .await;
+    assert!(
+        refused.as_str().unwrap().contains("already in the run"),
+        "{refused}"
+    );
+
+    let added = call(
+        &client,
+        "add_specs",
+        json!({ "specs": ["annotations/002-back"] }),
+    )
+    .await;
+    assert_eq!(
+        added,
+        json!({ "added": [{ "spec": "annotations/002-back", "platform": "android" }] })
+    );
+    let finished = call(&client, "finish", json!({})).await;
+    assert!(finished["report"].is_string(), "{finished}");
+
+    // A spec written after the run started comes from the suite as it is now.
+    let text = std::fs::read_to_string(root.join("annotations/001-draw.spec.md"))
+        .unwrap()
+        .replace("Draw a pen stroke, undo and redo it", "Erase a pen stroke");
+    std::fs::write(root.join("annotations/003-erase.spec.md"), text).unwrap();
+    let added = call(&client, "add_specs", json!({ "specs": ["annotations"] })).await;
+    assert_eq!(
+        added,
+        json!({ "added": [
+            { "spec": "annotations/003-erase", "platform": "android" },
+            { "spec": "annotations/003-erase", "platform": "ios" }
+        ] })
+    );
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/003-erase", "platform": "ios" }),
+    )
+    .await;
+    assert!(
+        dispatched["brief"]
+            .as_str()
+            .is_some_and(|b| b.contains("Erase a pen stroke")),
+        "the run is open again and dispatches the new spec: {dispatched}"
+    );
+
+    let info = saved::read_info(&dir).unwrap();
+    assert_eq!(
+        info.scope,
+        vec![
+            "annotations/001-draw",
+            "annotations/002-back",
+            "annotations/003-erase"
+        ]
+    );
+    assert!(
+        dir.join("suite/annotations/003-erase.spec.md").exists(),
+        "the snapshot keeps the run self-contained"
+    );
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains(r#""specs":["annotations/003-erase"]"#));
+    let (_, reloaded, _) = saved::load(&dir, serve::now_ms()).unwrap();
+    assert!(
+        reloaded
+            .row("annotations/003-erase", Platform::Ios)
+            .is_some()
+    );
+    assert!(!reloaded.state().finished);
+
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

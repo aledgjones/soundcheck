@@ -48,7 +48,7 @@ How they talk:
 - **Tester → server:** MCP tool calls.
 - **Server → tester:** only in the reply to the tester's next call ("device degraded, stop"). MCP notifications don't wake a Claude agent, so nothing relies on them.
 - **Server → coordinator:** an event stream. The coordinator runs `soundcheck events` under a Monitor, which prints one line per event (spec finished, result needs review, device degraded) and replays anything missed since its cursor, so re-arming the Monitor every 30 minutes loses nothing.
-- **Coordinator → server:** MCP tools or the CLI (start, dispatch, uphold, verify, send back, pause, resume). It reaches testers only through the server, so every instruction is in the journal.
+- **Coordinator → server:** MCP tools or the CLI (start, dispatch, add specs, uphold, verify, send back, pause, resume). It reaches testers only through the server, so every instruction is in the journal.
 - **Server → live page:** WebSocket on the same port.
 
 ---
@@ -92,7 +92,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - **Review** is the coordinator alone, judging the tester's evidence and the server's capture. It does one of three things:
   - **uphold:** the evidence is conclusive. A FAIL is filed, and goes into Problems as a **failure**. For a BLOCKED claim (the tester couldn't check), the coordinator says what stopped it: the **app** (it crashed, a screen wouldn't load), so the row is filed **FAIL** with a failure; or the **environment or harness** (a missing label, a tool that can't reach a control), so it's filed **BLOCKED** with a note.
   - **verify:** the evidence isn't conclusive. A verification attempt is queued: a new agent on a fresh seed, **told the claim** ("the first attempt saw the stroke survive undo; reproduce it"). Reproduced: upheld. Not reproduced: filed as a finding marked "not reproduced (1 of 2)", never silently dropped, since flaky problems matter at triage.
-  - **resolve an Unsure:** judge it from the evidence (PASS or FAIL, with a reason) or verify it, telling the new agent exactly what was unclear. Still unclear after verifying: filed BLOCKED with "spec unclear", and the spec is flagged for rewording with `create-test`, since ambiguity almost always means an outcome is worded too vaguely.
+  - **resolve an Unsure:** judge it from the evidence (PASS or FAIL, with a reason) or verify it, telling the new agent exactly what was unclear. A verified Unsure that passes files PASS and nothing else: only a FAIL that doesn't reproduce becomes a "not reproduced" finding. Still unclear after verifying: filed BLOCKED with "spec unclear", and the spec is flagged for rewording with `create-test`, since ambiguity almost always means an outcome is worded too vaguely.
   - **send back:** the tester erred (a misread screen, a wrong tap, a device glitch), so a fresh attempt is queued without the claim.
   - Every call carries one line of reasoning ("upheld: the screenshot shows the stroke after undo"), shown on the row with whether it was verified or a single attempt, so the person's review at the end is an audit of the coordinator's calls.
   - All attempts stay in the journal.
@@ -100,8 +100,8 @@ Each spec on each platform moves through `not run → running → needs review �
   - **dismissed**: not a bug, or not reproduced;
   - **fixed**: a ticket is created and the fix lands;
   - **deferred**: a ticket is created and it's accepted for this release.
-- **Side finds:** a tester that finds a problem outside the spec's outcomes while probing posts it as its own finding, linked to the row. The row keeps its own result, and the finding is reviewed like any non-pass. Probing near old bugs is where new ones turn up.
-- **A spec whose tester stops** without posting goes back to `not run` with the reason, counted as an attempt, and is never left spinning. Stalled means no tool call for 2 minutes (configurable), counting only the time between calls: time inside a server call (a seed, a `wait`, a `network-drop`) doesn't count.
+- **Side finds:** a tester that finds a problem outside the spec's outcomes while probing posts it as its own finding, linked to the row. The row keeps its own result, and the finding is reviewed like any non-pass. Its id (for `review_find`) is on the posted event's line and in `status`, beside its summary. Probing near old bugs is where new ones turn up.
+- **A spec whose tester stops** without posting goes back to `not run` with the reason, counted as an attempt, and is never left spinning. Stalled means no tool call for 2 minutes (configurable), counting only the time between calls: time inside a server call (a seed, a `wait`, a `sleep`, a `network-drop`) doesn't count. The clock starts at the tester's first tool call: before it, the limit is 10 minutes from dispatch (also configurable), since a slow network once delayed first calls past 2 minutes and every later call was refused.
 - **At most 3 attempts per spec** (the original plus send-backs and verifications). After the third, the coordinator files what's known: BLOCKED with the reason, or the finding marked "not reproduced (1 of 3)". A flaky spec can't loop all night.
 - **Not blocking:** a review never holds up the next dispatch. Unreviewed results block finishing the run; open problems block a Ready verdict, not finishing.
 
@@ -109,7 +109,7 @@ Each spec on each platform moves through `not run → running → needs review �
 
 - Every event is appended to `journal.jsonl` before it's acknowledged: run start, dispatch with its prompt, result, review, device health, build installs and the reruns they triggered. A crash loses nothing.
 - **A run folder is self-contained:** the journal, `run.json` (the suite, label, platforms and scope it started with), a snapshot of the suite's config and specs as they were, `summary.json`, and the evidence. Any run can be shown again from its folder alone, faithful to what it tested.
-- **Resume** (`soundcheck run <suite> --resume <run folder>`) replays the journal with the saved platforms, scope and label. A spec that was running when the server stopped goes back to the front of the queue without using an attempt: the harness stopped it, not the app.
+- **Resume** (`soundcheck run <suite> --resume <run folder>`) replays the journal with the saved platforms, scope and label. A spec that was running when the server stopped goes back to the front of the queue without using an attempt: the harness stopped it, not the app. `--platforms` on resume only adds: a platform the run lacks gets rows for its saved scope after its own preflight, `run.json` lists it and the journal records the addition, so one report covers both platforms. `--scope` on resume only adds too: specs new to the run get their rows, `run.json`'s scope and the snapshot gain them, and the journal records a `specs-added` event. The coordinator's `add_specs` does the same live, without a restart, reading new specs from the suite as it is now (they must lint clean). A finished run that gains rows opens again and is finished once more when they're done.
 - **The server is the only writer of results.** The report and live page render from the journal.
 - **Location:** configurable in `suite.yaml` (`reports: <dir>`), one folder per run holding the journal, evidence and exports.
 
@@ -118,6 +118,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - A tester attaches what it observed per outcome: tool output, plus screenshots for visual checks only.
 - **On every non-pass, the server captures its own bundle** before replying: a screenshot, the element tree and recent errors/logs. The next spec's seed wipes the device state, so review must never depend on it.
 - The server refuses a result that lacks evidence for any of the spec's outcomes.
+- One evidence folder serves the whole run, so a tester's screenshot is saved as `<spec>-<attempt>-<platform>-<name>.png`, the server's captures' prefix. `post_result` resolves each attached name (bare, `.png` or full) to its saved file and refuses names that were never saved; the report also tries a bare name with `.png`, for older journals.
 
 ### 3.6 Build identity
 
@@ -200,6 +201,7 @@ Nothing in a run may wait for a human:
   - `expect` and `gone`;
   - `check "A" "B" "!C"`: several assertions on one read;
   - `wait`;
+  - `sleep <ms>`: a plain timed pause, at most 30 s (the coordinator's `pause` pauses the run, hence the name);
   - `shot`;
   - `errors`.
 - **Input:** `tap`, `fill`, `type`, `clear`, `swipe`, `drag`, `hold`, `keyboard`, `launch`.
