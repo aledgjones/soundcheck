@@ -308,19 +308,36 @@ impl Tools {
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
-        reply(self.hub.with_run(|run, now| {
-            let Some(spec) = hub.suite.specs.iter().find(|s| s.id == p.spec) else {
-                anyhow::bail!("no spec {} in the suite", p.spec);
-            };
-            let context = hub
-                .suite
-                .features
-                .iter()
-                .find(|f| f.name == spec.feature)
-                .and_then(|f| f.context.as_deref());
+        let Some(spec) = hub.suite.specs.iter().find(|s| s.id == p.spec) else {
+            return reply(Err(anyhow::anyhow!("no spec {} in the suite", p.spec)));
+        };
+        // Check first, so a refused dispatch never resets a device.
+        if let Err(e) = hub.with_run(|run, _| run.check_dispatch(&p.spec, p.platform)) {
+            return reply(Err(e));
+        }
+        let seeded = match hub.prepare(spec, p.platform).await {
+            Ok(context) => context,
+            Err(e) => {
+                let reason = format!("{e:#}");
+                let _ =
+                    hub.with_run(|run, now| run.reset_failed(now, &p.spec, p.platform, &reason));
+                return reply(Err(anyhow::anyhow!(
+                    "the reset failed three times, so {} is filed BLOCKED on {}: {reason}",
+                    p.spec,
+                    p.platform
+                )));
+            }
+        };
+        let context = hub
+            .suite
+            .features
+            .iter()
+            .find(|f| f.name == spec.feature)
+            .and_then(|f| f.context.as_deref());
+        reply(hub.with_run(|run, now| {
             let mut brief = String::new();
             let token = run.dispatch(now, &p.spec, p.platform, |token, verify| {
-                brief = prompt::render(spec, context, p.platform, token, verify);
+                brief = prompt::render(spec, context, p.platform, token, verify, seeded.as_deref());
                 brief.clone()
             })?;
             Ok(json!({ "token": token, "model": spec.front.model, "brief": brief }))
@@ -723,37 +740,12 @@ impl Tools {
             Ok(p) => p,
             Err(e) => return reply(Err(e)),
         };
-        let result = self.on(platform, op).await;
+        let result = self.hub.on_device(platform, op).await;
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, token);
             Ok(())
         });
         reply(result.and_then(|v| Ok(serde_json::to_value(v)?)))
-    }
-
-    async fn on<T>(
-        &self,
-        platform: Platform,
-        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
-    ) -> anyhow::Result<T> {
-        if platform != Platform::Web {
-            anyhow::bail!(
-                "device tools for {platform} aren't in soundcheck yet (its driver is still to come); only web is"
-            );
-        }
-        let mut web = self.hub.web.lock().await;
-        if web.is_none() {
-            let base_url = self
-                .hub
-                .suite
-                .config
-                .as_ref()
-                .and_then(|c| c.platforms.get(&Platform::Web))
-                .and_then(|p| p.base_url.clone())
-                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-            *web = Some(Driver::new(Web::launch(&base_url, 1280, 800).await?));
-        }
-        Ok(op(web.as_ref().unwrap()).await?)
     }
 }
 

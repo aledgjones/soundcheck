@@ -1,6 +1,7 @@
 //! The one process a run needs: MCP tools for testers and the coordinator, and the event stream, on one local port.
 
 pub mod events;
+pub mod hooks;
 pub mod prompt;
 pub mod tools;
 
@@ -8,6 +9,9 @@ use crate::report;
 use crate::run::Run;
 use crate::run::journal::Entry;
 use crate::suite::Suite;
+use crate::suite::config::Platform;
+use crate::suite::spec::Spec;
+use anyhow::Context;
 use anyhow::Result;
 use axum::body::{Body, Bytes};
 use axum::extract::{Path, Query, Request, State};
@@ -20,6 +24,7 @@ use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, Stream
 use serde::Deserialize;
 use soundcheck_driver::Driver;
 use soundcheck_driver::web::Web;
+use soundcheck_driver::{Device, DriverError, Matcher};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -88,6 +93,75 @@ impl Hub {
             run_dir: Some(&self.run_dir),
             export,
         }
+    }
+
+    /// Runs a device operation on a platform's driver. Web's starts on first use against the suite's base-url.
+    pub async fn on_device<T>(
+        &self,
+        platform: Platform,
+        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
+    ) -> Result<T> {
+        if platform != Platform::Web {
+            anyhow::bail!(
+                "device tools for {platform} aren't in soundcheck yet (its driver is still to come); only web is"
+            );
+        }
+        let mut web = self.web.lock().await;
+        if web.is_none() {
+            let base_url = self
+                .suite
+                .config
+                .as_ref()
+                .and_then(|c| c.platforms.get(&Platform::Web))
+                .and_then(|p| p.base_url.clone())
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
+            *web = Some(Driver::new(Web::launch(&base_url, 1280, 800).await?));
+        }
+        Ok(op(web.as_ref().unwrap()).await?)
+    }
+
+    /// Resets a platform for a spec: guard, seed, relaunch, then its starts-on labels. Tried three times; the
+    /// error after the last says why, and the caller files the spec BLOCKED as a reset failure.
+    pub async fn prepare(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
+        let config = self
+            .suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let root = &self.suite.root;
+        let mut last = anyhow::anyhow!("not tried");
+        for _ in 0..3 {
+            let attempt = async {
+                hooks::run(root, &config.hooks.guard, hooks::GUARD_TIMEOUT)
+                    .await
+                    .context("the guard refused")?;
+                let seed = hooks::fill(&config.hooks.seed, &spec.front.seed, &platform.to_string());
+                let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
+                if platform == Platform::Web {
+                    let starts_on = spec.front.starts_on.clone();
+                    self.on_device(platform, async |d| {
+                        Device::launch(&d.device).await?;
+                        for label in &starts_on {
+                            let m = Matcher::parse(label)
+                                .map_err(|e| DriverError::Invalid(e.to_string()))?;
+                            d.wait(&m, 10_000).await.map_err(|_| {
+                                DriverError::NotFound(format!(
+                                    "starts-on {label:?} wasn't on screen"
+                                ))
+                            })?;
+                        }
+                        Ok(())
+                    })
+                    .await?;
+                }
+                anyhow::Ok(hooks::context(&out))
+            };
+            match attempt.await {
+                Ok(context) => return Ok(context),
+                Err(e) => last = e,
+            }
+        }
+        Err(last)
     }
 
     /// Writes the self-contained copy of the report into the run's folder and returns its path.

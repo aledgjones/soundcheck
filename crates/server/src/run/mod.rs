@@ -190,6 +190,32 @@ impl Run {
         platform: Platform,
         brief: impl FnOnce(&str, Option<&str>) -> String,
     ) -> Result<String> {
+        let (attempt, verify) = self.check_dispatch(spec, platform)?;
+        let token = format!("{spec}#{attempt}@{platform}");
+        self.commit(
+            now,
+            Event::Dispatched {
+                spec: spec.into(),
+                platform,
+                attempt,
+                token: token.clone(),
+                prompt: brief(&token, verify.as_deref()),
+                verify,
+            },
+        )?;
+        self.activity.insert(
+            token.clone(),
+            Activity {
+                last: now,
+                in_call: 0,
+            },
+        );
+        Ok(token)
+    }
+
+    /// Whether a spec could be dispatched now, without dispatching it: the server checks before it seeds, so a
+    /// refused dispatch never resets a device. Returns the attempt it would be and any claim to verify.
+    pub fn check_dispatch(&self, spec: &str, platform: Platform) -> Result<(u32, Option<String>)> {
         self.open_for_commands()?;
         if self.state.paused {
             bail!("the run is paused; resume it first");
@@ -212,26 +238,7 @@ impl Run {
         }) {
             bail!("{busy} is still running on {on}; one spec at a time");
         }
-        let token = format!("{spec}#{attempt}@{platform}");
-        self.commit(
-            now,
-            Event::Dispatched {
-                spec: spec.into(),
-                platform,
-                attempt,
-                token: token.clone(),
-                prompt: brief(&token, verify.as_deref()),
-                verify,
-            },
-        )?;
-        self.activity.insert(
-            token.clone(),
-            Activity {
-                last: now,
-                in_call: 0,
-            },
-        );
-        Ok(token)
+        Ok((attempt, verify))
     }
 
     /// A tester's result. A PASS files at once; anything else waits for review.

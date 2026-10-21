@@ -184,7 +184,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     let page = base.join("app.html");
     std::fs::write(
         &page,
-        r#"<!doctype html><title>App</title><button onclick="document.getElementById('s').textContent='Saved'">Save</button><p id="s">Not saved</p>"#,
+        r#"<!doctype html><title>App</title><button>Annotate</button><button onclick="document.getElementById('s').textContent='Saved'">Save</button><p id="s">Not saved</p>"#,
     )
     .unwrap();
     let config = std::fs::read_to_string(good.join("suite.yaml"))
@@ -321,6 +321,103 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             .contains("only web is")
     );
 
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-reset-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in [
+        "annotations/_feature.md",
+        "annotations/001-draw.spec.md",
+        "annotations/002-back.spec.md",
+    ] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    let tries = base.join("tries");
+    // Every seed fails, noting each try, so the retries can be counted.
+    let config: String = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("seed:") {
+                format!(
+                    "  seed: \"echo try >> {} && echo 'database is down' >&2 && exit 1 # {{scenario}}\"",
+                    tries.display()
+                )
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(config.contains("database is down"));
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+    let suite = suite::load(&suite_dir);
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s.front.platforms.clone(),
+                outcomes: s.outcomes.clone(),
+            })
+            .collect(),
+        parallel: false,
+    };
+    let run_dir = base.join("reports/run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let server = serve::start(Hub::new(suite, run, "reset".into(), run_dir, 120_000), 0)
+        .await
+        .unwrap();
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("http://{}/mcp", server.addr)),
+    );
+    let client = ClientConfig::default().serve(transport).await.unwrap();
+
+    let result = client
+        .call_tool(
+            CallToolRequestParams::new("dispatch").with_arguments(
+                json!({ "spec": "annotations/002-back", "platform": "android" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.is_error, Some(true));
+    let text = result.content[0].as_text().unwrap().text.clone();
+    assert!(
+        text.contains("filed BLOCKED") && text.contains("database is down"),
+        "{text}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&tries).unwrap().lines().count(),
+        3,
+        "tried three times"
+    );
+
+    let status = call(&client, "status", json!({})).await;
+    let row = status["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["spec"] == "annotations/002-back")
+        .unwrap()
+        .clone();
+    assert_eq!(row["result"], "BLOCKED");
+    assert_eq!(row["attempts"], 0, "a reset failure uses no attempt");
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

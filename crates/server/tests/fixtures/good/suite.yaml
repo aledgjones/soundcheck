@@ -9,9 +9,9 @@ platforms:
     base-url: http://localhost:5173
     start: npm run dev
 hooks:
-  guard: node hooks/guard.mjs
-  seed: node hooks/seed.mjs --wipe {scenario}
-  build-identity: node hooks/build-identity.mjs
+  guard: "true"
+  seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+  build-identity: "true"
 seeds: [viewer, empty]
 tickets:
   url: https://example.atlassian.net/browse/{id}

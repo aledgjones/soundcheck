@@ -9,6 +9,7 @@ pub fn render(
     platform: Platform,
     token: &str,
     verify: Option<&str>,
+    seeded: Option<&str>,
 ) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "# {} ({platform})\n", spec.front.title);
@@ -24,6 +25,13 @@ pub fn render(
         let _ = writeln!(
             out,
             "## This is a verification\n\nAn earlier attempt reported: {claim}\nTry to reproduce exactly that, then judge every outcome as usual.\n"
+        );
+    }
+    if let Some(seeded) = seeded.map(str::trim).filter(|s| !s.is_empty()) {
+        let _ = writeln!(
+            out,
+            "## Starting state\n\nThe app was reset to the `{}` seed:\n\n{seeded}\n",
+            spec.front.seed
         );
     }
     let _ = writeln!(out, "## Goal\n\n{}\n", spec.goal);
