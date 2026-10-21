@@ -145,7 +145,80 @@ const MIN_FREE_MEMORY_PERCENT: f64 = 10.0;
 const MAX_LOAD_PER_CORE: f64 = 2.0;
 const MAX_LAUNCH_MS: u64 = 20_000;
 
+/// The on-screen key that types `c`, and whether it needs shift. Letter keys show their case (they change with
+/// shift), so a letter carries no shift here: [`Ios::type_key`] reads which case is showing.
+fn key_for(c: char) -> Option<(String, bool)> {
+    const SHIFTED: &str = "!@#$%^&*()_+{}|:\"~<>?";
+    const BASE: &str = "1234567890-=[]\\;'`,./";
+    Some(match c {
+        ' ' => ("space".into(), false),
+        '\n' => ("return".into(), false),
+        '\t' => ("Tab".into(), false),
+        c if c.is_ascii_alphabetic() => (c.to_string(), false),
+        c if BASE.contains(c) => (c.to_string(), false),
+        c => {
+            let i = SHIFTED.find(c)?;
+            (BASE[i..].chars().next()?.to_string(), true)
+        }
+    })
+}
+
+fn key_centre(keys: &[Element], label: &str) -> Option<(f64, f64)> {
+    keys.iter()
+        .find(|e| e.label == label)
+        .map(Element::tap_point)
+}
+
 impl Ios {
+    /// The screen's elements when the on-screen keyboard is up (its `space` and `shift` keys show), else none.
+    async fn on_screen_keyboard(&self) -> Result<Option<Vec<Element>>> {
+        let elements = self.read(true).await?;
+        let up = ["space", "shift"]
+            .iter()
+            .all(|k| elements.iter().any(|e| e.label == *k));
+        Ok(up.then_some(elements))
+    }
+
+    /// Types one character by tapping the on-screen keyboard.
+    async fn type_key(&self, c: char) -> Result<()> {
+        let (key, shifted) = key_for(c).ok_or_else(|| {
+            DriverError::Invalid(format!("{c:?} isn't on the on-screen keyboard"))
+        })?;
+        let keys = self.read(true).await?;
+        let missing = || DriverError::NotFound(format!("the on-screen keyboard's {key:?} key"));
+        let shift =
+            || key_centre(&keys, "shift").ok_or_else(|| DriverError::NotFound("shift".into()));
+        let at = if c.is_ascii_alphabetic() {
+            // The keys show the case they'll type; if it's the other one, shift first.
+            match key_centre(&keys, &key) {
+                Some(at) => at,
+                None => {
+                    let other: String = key
+                        .chars()
+                        .flat_map(|k| {
+                            if k.is_ascii_uppercase() {
+                                k.to_lowercase().collect::<Vec<_>>()
+                            } else {
+                                k.to_uppercase().collect()
+                            }
+                        })
+                        .collect();
+                    let at = key_centre(&keys, &other).ok_or_else(missing)?;
+                    let (x, y) = shift()?;
+                    self.tap_at(x, y).await?;
+                    at
+                }
+            }
+        } else {
+            let at = key_centre(&keys, &key).ok_or_else(missing)?;
+            if shifted {
+                let (x, y) = shift()?;
+                self.tap_at(x, y).await?;
+            }
+            at
+        };
+        self.tap_at(at.0, at.1).await
+    }
     /// Connects to the booted simulator (or `SOUNDCHECK_IOS_UDID`) to drive `bundle_id`. Simulators only:
     /// `simctl` never lists a physical device.
     pub async fn connect(bundle_id: &str, reader: Option<PathBuf>) -> Result<Ios> {
@@ -460,12 +533,30 @@ impl Device for Ios {
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
+        // AXe types as a hardware keyboard, which iOS ignores while the simulator's is disconnected; then only the
+        // on-screen keys reach the field.
+        if self.on_screen_keyboard().await?.is_some() {
+            for c in text.chars() {
+                self.type_key(c).await?;
+            }
+            return Ok(());
+        }
         self.axe(&["type", text]).await?;
         sleep(Duration::from_millis(300)).await;
         Ok(())
     }
 
     async fn clear(&self, chars: usize) -> Result<()> {
+        if let Some(keys) = self.on_screen_keyboard().await? {
+            let delete = key_centre(&keys, "delete").ok_or_else(|| {
+                DriverError::NotFound("the on-screen keyboard's delete key".into())
+            })?;
+            // Backwards from the cursor, which `fill` puts at the end of the field.
+            for _ in 0..chars {
+                self.tap_at(delete.0, delete.1).await?;
+            }
+            return Ok(());
+        }
         // Select-all is ignored with the hardware keyboard off and a tap leaves the cursor mid-text, so delete
         // forward and back from wherever it is.
         let keys: Vec<String> = std::iter::repeat_n("76", chars)
@@ -569,6 +660,17 @@ impl Device for Ios {
     }
 
     async fn press(&self, key: &str) -> Result<()> {
+        let on_screen = match key {
+            "Enter" | "Return" => Some("return"),
+            "Backspace" => Some("delete"),
+            "Tab" => Some("Tab"),
+            _ => None,
+        };
+        if let (Some(label), Some(keys)) = (on_screen, self.on_screen_keyboard().await?) {
+            let (x, y) = key_centre(&keys, label)
+                .ok_or_else(|| DriverError::NotFound(format!("the on-screen {label} key")))?;
+            return self.tap_at(x, y).await;
+        }
         let code = keycode(key).ok_or_else(|| {
             DriverError::Invalid(format!(
                 "{key} isn't a key soundcheck knows; use names such as ArrowRight or Enter"
@@ -676,6 +778,18 @@ impl Device for Ios {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_character_maps_to_its_on_screen_key() {
+        let key = key_for;
+        assert_eq!(key(' '), Some(("space".into(), false)));
+        assert_eq!(key('E'), Some(("E".into(), false)));
+        assert_eq!(key('2'), Some(("2".into(), false)));
+        assert_eq!(key('!'), Some(("1".into(), true)));
+        assert_eq!(key('?'), Some(("/".into(), true)));
+        assert_eq!(key('\n'), Some(("return".into(), false)));
+        assert_eq!(key('£'), None);
+    }
 
     const TREE: &str = r#"[{"type":"Application","AXLabel":"Solo Scores","frame":{"x":0,"y":0,"width":1032,"height":1376},
       "children":[{"type":"Group","AXLabel":null,"frame":{"x":0,"y":0,"width":1032,"height":1376},"children":[
