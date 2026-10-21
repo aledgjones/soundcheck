@@ -165,6 +165,35 @@ impl Hub {
         Err(last)
     }
 
+    pub fn fixtures_dir(&self) -> PathBuf {
+        let dir = self.suite.config.as_ref().and_then(|c| c.fixtures.clone());
+        self.suite
+            .root
+            .join(dir.unwrap_or_else(|| "fixtures".into()))
+    }
+
+    /// Runs the project's check hook: `<check> <name> <args...>`, each quoted for the shell. A failing check is
+    /// still evidence, so its exit and output come back rather than an error.
+    pub async fn check_data(&self, name: &str, args: &[String]) -> Result<String> {
+        let config = self
+            .suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let Some(check) = &config.hooks.check else {
+            anyhow::bail!("suite.yaml has no check hook");
+        };
+        let quoted: Vec<String> = std::iter::once(name)
+            .chain(args.iter().map(String::as_str))
+            .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
+            .collect();
+        let command = format!("{check} {}", quoted.join(" "));
+        match hooks::run(&self.suite.root, &command, hooks::GUARD_TIMEOUT).await {
+            Ok(out) => Ok(out),
+            Err(e) => Ok(format!("check failed: {e:#}")),
+        }
+    }
+
     /// Asks the project's build-identity hook which build is installed on a platform.
     pub async fn read_build(&self, platform: Platform) -> Result<Build> {
         let config = self

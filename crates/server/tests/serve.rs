@@ -426,3 +426,35 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     assert!(hub.read_builds(&[Platform::Android]).await.is_empty());
     assert_eq!(hub.with_run(|run, _| Ok(run.last_seq())).unwrap(), before);
 }
+
+#[tokio::test]
+async fn a_tester_can_run_the_projects_data_checks() {
+    let (server, url) = server().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    let out = call(
+        &client,
+        "check_data",
+        json!({ "token": token, "name": "parts", "args": ["E2E Seed Alpha Score"] }),
+    )
+    .await;
+    assert_eq!(out["output"], "checked parts E2E Seed Alpha Score");
+    let stale = call(
+        &client,
+        "check_data",
+        json!({ "token": "nope", "name": "parts" }),
+    )
+    .await;
+    assert!(
+        stale.as_str().unwrap().starts_with("refused: token nope"),
+        "{stale}"
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}

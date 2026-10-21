@@ -21,6 +21,8 @@ tools:
   - mcp__plugin_soundcheck_soundcheck__hold
   - mcp__plugin_soundcheck_soundcheck__keyboard
   - mcp__plugin_soundcheck_soundcheck__launch
+  - mcp__plugin_soundcheck_soundcheck__push
+  - mcp__plugin_soundcheck_soundcheck__check_data
   - mcp__plugin_soundcheck_soundcheck__batch
   - mcp__plugin_soundcheck_soundcheck__hover
   - mcp__plugin_soundcheck_soundcheck__goto

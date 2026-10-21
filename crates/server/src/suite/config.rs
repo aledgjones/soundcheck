@@ -47,6 +47,8 @@ pub struct SuiteConfig {
     pub hooks: Hooks,
     /// Seed scenario names the `seed` hook accepts.
     pub seeds: Vec<String>,
+    /// Files testers can `push` onto a device, relative to the suite; defaults to `fixtures/` inside it.
+    pub fixtures: Option<PathBuf>,
     /// Where runs are written, relative to the suite; defaults to `reports/` beside the suite folder.
     pub reports: Option<PathBuf>,
     #[serde(default)]

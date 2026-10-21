@@ -12,6 +12,7 @@ hooks:
   guard: "true"
   seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
   build-identity: "true"
+  check: echo checked
 seeds: [viewer, empty]
 tickets:
   url: https://example.atlassian.net/browse/{id}

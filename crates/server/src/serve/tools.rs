@@ -208,6 +208,25 @@ pub struct StressParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct PushParams {
+    pub token: String,
+    /// A file in the suite's fixtures.
+    pub file: String,
+    /// The name it gets on the device, if different (names often carry meaning, e.g. a part named from its file).
+    #[serde(rename = "as")]
+    pub as_name: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CheckDataParams {
+    pub token: String,
+    /// Which check, as the suite names it, e.g. `parts`.
+    pub name: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BatchParams {
     pub token: String,
     /// Steps in order; the batch stops at the first that fails.
@@ -822,6 +841,57 @@ impl Tools {
                 .map(|()| "resized")
         })
         .await
+    }
+
+    #[tool(
+        description = "Tester: copy a file from the suite's fixtures onto the device where the file picker finds it, optionally under another name (`as`)."
+    )]
+    async fn push(
+        &self,
+        Parameters(p): Parameters<PushParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let name = p.as_name.clone().unwrap_or_else(|| p.file.clone());
+        let fixtures = self.hub.fixtures_dir();
+        self.device(&p.token, async |d| {
+            if !report::safe_name(&p.file) || !report::safe_name(&name) {
+                return Err(DriverError::Invalid(
+                    "file names only: letters, digits, - _ and .".into(),
+                ));
+            }
+            let source = fixtures.join(&p.file);
+            if !source.exists() {
+                return Err(DriverError::Invalid(format!(
+                    "no {} in the suite's fixtures",
+                    p.file
+                )));
+            }
+            d.device.push_file(&source, &name).await?;
+            Ok(format!("pushed {name}"))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: one of the project's data checks, for outcomes the screen can't show (e.g. what was saved). Returns what the check printed, as evidence."
+    )]
+    async fn check_data(
+        &self,
+        Parameters(p): Parameters<CheckDataParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let checked = self.hub.with_run(|run, now| {
+            run.running(&p.token)?;
+            run.call_started(now, &p.token);
+            Ok(())
+        });
+        if let Err(e) = checked {
+            return reply(Err(e));
+        }
+        let result = self.hub.check_data(&p.name, &p.args).await;
+        let _ = self.hub.with_run(|run, now| {
+            run.call_finished(now, &p.token);
+            Ok(())
+        });
+        reply(result.map(|out| json!({ "output": out.trim() })))
     }
 
     #[tool(

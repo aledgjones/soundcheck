@@ -41,6 +41,11 @@ pub trait Device {
     /// Crashes and app errors since the last launch.
     async fn errors(&self) -> Result<Vec<String>>;
 
+    /// Puts a file where the system file picker finds it (Android Downloads, iOS On My iPad), named `name`.
+    async fn push_file(&self, _source: &Path, _name: &str) -> Result<()> {
+        Err(self.unsupported("push"))
+    }
+
     async fn keyboard_shown(&self) -> Result<bool> {
         Err(self.unsupported("keyboard"))
     }

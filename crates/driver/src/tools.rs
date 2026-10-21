@@ -63,6 +63,11 @@ pub const TOOLS: &[Tool] = &[
     basic("keyboard", ALL, "whether the on-screen keyboard is shown"),
     basic("launch", ALL, "restart the app"),
     basic(
+        "push",
+        &[Platform::Android, Platform::Ios],
+        "copy a file from the suite's fixtures onto the device, under a name",
+    ),
+    basic(
         "batch",
         ALL,
         "run steps in order, stopping at the first failure",
