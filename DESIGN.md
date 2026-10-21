@@ -198,6 +198,7 @@ Nothing in a run may wait for a human:
 - **Input:** `tap`, `fill`, `type`, `clear`, `swipe`, `drag`, `hold`, `keyboard`, `launch`.
 - **Web-only:** `hover`, `goto` (URL, back, forward), `viewport`, key shortcuts. They're in the interface from day one, and a platform without one refuses it clearly, so a spec never silently skips a step.
 - **`batch`:** a sequence of steps that stops at its first failure.
+- **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots.
 - **Tools for mechanics an agent can't do one call at a time:**
   - `tap-burst <target> <count> <interval-ms>` for races;
   - `network-drop <seconds>`, with the app in the background;

@@ -1,3 +1,4 @@
+pub mod drive;
 pub mod lint;
 pub mod report;
 pub mod run;

@@ -10,7 +10,7 @@ use crate::run::Run;
 use crate::run::journal::Entry;
 use crate::run::model::Build;
 use crate::suite::Suite;
-use crate::suite::config::Platform;
+use crate::suite::config::{Platform, PlatformConfig};
 use crate::suite::spec::Spec;
 use anyhow::Context;
 use anyhow::Result;
@@ -49,6 +49,31 @@ fn reader(platform: &str, built: &str) -> Option<PathBuf> {
                 .join(built);
             built.exists().then_some(built)
         })
+}
+
+/// Connects a platform's device the way a run does: web launches its own Chrome against the suite's base-url; Android
+/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id.
+pub async fn connect(platform: Platform, config: Option<&PlatformConfig>) -> Result<AnyDevice> {
+    Ok(match platform {
+        Platform::Web => {
+            let base_url = config
+                .and_then(|p| p.base_url.clone())
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
+            AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800).await?))
+        }
+        Platform::Android => {
+            let app = config
+                .and_then(|p| p.app_id.clone())
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
+            AnyDevice::Android(Android::connect(&app, reader("android", "reader.apk")).await?)
+        }
+        Platform::Ios => {
+            let app = config
+                .and_then(|p| p.app_id.clone())
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
+            AnyDevice::Ios(Ios::connect(&app, reader("ios", "axe-reader")).await?)
+        }
+    })
 }
 
 pub fn now_ms() -> u64 {
@@ -147,28 +172,7 @@ impl Hub {
                 .config
                 .as_ref()
                 .and_then(|c| c.platforms.get(&platform));
-            let device = match platform {
-                Platform::Web => {
-                    let base_url = config
-                        .and_then(|p| p.base_url.clone())
-                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-                    AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800).await?))
-                }
-                Platform::Android => {
-                    let app = config
-                        .and_then(|p| p.app_id.clone())
-                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
-                    AnyDevice::Android(
-                        Android::connect(&app, reader("android", "reader.apk")).await?,
-                    )
-                }
-                Platform::Ios => {
-                    let app = config
-                        .and_then(|p| p.app_id.clone())
-                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
-                    AnyDevice::Ios(Ios::connect(&app, reader("ios", "axe-reader")).await?)
-                }
-            };
+            let device = connect(platform, config).await?;
             slot.insert(Driver::new(device));
         }
         Ok(op(&devices[&platform]).await?)

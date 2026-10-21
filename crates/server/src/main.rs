@@ -42,6 +42,15 @@ enum Command {
         #[arg(long, default_value_t = 120)]
         stall_seconds: u64,
     },
+    /// Run one driver command on the emulator or simulator, outside a run: `soundcheck drive ios see`.
+    Drive {
+        platform: Platform,
+        /// The suite folder, for the app's id (default: the current folder).
+        #[arg(long, default_value = ".")]
+        suite: PathBuf,
+        #[command(subcommand)]
+        action: soundcheck::drive::Action,
+    },
     /// Print one line per run event, replaying from a cursor: run it under a Monitor.
     Events {
         /// The run's folder (holding server.json).
@@ -73,6 +82,14 @@ fn main() -> ExitCode {
             stall_seconds,
         ),
         Command::Events { run, after } => events_command(&run, after),
+        Command::Drive {
+            platform,
+            suite,
+            action,
+        } => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(soundcheck::drive::drive(&suite, platform, action)))
+            .map(|out| println!("{out}")),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

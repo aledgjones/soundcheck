@@ -38,6 +38,8 @@ Then, in Claude Code:
 2. **Write specs** with `create-test`, then check them with `soundcheck lint <suite>`.
 3. **Run:** the project's regression skill hands a scope to the plugin's `run` skill. That skill starts the server (`soundcheck run <suite> --label "v1.2.3 · candidate"`), which opens the live page and serves MCP at `http://127.0.0.1:7357/mcp`. If your Claude Code session started before the server, reconnect soundcheck with `/mcp`.
 
+Outside a run, `soundcheck drive <android|ios> <command>` runs one driver command (`see`, `tap`, `wait`, `shot`…) from the suite folder, for exploring, reproducing a bug or setting up screenshots.
+
 Runs are written beside the suite in `reports/<run>/`: the journal, a summary, evidence, and `report.html` once the run finishes. `/runs` on the server lists every run.
 
 ## Develop

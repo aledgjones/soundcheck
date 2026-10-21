@@ -306,7 +306,7 @@ pub enum Step {
     },
 }
 
-async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverError> {
+pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverError> {
     Ok(match step {
         Step::Tap { target, last } => {
             format!("tapped {}", line(&d.tap(&matcher(target)?, *last).await?))
@@ -381,7 +381,7 @@ fn matcher(target: &str) -> Result<Matcher, DriverError> {
     Matcher::parse(target).map_err(|e| DriverError::Invalid(format!("{target}: {e}")))
 }
 
-fn line(e: &Element) -> String {
+pub fn line(e: &Element) -> String {
     let (x, y) = e.tap_point();
     format!("{x:.0},{y:.0}\t{}", e.line())
 }
