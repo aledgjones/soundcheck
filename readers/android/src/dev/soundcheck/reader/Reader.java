@@ -101,7 +101,16 @@ public class Reader extends Instrumentation {
     // A long-lived connection keeps an accessibility cache that can hold stale nodes (an overlay the app didn't
     // announce read as invisible); uiautomator never sees that because it connects afresh, so start each read clean.
     automation.clearCache();
+    // Straight after a launch or a settings change there can briefly be no active window: wait for one.
     AccessibilityNodeInfo root = automation.getRootInActiveWindow();
+    for (int i = 0; root == null && i < 20; i++) {
+      try {
+        Thread.sleep(100);
+      } catch (InterruptedException e) {
+        break;
+      }
+      root = automation.getRootInActiveWindow();
+    }
     WindowManager wm = (WindowManager) getContext().getSystemService(WindowManager.class);
     Rect metrics = wm.getCurrentWindowMetrics().getBounds();
     @SuppressWarnings("deprecation")

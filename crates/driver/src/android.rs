@@ -269,10 +269,12 @@ impl Android {
 
     async fn screen_xml(&self, all: bool) -> Result<String> {
         if std::env::var("SOUNDCHECK_READER").as_deref() != Ok("off") {
+            // An empty tree is a failed read too (no active window yet): fall back, and restart the reader next time.
             if self.ensure_reader().await.is_ok()
                 && let Ok(xml) = self
                     .reader_get(if all { "/dump?all" } else { "/dump" })
                     .await
+                && xml.contains("<node")
             {
                 return Ok(xml);
             }
