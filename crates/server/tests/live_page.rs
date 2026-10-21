@@ -162,3 +162,165 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_tester_drives_a_web_page_through_soundcheck() {
+    // A suite like the fixture, whose web app is a local page.
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-tester-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in [
+        "annotations/_feature.md",
+        "annotations/001-draw.spec.md",
+        "annotations/002-back.spec.md",
+    ] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    let page = base.join("app.html");
+    std::fs::write(
+        &page,
+        r#"<!doctype html><title>App</title><button onclick="document.getElementById('s').textContent='Saved'">Save</button><p id="s">Not saved</p>"#,
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .replace(
+            "http://localhost:5173",
+            &format!("file://{}", page.display()),
+        );
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+
+    let suite = suite::load(&suite_dir);
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s.front.platforms.clone(),
+                outcomes: s.outcomes.clone(),
+            })
+            .collect(),
+        parallel: true,
+    };
+    let run_dir = base.join("reports/run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let server = serve::start(
+        Hub::new(suite, run, "web".into(), run_dir.clone(), 120_000),
+        0,
+    )
+    .await
+    .unwrap();
+    let url = format!("http://{}", server.addr);
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")),
+    );
+    let client = ClientConfig::default().serve(transport).await.unwrap();
+
+    let names: Vec<String> = client
+        .list_all_tools()
+        .await
+        .unwrap()
+        .iter()
+        .map(|t| t.name.to_string())
+        .collect();
+    for tool in soundcheck_driver::TOOLS
+        .iter()
+        .filter(|t| t.name != "batch")
+    {
+        assert!(
+            names.contains(&tool.mcp_name()),
+            "no MCP tool {}: {names:?}",
+            tool.mcp_name()
+        );
+    }
+
+    let web = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/001-draw", "platform": "web" }),
+    )
+    .await;
+    let token = web["token"].as_str().unwrap().to_string();
+    let seen = client
+        .call_tool(
+            CallToolRequestParams::new("see")
+                .with_arguments(json!({ "token": token }).as_object().unwrap().clone()),
+        )
+        .await
+        .unwrap();
+    let text = seen.content[0].as_text().unwrap().text.clone();
+    if seen.is_error == Some(true) && text.contains("Chrome") {
+        eprintln!("skipping: {text}");
+        server.shutdown.cancel();
+        return;
+    }
+    assert!(text.contains("Save"), "{text}");
+    call(&client, "tap", json!({ "token": token, "target": "Save" })).await;
+    call(
+        &client,
+        "wait",
+        json!({ "token": token, "target": "Saved", "timeout_ms": 3000 }),
+    )
+    .await;
+    let shot = call(&client, "shot", json!({ "token": token, "name": "saved" })).await;
+    assert_eq!(shot, "saved.png");
+    assert!(run_dir.join("evidence/saved.png").exists());
+
+    let posted = call(
+        &client,
+        "post_result",
+        json!({ "token": token, "judgments": [
+            { "outcome": 0, "answer": "held", "observed": "Saved showed.", "evidence": ["saved.png"] },
+            { "outcome": 1, "answer": "held", "observed": "Fine." }
+        ]}),
+    )
+    .await;
+    assert_eq!(posted["claim"], "PASS");
+    let html = reqwest::get(format!("{url}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        html.contains("src=\"files/evidence/saved.png\""),
+        "the page shows the screenshot"
+    );
+
+    // Android's driver isn't in soundcheck yet: it says so rather than pretending.
+    let android = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let refused = client
+        .call_tool(
+            CallToolRequestParams::new("see").with_arguments(
+                json!({ "token": android["token"] })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        refused.content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("only web is")
+    );
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}

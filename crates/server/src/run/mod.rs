@@ -698,7 +698,8 @@ impl Run {
         }
     }
 
-    fn running(&self, token: &str) -> Result<(String, Platform)> {
+    /// The spec and platform a running token belongs to.
+    pub fn running(&self, token: &str) -> Result<(String, Platform)> {
         match self.state.running_token(token) {
             Some(key) => Ok(key),
             None => {

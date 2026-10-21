@@ -18,6 +18,8 @@ use axum::routing::get;
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde::Deserialize;
+use soundcheck_driver::Driver;
+use soundcheck_driver::web::Web;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -40,6 +42,8 @@ pub struct Hub {
     pub run_dir: PathBuf,
     run: Mutex<Run>,
     events: broadcast::Sender<Entry>,
+    /// The web driver, launched on the first device tool call for a web spec.
+    pub web: tokio::sync::Mutex<Option<Driver<Web>>>,
     pub stall_ms: u64,
 }
 
@@ -52,6 +56,7 @@ impl Hub {
             run_dir,
             run: Mutex::new(run),
             events,
+            web: tokio::sync::Mutex::new(None),
             stall_ms,
         })
     }

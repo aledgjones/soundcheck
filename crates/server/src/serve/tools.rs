@@ -1,4 +1,5 @@
 use super::{Hub, prompt};
+use crate::report;
 use crate::run::model::{Build, Call, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
@@ -8,6 +9,8 @@ use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig
 use rmcp::{ErrorData, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use soundcheck_driver::web::Web;
+use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -81,6 +84,135 @@ pub struct InstallBuildParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ReasonParams {
     pub reason: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TokenParams {
+    /// Your spec token.
+    pub token: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TargetParams {
+    pub token: String,
+    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`.
+    pub target: String,
+    /// Take the last match, e.g. a dialog's button that shares its label with the row behind it.
+    #[serde(default)]
+    pub last: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SeeParams {
+    pub token: String,
+    /// Only elements matching this (exact, `prefix:` or `re:`).
+    pub filter: Option<String>,
+    /// Include elements a screen reader skips.
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct CheckParams {
+    pub token: String,
+    /// Each must be on screen; prefix one with `!` for "must not be".
+    pub assertions: Vec<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct WaitParams {
+    pub token: String,
+    pub target: String,
+    /// Milliseconds, at most 120000.
+    pub timeout_ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ShotParams {
+    pub token: String,
+    /// A file name for the screenshot, e.g. `undo-after`; attach it to a judgment's evidence.
+    pub name: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct FillParams {
+    pub token: String,
+    pub target: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TextParams {
+    pub token: String,
+    pub text: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ClearParams {
+    pub token: String,
+    /// The most characters the field might hold (default 60).
+    pub chars: Option<usize>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GestureParams {
+    pub token: String,
+    pub from: [f64; 2],
+    pub to: [f64; 2],
+    /// Milliseconds: the swipe's duration, or how long a drag holds before moving.
+    pub ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct HoldParams {
+    pub token: String,
+    pub target: String,
+    pub ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct GotoParams {
+    pub token: String,
+    /// A URL, or `back` or `forward`.
+    pub url: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ViewportParams {
+    pub token: String,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct BurstParams {
+    pub token: String,
+    pub target: String,
+    pub count: u32,
+    pub interval_ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct SecondsParams {
+    pub token: String,
+    pub seconds: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct StressParams {
+    pub token: String,
+    /// Percent of the device's CPU.
+    pub load: u32,
+    pub seconds: u64,
+}
+
+fn matcher(target: &str) -> Result<Matcher, DriverError> {
+    Matcher::parse(target).map_err(|e| DriverError::Invalid(format!("{target}: {e}")))
+}
+
+fn line(e: &Element) -> String {
+    let (x, y) = e.tap_point();
+    format!("{x:.0},{y:.0}\t{}", e.line())
 }
 
 #[derive(Serialize)]
@@ -287,6 +419,341 @@ impl Tools {
             let report = hub.export(run, now)?;
             Ok(json!({ "report": report }))
         }))
+    }
+
+    #[tool(
+        description = "Tester: what's on screen, as a screen reader gets it: one line per element, `x,y<TAB>label = value (states)`. `filter` narrows it; `all` includes what a screen reader skips."
+    )]
+    async fn see(&self, Parameters(p): Parameters<SeeParams>) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            let filter = p.filter.as_deref().map(matcher).transpose()?;
+            Ok(d.see(filter.as_ref(), p.all)
+                .await?
+                .iter()
+                .map(line)
+                .collect::<Vec<_>>())
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: fails unless the element is on screen now.")]
+    async fn expect(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(line(&d.expect(&matcher(&p.target)?).await?))
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: fails if the element is on screen now.")]
+    async fn gone(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.gone(&matcher(&p.target)?).await.map(|()| "gone")
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: several assertions on one read of the screen: `A` must be on screen, `!A` must not."
+    )]
+    async fn check(
+        &self,
+        Parameters(p): Parameters<CheckParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(d.check(&p.assertions)
+                .await?
+                .into_iter()
+                .map(|l| json!({ "assertion": l.assertion, "ok": l.ok }))
+                .collect::<Vec<_>>())
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: wait up to timeout_ms (milliseconds) for an element to appear.")]
+    async fn wait(
+        &self,
+        Parameters(p): Parameters<WaitParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(line(&d.wait(&matcher(&p.target)?, p.timeout_ms).await?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: save a screenshot as evidence; returns its file name to attach to a judgment. Only for visual checks."
+    )]
+    async fn shot(
+        &self,
+        Parameters(p): Parameters<ShotParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let name = format!("{}.png", p.name.trim_end_matches(".png"));
+        self.device(&p.token, async |d| {
+            if !report::safe_name(&name) {
+                return Err(DriverError::Invalid(format!(
+                    "{name}: use letters, digits, - and _ only"
+                )));
+            }
+            std::fs::create_dir_all(&dir).map_err(|e| DriverError::Device(e.to_string()))?;
+            d.device.screenshot(&dir.join(&name)).await?;
+            Ok(name)
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: crashes and app errors since the last launch.")]
+    async fn errors(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| d.device.errors().await)
+            .await
+    }
+
+    #[tool(description = "Tester: tap an element (waits up to 5 s for it).")]
+    async fn tap(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(line(&d.tap(&matcher(&p.target)?, p.last).await?))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: tap a field, empty it, type the text and check it landed (retries twice)."
+    )]
+    async fn fill(
+        &self,
+        Parameters(p): Parameters<FillParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.fill(&matcher(&p.target)?, &p.text)
+                .await
+                .map(|()| "filled")
+        })
+        .await
+    }
+
+    #[tool(
+        name = "type",
+        description = "Tester: type into the focused field (appends)."
+    )]
+    async fn r#type(
+        &self,
+        Parameters(p): Parameters<TextParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device.type_text(&p.text).await.map(|()| "typed")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: empty the focused field.")]
+    async fn clear(
+        &self,
+        Parameters(p): Parameters<ClearParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device
+                .clear(p.chars.unwrap_or(60))
+                .await
+                .map(|()| "cleared")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: swipe from one point to another over `ms` milliseconds.")]
+    async fn swipe(
+        &self,
+        Parameters(p): Parameters<GestureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.swipe((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms)
+                .await
+                .map(|()| "swiped")
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: press, hold for `ms` milliseconds, then drag to the second point (reorder handles)."
+    )]
+    async fn drag(
+        &self,
+        Parameters(p): Parameters<GestureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.drag((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms)
+                .await
+                .map(|()| "dragged")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: press and hold an element for `ms` milliseconds.")]
+    async fn hold(
+        &self,
+        Parameters(p): Parameters<HoldParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(line(&d.hold(&matcher(&p.target)?, p.ms).await?))
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: whether the on-screen keyboard is shown.")]
+    async fn keyboard(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| d.device.keyboard_shown().await)
+            .await
+    }
+
+    #[tool(description = "Tester: restart the app.")]
+    async fn launch(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device.launch().await.map(|()| "launched")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester (web): hover over an element.")]
+    async fn hover(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            let e = d.expect(&matcher(&p.target)?).await?;
+            let (x, y) = e.tap_point();
+            d.device.hover_at(x, y).await?;
+            Ok(line(&e))
+        })
+        .await
+    }
+
+    #[tool(description = "Tester (web): open a URL, or go `back` or `forward`.")]
+    async fn goto(
+        &self,
+        Parameters(p): Parameters<GotoParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device.goto(&p.url).await.map(|()| "opened")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester (web): resize the browser viewport.")]
+    async fn viewport(
+        &self,
+        Parameters(p): Parameters<ViewportParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.device
+                .viewport(p.width, p.height)
+                .await
+                .map(|()| "resized")
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: tap an element `count` times, `interval_ms` apart, timed on the device: for races."
+    )]
+    async fn tap_burst(
+        &self,
+        Parameters(p): Parameters<BurstParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            Ok(line(
+                &d.tap_burst(&matcher(&p.target)?, p.count, p.interval_ms)
+                    .await?,
+            ))
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: cut the device's network for `seconds`, then restore it.")]
+    async fn network_drop(
+        &self,
+        Parameters(p): Parameters<SecondsParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.network_drop(p.seconds).await.map(|()| "restored")
+        })
+        .await
+    }
+
+    #[tool(description = "Tester: load the device's CPU for `seconds`.")]
+    async fn stress(
+        &self,
+        Parameters(p): Parameters<StressParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.stress(p.load, p.seconds).await.map(|()| "done")
+        })
+        .await
+    }
+}
+
+impl Tools {
+    /// Runs a device operation for the platform the token's spec is on, counting it as the tester's activity.
+    async fn device<T: Serialize>(
+        &self,
+        token: &str,
+        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let platform = match self.hub.with_run(|run, now| {
+            let (_, platform) = run.running(token)?;
+            run.call_started(now, token);
+            Ok(platform)
+        }) {
+            Ok(p) => p,
+            Err(e) => return reply(Err(e)),
+        };
+        let result = self.on(platform, op).await;
+        let _ = self.hub.with_run(|run, now| {
+            run.call_finished(now, token);
+            Ok(())
+        });
+        reply(result.and_then(|v| Ok(serde_json::to_value(v)?)))
+    }
+
+    async fn on<T>(
+        &self,
+        platform: Platform,
+        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
+    ) -> anyhow::Result<T> {
+        if platform != Platform::Web {
+            anyhow::bail!(
+                "device tools for {platform} aren't in soundcheck yet (its driver is still to come); only web is"
+            );
+        }
+        let mut web = self.hub.web.lock().await;
+        if web.is_none() {
+            let base_url = self
+                .hub
+                .suite
+                .config
+                .as_ref()
+                .and_then(|c| c.platforms.get(&Platform::Web))
+                .and_then(|p| p.base_url.clone())
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
+            *web = Some(Driver::new(Web::launch(&base_url, 1280, 800).await?));
+        }
+        Ok(op(web.as_ref().unwrap()).await?)
     }
 }
 
