@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use soundcheck::run::{Plan, PlannedSpec, Run};
+use soundcheck::run::Run;
 use soundcheck::suite::config::Platform;
 use soundcheck::{VERSION, lint, serve, suite};
 use std::io::Write;
@@ -31,6 +31,19 @@ enum Command {
         suite: PathBuf,
         #[command(subcommand)]
         action: soundcheck::drive::Action,
+    },
+    /// Show the suite's runs in the browser, finished or not, without a run going: `--open latest` opens the newest.
+    Serve {
+        /// The suite folder (the one holding suite.yaml).
+        suite: PathBuf,
+        #[arg(long, default_value_t = 7357)]
+        port: u16,
+        /// A run to open (its folder name), or `latest`; without it, the list of runs opens.
+        #[arg(long)]
+        open: Option<String>,
+        /// Print the address without opening the browser.
+        #[arg(long)]
+        no_open: bool,
     },
     /// Print one line per run event, replaying from a cursor: run it under a Monitor.
     Events {
@@ -76,6 +89,12 @@ fn main() -> ExitCode {
         Command::Lint { suite } => return lint_command(&suite),
         Command::Run(args) => run_command(args),
         Command::Events { run, after, once } => events_command(&run, after, once),
+        Command::Serve {
+            suite,
+            port,
+            open,
+            no_open,
+        } => serve_command(&suite, port, open, !no_open),
         Command::Drive {
             platform,
             suite,
@@ -146,40 +165,22 @@ fn run_command(args: RunArgs) -> Result<()> {
             String::from_utf8_lossy(&guard.stderr).trim()
         );
     }
-    let platforms: Vec<Platform> = if platforms.is_empty() {
-        config.platforms.keys().copied().collect()
-    } else {
-        platforms
+    // A resumed run keeps how it was started, unless told otherwise.
+    let saved = resume
+        .as_deref()
+        .and_then(|dir| soundcheck::run::saved::read_info(dir).ok());
+    let platforms: Vec<Platform> = match (platforms.is_empty(), &saved) {
+        (false, _) => platforms,
+        (true, Some(info)) => info.platforms.clone(),
+        (true, None) => config.platforms.keys().copied().collect(),
     };
-    for item in scope {
-        let known = suite
-            .specs
-            .iter()
-            .any(|s| s.id == *item || s.feature == *item);
-        if !known {
-            bail!("--scope {item}: no feature or spec by that name");
-        }
-    }
-    let plan = Plan {
-        specs: suite
-            .specs
-            .iter()
-            .filter(|s| scope.is_empty() || scope.iter().any(|i| s.id == *i || s.feature == *i))
-            .map(|s| PlannedSpec {
-                id: s.id.clone(),
-                platforms: s
-                    .front
-                    .platforms
-                    .iter()
-                    .copied()
-                    .filter(|p| platforms.contains(p))
-                    .collect(),
-                outcomes: s.outcomes.clone(),
-            })
-            .filter(|s| !s.platforms.is_empty())
-            .collect(),
-        parallel: config.parallel,
+    let scope: Vec<String> = match (scope.is_empty(), &saved) {
+        (true, Some(info)) => info.scope.clone(),
+        _ => scope.to_vec(),
     };
+    let label = label.or_else(|| saved.as_ref().map(|i| i.label.clone()));
+    let plan = soundcheck::run::saved::plan_for(&suite, &platforms, &scope)?;
+    let resuming = resume.is_some();
     let run_dir = match resume {
         Some(dir) => dir,
         None => {
@@ -189,13 +190,40 @@ fn run_command(args: RunArgs) -> Result<()> {
     };
     std::fs::create_dir_all(&run_dir)?;
     let run_dir = std::fs::canonicalize(&run_dir)?;
-    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms())?;
+    let mut run = Run::open(
+        plan,
+        &run_dir.join(soundcheck::run::saved::JOURNAL_FILE),
+        serve::now_ms(),
+    )?;
+    if resuming {
+        let interrupted = run.interrupt_running(serve::now_ms())?;
+        if interrupted > 0 {
+            println!("{interrupted} spec(s) were running when the server stopped: queued again");
+        }
+    }
     let stall_ms = stall_seconds * 1000;
 
     let label = label.unwrap_or_else(|| {
         root.file_name()
             .map_or_else(|| "regression".into(), |n| n.to_string_lossy().into_owned())
     });
+    if !resuming || saved.is_none() {
+        soundcheck::run::saved::save(
+            &run_dir,
+            &soundcheck::run::saved::RunInfo {
+                suite: std::fs::canonicalize(root)?,
+                label: label.clone(),
+                platforms: platforms.clone(),
+                scope: scope.clone(),
+            },
+            &suite,
+        )?;
+    }
+    // Listed among the runs from the start, even if the server dies before anything happens.
+    std::fs::write(
+        run_dir.join(serve::SUMMARY_FILE),
+        soundcheck::report::run_summary(&run, &label).to_string(),
+    )?;
     let config_web_start = config
         .platforms
         .get(&Platform::Web)
@@ -240,6 +268,50 @@ fn run_command(args: RunArgs) -> Result<()> {
             let _ = std::process::Command::new("open")
                 .arg(format!("{url}/"))
                 .spawn();
+        }
+        tokio::signal::ctrl_c().await?;
+        server.shutdown.cancel();
+        let _ = server.handle.await;
+        Ok(())
+    })
+}
+
+fn serve_command(root: &Path, port: u16, open: Option<String>, open_page: bool) -> Result<()> {
+    let suite = suite::load(root);
+    let config = suite.config.as_ref().context("no suite.yaml")?;
+    let dir = suite::reports_dir(root, config);
+    let reports = serve::reports::Reports {
+        dir: dir.clone(),
+        current: None,
+    };
+    let path = match open.as_deref() {
+        None => "/".to_string(),
+        Some(name) => {
+            let runs = serve::reports::list(&reports);
+            let found = if name == "latest" {
+                runs.first()
+            } else {
+                runs.iter().find(|(n, _, _)| n == name)
+            };
+            let (_, _, link) =
+                found.with_context(|| format!("no run {name} in {}", dir.display()))?;
+            format!(
+                "/{}",
+                link.as_deref()
+                    .with_context(|| format!("{name} has nothing to show"))?
+            )
+        }
+    };
+    let runtime = tokio::runtime::Runtime::new()?;
+    runtime.block_on(async {
+        let server = serve::start_reports(dir, port).await?;
+        let url = format!("http://{}{path}", server.addr);
+        println!(
+            "soundcheck {VERSION}: runs at http://{}/; showing {url}",
+            server.addr
+        );
+        if open_page {
+            let _ = std::process::Command::new("open").arg(&url).spawn();
         }
         tokio::signal::ctrl_c().await?;
         server.shutdown.cancel();

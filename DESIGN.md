@@ -106,7 +106,9 @@ Each spec on each platform moves through `not run → running → needs review �
 
 ### 3.4 Journal
 
-- Every event is appended to `journal.jsonl` before it's acknowledged: run start, dispatch with its prompt, result, review, device health, build installs and the reruns they triggered. A crash loses nothing, and resuming a run reads the journal.
+- Every event is appended to `journal.jsonl` before it's acknowledged: run start, dispatch with its prompt, result, review, device health, build installs and the reruns they triggered. A crash loses nothing.
+- **A run folder is self-contained:** the journal, `run.json` (the suite, label, platforms and scope it started with), a snapshot of the suite's config and specs as they were, `summary.json`, and the evidence. Any run can be shown again from its folder alone, faithful to what it tested.
+- **Resume** (`soundcheck run <suite> --resume <run folder>`) replays the journal with the saved platforms, scope and label. A spec that was running when the server stopped goes back to the front of the queue without using an attempt: the harness stopped it, not the app.
 - **The server is the only writer of results.** The report and live page render from the journal.
 - **Location:** configurable in `suite.yaml` (`reports: <dir>`), one folder per run holding the journal, evidence and exports.
 
@@ -166,7 +168,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
   - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
   - **One badge per problem, on the left:** an open problem shows **Failure** (red) or **Finding** (amber); a fixed or deferred one shows its ticket; a dismissed one a muted "Dismissed". The right side says only where it happened. "Verified" and "side find" go in the detail. The approved mockup: `design/report-mockup.html` (published at https://claude.ai/artifact/2vwanZhfugrneZJQqJq49Q)
   - **A collapsed timeline** at the bottom tells the run's story from the journal, one readable line per event. It replaces today's run log.
-  - **The server's root page lists runs** (release, date, verdict, ring), each opening its report. Exports stay single files.
+  - **Every run can be looked at, finished or not, without exporting:** a run's server lists all runs at `/runs` and renders each from its folder, and `soundcheck serve <suite> [--open latest]` does the same with no run going ("show me the previous report"). Exports stay single files, for sharing.
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
 - **Light enough to sit open for hours** beside an emulator: animate only opacity and transform, and leave no spinner on a row nobody is working on.
 - **Export:** a self-contained HTML file with screenshots embedded, which opens offline indefinitely.

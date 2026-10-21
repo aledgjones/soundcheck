@@ -57,6 +57,10 @@ pub enum Event {
         spec: String,
         reason: String,
     },
+    /// The server stopped while the spec ran (resumed later): the attempt doesn't count, and the spec goes first.
+    Interrupted {
+        token: String,
+    },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.
     Stalled {
         token: String,

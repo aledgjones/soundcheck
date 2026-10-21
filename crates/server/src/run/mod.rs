@@ -3,6 +3,7 @@
 pub mod event;
 pub mod journal;
 pub mod model;
+pub mod saved;
 pub mod verdict;
 
 use crate::suite::config::Platform;
@@ -649,6 +650,30 @@ impl Run {
         Ok(())
     }
 
+    /// On resume: every spec that was running when the server stopped goes back to the queue, without using an
+    /// attempt, since the harness stopped it rather than the app.
+    pub fn interrupt_running(&mut self, now: u64) -> Result<usize> {
+        let tokens: Vec<String> = self
+            .state
+            .rows
+            .values()
+            .filter_map(|r| match &r.row {
+                Row::Running { token, .. } => Some(token.clone()),
+                _ => None,
+            })
+            .collect();
+        for token in &tokens {
+            self.commit(
+                now,
+                Event::Interrupted {
+                    token: token.clone(),
+                },
+            )?;
+            self.activity.remove(token);
+        }
+        Ok(tokens.len())
+    }
+
     /// Records a triage decision. Fixed needs its row to have passed on a later attempt than the one that found it.
     pub fn triage(
         &mut self,
@@ -1112,6 +1137,16 @@ impl State {
                         reason: reason.clone(),
                         status: Status::Open,
                     });
+                }
+            }
+            Event::Interrupted { token } => {
+                let Some(key) = self.running_token(token) else {
+                    return;
+                };
+                let r = self.rows.get_mut(&key).unwrap();
+                if let Row::Running { verify, .. } = r.row.clone() {
+                    r.budget = r.budget.saturating_sub(1);
+                    r.row = Row::Queued { verify };
                 }
             }
             Event::Stalled { token, reason } => {

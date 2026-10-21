@@ -928,9 +928,9 @@ pub fn run_summary(run: &Run, label: &str) -> serde_json::Value {
 }
 
 /// The list of runs: each opens its live page (the current run) or its export.
-pub fn index(runs: &[(String, serde_json::Value, bool)], current: &str) -> String {
+pub fn index(runs: &[(String, serde_json::Value, Option<String>)], current: &str) -> String {
     let mut rows = String::new();
-    for (name, s, exported) in runs {
+    for (name, s, link) in runs {
         let count = |k: &str| s["counts"][k].as_u64().unwrap_or(0) as u32;
         let t = Tally {
             total: count("total"),
@@ -956,10 +956,8 @@ pub fn index(runs: &[(String, serde_json::Value, bool)], current: &str) -> Strin
             .unwrap_or_default();
         let href = if name == current {
             Some("./".to_string())
-        } else if *exported {
-            Some(format!("runs/{}/report.html", esc(name)))
         } else {
-            None
+            link.as_deref().map(esc)
         };
         let when = s["started"].as_u64().map(date_time).unwrap_or_default();
         let live = if name == current && !s["finished"].as_bool().unwrap_or(false) {

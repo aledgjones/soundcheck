@@ -77,6 +77,9 @@ pub fn summary(entry: &Entry) -> String {
             "evidence saved for {spec} on {platform}: {}",
             files.join(", ")
         ),
+        Event::Interrupted { token } => format!(
+            "{token} interrupted by a server restart; queued again without using an attempt"
+        ),
         Event::Stalled { token, reason } => format!("{token} stalled: {reason}; queued again"),
         Event::ResetFailed {
             spec,

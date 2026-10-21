@@ -1002,3 +1002,22 @@ fn a_failure_on_a_degraded_device_must_reproduce_on_a_healthy_one() {
     let replayed = Run::open(plan(false), &path, 8).unwrap();
     assert_eq!(replayed.state().notes.len(), notes.len());
 }
+
+#[test]
+fn a_spec_running_when_the_server_stopped_goes_first_without_using_an_attempt() {
+    let (mut run, path) = open("interrupted");
+    run.dispatch(1, DRAW, Android, brief).unwrap();
+    drop(run);
+    // The server died; a resume replays the journal and puts the running spec back.
+    let mut resumed = Run::open(plan(false), &path, 2).unwrap();
+    assert_eq!(resumed.interrupt_running(3).unwrap(), 1);
+    let row = resumed.row(DRAW, Android).unwrap();
+    assert!(matches!(row.row, Row::Queued { .. }), "{:?}", row.row);
+    assert_eq!(row.budget, 0);
+    // Attempt numbers still only go up, so a later pass can't be mistaken for the interrupted one.
+    resumed.dispatch(4, DRAW, Android, brief).unwrap();
+    assert_eq!(resumed.row(DRAW, Android).unwrap().attempts, 2);
+    drop(resumed);
+    let replayed = Run::open(plan(false), &path, 5).unwrap();
+    assert_eq!(replayed.row(DRAW, Android).unwrap().budget, 1);
+}

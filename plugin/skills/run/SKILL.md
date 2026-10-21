@@ -85,7 +85,9 @@ When the person has a fix built and installed on a platform, the run carries on 
 
 When every row in scope has a result and nothing is running, queued or waiting for review, call `finish`. It refuses, and names what's in the way, if anything is still open. Rows never dispatched don't block it, but they leave the verdict Not ready.
 
-Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline). Call `export` again after triage, so the kept copy shows the decisions; `export` also works mid-run, stamped in progress.
+Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline) for sharing. Call `export` again after triage, so the shared copy shows the decisions; `export` also works mid-run, stamped in progress. Nobody needs an export just to look: every run, finished or not, opens from its folder (`/runs` on a run's server, or `soundcheck serve <suite>`).
+
+If the server dies, start it again with `soundcheck run <suite> --resume <run folder>`: it keeps the run's platforms, scope and label, and puts any spec that was running back first without using an attempt.
 
 ## 7. Triage, with the person
 

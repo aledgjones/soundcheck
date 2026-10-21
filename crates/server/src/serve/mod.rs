@@ -3,6 +3,7 @@
 pub mod events;
 pub mod hooks;
 pub mod prompt;
+pub mod reports;
 pub mod tools;
 
 use crate::report;
@@ -276,6 +277,17 @@ impl Hub {
         let _ = self.with_run(|run, now| run.device_health(now, spec, platform, attempt, health));
     }
 
+    /// The folder holding this run and its siblings.
+    pub fn reports(&self) -> reports::Reports {
+        reports::Reports {
+            dir: self.run_dir.parent().map(PathBuf::from).unwrap_or_default(),
+            current: self
+                .run_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+        }
+    }
+
     pub fn fixtures_dir(&self) -> PathBuf {
         let dir = self.suite.config.as_ref().and_then(|c| c.fixtures.clone());
         self.suite
@@ -433,6 +445,43 @@ pub struct Server {
     pub handle: tokio::task::JoinHandle<()>,
 }
 
+/// A server for looking at runs when none is running: the list of runs and each run's page.
+pub async fn start_reports(dir: PathBuf, port: u16) -> Result<Server> {
+    let shutdown = CancellationToken::new();
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .with_context(|| {
+            format!("port {port} is taken; if a run's server is up, its runs are at http://127.0.0.1:{port}/runs")
+        })?;
+    let addr = listener.local_addr()?;
+    let reports = reports::Reports { dir, current: None };
+    let index = {
+        let reports = reports.clone();
+        move || {
+            let reports = reports.clone();
+            async move { axum::response::Html(report::index(&reports::list(&reports), "")) }
+        }
+    };
+    let app = axum::Router::new()
+        .route("/", get(index.clone()))
+        .route("/runs", get(index))
+        .merge(reports::router(reports))
+        .layer(middleware::from_fn_with_state(addr.port(), local_only));
+    let handle = tokio::spawn({
+        let shutdown = shutdown.clone();
+        async move {
+            let _ = axum::serve(listener, app)
+                .with_graceful_shutdown(async move { shutdown.cancelled_owned().await })
+                .await;
+        }
+    });
+    Ok(Server {
+        addr,
+        shutdown,
+        handle,
+    })
+}
+
 /// Binds to 127.0.0.1 only; port 0 picks a free one.
 pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     let shutdown = CancellationToken::new();
@@ -453,9 +502,9 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/fragment", get(fragment))
         .route("/files/evidence/{name}", get(evidence_file))
         .route("/runs", get(runs_index))
-        .route("/runs/{name}/report.html", get(past_report))
-        .layer(middleware::from_fn_with_state(addr.port(), local_only))
-        .with_state(hub.clone());
+        .with_state(hub.clone())
+        .merge(reports::router(hub.reports()))
+        .layer(middleware::from_fn_with_state(addr.port(), local_only));
 
     let ticker = {
         let hub = hub.clone();
@@ -550,41 +599,15 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let mut runs = Vec::new();
-    if let Some(reports) = hub.run_dir.parent()
-        && let Ok(entries) = std::fs::read_dir(reports)
-    {
-        for entry in entries.flatten() {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if let Ok(text) = std::fs::read_to_string(entry.path().join(SUMMARY_FILE))
-                && let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text)
-            {
-                let exported = entry.path().join(EXPORT_FILE).exists();
-                runs.push((name, summary, exported));
-            }
-        }
-    }
+    let mut runs = reports::list(&hub.reports());
     // The current run comes from memory: before its first event it has no summary on disk.
     runs.retain(|(name, _, _)| *name != current);
     let live = hub
         .with_run(|run, _| Ok(report::run_summary(run, &hub.label)))
         .unwrap_or_default();
-    runs.push((current.clone(), live, false));
+    runs.push((current.clone(), live, None));
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     axum::response::Html(report::index(&runs, &current)).into_response()
-}
-
-async fn past_report(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Response {
-    if !report::safe_name(&name) {
-        return StatusCode::NOT_FOUND.into_response();
-    }
-    let Some(reports) = hub.run_dir.parent() else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    match tokio::fs::read_to_string(reports.join(&name).join(EXPORT_FILE)).await {
-        Ok(html) => axum::response::Html(html).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
 }
 
 #[derive(Deserialize)]
