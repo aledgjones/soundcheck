@@ -407,8 +407,8 @@ impl Ios {
     }
 
     /// The screen as `axe describe-ui` reads it, for parity checks against the reader.
-    pub async fn read_axe(&self) -> Result<Vec<Element>> {
-        parse(&self.axe(&["describe-ui"]).await?, true)
+    pub async fn read_axe(&self, all: bool) -> Result<Vec<Element>> {
+        parse(&self.axe(&["describe-ui"]).await?, all)
     }
 
     /// "On My iPad" in Files: the LocalStorage app group's `File Provider Storage`, whose folder differs per simulator.

@@ -8,6 +8,7 @@ pub mod element;
 pub mod ios;
 pub mod matcher;
 pub mod ops;
+pub mod parity;
 pub mod tools;
 pub mod web;
 

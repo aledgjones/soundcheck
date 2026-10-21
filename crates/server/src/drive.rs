@@ -7,6 +7,8 @@ use crate::serve::tools::{Step, line, step};
 use crate::suite::config::Platform;
 use anyhow::{Result, bail};
 use clap::Subcommand;
+use soundcheck_driver::any::AnyDevice;
+use soundcheck_driver::parity::compare;
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::{Path, PathBuf};
 
@@ -74,6 +76,14 @@ pub enum Action {
     Errors,
     /// Copy a file onto the device (Downloads, or On My iPad).
     Push { file: PathBuf, name: Option<String> },
+    /// Connect the simulator's hardware keyboard, or disconnect it so fields raise the on-screen one (iOS).
+    Keyboard {
+        #[arg(value_parser = ["hardware", "software"])]
+        kind: String,
+    },
+    /// Compare the reader's view of this screen with the platform's own tool (uiautomator, axe), both the full tree
+    /// and the screen reader's.
+    Parity,
 }
 
 pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<String> {
@@ -151,5 +161,42 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             d.device.push_file(&file, &name).await?;
             format!("pushed {name}")
         }
+        Action::Keyboard { kind } => {
+            d.device.hardware_keyboard(kind == "hardware").await?;
+            format!("{kind} keyboard")
+        }
+        Action::Parity => parity(&d.device).await?,
     })
+}
+
+async fn parity(device: &AnyDevice) -> Result<String> {
+    // Read the reader first: on Android, uiautomator takes the UiAutomation connection and stops the reader.
+    let full = device.read(true).await?;
+    let spoken = device.read(false).await?;
+    let (tool, full_tool, spoken_tool, keyboard) = match device {
+        AnyDevice::Android(a) => (
+            "uiautomator",
+            a.read_uiautomator(false).await?,
+            a.read_uiautomator(true).await?,
+            a.keyboard_region().await?,
+        ),
+        AnyDevice::Ios(i) => (
+            "axe",
+            i.read_axe(true).await?,
+            i.read_axe(false).await?,
+            None,
+        ),
+        AnyDevice::Web(_) => bail!("web parity runs in a run, against Chrome's snapshot"),
+    };
+    let mut full = compare(&full, &full_tool);
+    let mut spoken = compare(&spoken, &spoken_tool);
+    if let Some(region) = keyboard {
+        full.set_aside(region);
+        spoken.set_aside(region);
+    }
+    Ok(format!(
+        "full tree {}\nscreen reader {}",
+        full.render(tool),
+        spoken.render(tool)
+    ))
 }

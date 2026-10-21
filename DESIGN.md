@@ -205,7 +205,7 @@ Nothing in a run may wait for a human:
 - **Input:** `tap`, `fill`, `type`, `clear`, `swipe`, `drag`, `hold`, `keyboard`, `launch`.
 - **Web-only:** `hover`, `goto` (URL, back, forward), `viewport`, key shortcuts. They're in the interface from day one, and a platform without one refuses it clearly, so a spec never silently skips a step.
 - **`batch`:** a sequence of steps that stops at its first failure.
-- **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots.
+- **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots. Two more are for the harness itself: `parity` (4.3) and `keyboard hardware|software` (iOS).
 - **Tools for mechanics an agent can't do one call at a time:**
   - `tap-burst <target> <count> <interval-ms>` for races;
   - `network-drop <seconds>`, with the app in the background;
@@ -219,7 +219,9 @@ Nothing in a run may wait for a human:
 - Each element has label, value, id, role, frame, tap point, enabled, and checked/selected/expanded/focused.
 - **It matches what a screen reader gets.** On Android the reader asks for the tree a screen reader is given: without the flag that includes views marked not important, so Android itself decides importance, as `uiautomator dump --compressed` does. Labels that are only a resource or test id are left out too, since a screen reader never speaks them. `see --all` gives everything. A hidden duplicate label once took a tap meant for the real switch.
   - Filtering on each node's own importance flag doesn't work: on React Native every node reports "not important" (2026-10-21, Solo Scores read empty). Android's own tree is the reliable source.
-  - This is the default from v1, once proven on the parity screen set.
+  - The Android reader also asks for interactive windows, as TalkBack does, so Android counts a node the on-screen keyboard covers as not visible: a tap on it would land on the keyboard. uiautomator doesn't ask, and lists those nodes.
+  - Both trees, everything and the screen reader's, leave out nodes that aren't visible to the user, as uiautomator does. That includes a control drawn outside its parent's bounds, which Android reports invisible with an empty frame (Solo Scores' Android text box Done, 2026-10-21): an app bug, since TalkBack can't reach it either.
+  - Proven on the parity screen set (2026-10-21), and the default.
   - Expect a few label fixes in the app.
 - **Label matching is explicit:** exact by default, with prefix or regex only when asked. An implicit match let `gone "Shuffle Order"` pass while `Shuffle Order…` was on screen.
 
@@ -238,6 +240,10 @@ Nothing in a run may wait for a human:
   - **iOS (done 2026-10-21):** the reader keeps the HID connection open for touches and typing, as it does for reads: a tap fell from about 1.3 s through `axe` to 0.1 s, and a `fill` from 15–58 s to 3–5 s. There's no `axe` fallback for input: a gap is a bug to fix.
   - **Still owed:** prove that injected input reproduces timing races the way raw taps did: rerun a race check that has caught a real bug, on that bug's build. Maestro's settling once hid exactly such a race.
 - **Parity tests:** every reader against the platform's own tool (`uiautomator`, `axe`, Chrome's snapshot), on a fixed screen set that includes overlays, sheets, dialogs, menus and screens with the keyboard up. A reader change ships only after it passes.
+  - `soundcheck drive <platform> parity` compares the current screen, both the full tree and the screen reader's (`uiautomator dump` and `--compressed`; `axe describe-ui`): elements pair by label and nearest frame, then frame (within 2 units), value and states must agree. On Android, what only uiautomator lists under the keyboard is set aside (above).
+  - **The screen set** (Solo Scores, 2026-10-21): a collection's home, the app drawer, a header menu, a settings sheet, the same sheet with the keyboard up on a field, a destructive confirmation dialog, and markup mode with a text box open and the keyboard up. Both platforms had parity on every screen.
+  - It found two bugs: Android's reader showed invisible nodes in its full tree (a closed drawer's full-screen "Close drawer"), and the Android parser lost every value uiautomator single-quotes (any text holding a `"`).
+  - **A reader on the device is always this build's:** connecting compares the installed APK's hash with the built one and reinstalls on a difference, so a reader change can't be shadowed by an older one still installed.
 
 ### 4.4 Ruled out
 
@@ -417,5 +423,5 @@ Built against Solo Scores, which proves the concept; there's no separate demo ap
 - **Port:** 7357 by default. The plugin's MCP server is `soundcheck mcp`, a stdio bridge that lists the tools from the start and forwards each call to the run serving on the port, so a session opened before `soundcheck run` needs no reconnect (decided 2026-10-21, after the first run).
 - **The tester's silence timeout** before a running spec is treated as stopped.
 - **Web start hook:** a local dev server or a preview build, and how its build identity is read.
-- **Android overlay gap:** some overlay controls report invisible to a long-lived `UiAutomation` connection. Is it timing, a transform or a window issue? Needed for full parity.
-- **The parity screen set** per platform: which screens, and how to reach them generically.
+- **Android overlay gap** (answered 2026-10-21): neither timing nor the long-lived connection. The controls are drawn outside their parent's bounds, so Android reports them invisible with an empty frame to uiautomator as well; an app fix (4.2).
+- **The parity screen set** (answered 2026-10-21, 4.3): reached by hand with `drive`, since how to reach screens is the app's knowledge; a project could script it from its specs later.

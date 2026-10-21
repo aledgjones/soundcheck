@@ -17,7 +17,9 @@ const READER_PORT: u16 = 9018;
 const FAILURES: &str = r"FATAL EXCEPTION|ANR in|handleHostException|already has a parent";
 
 static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<node ([^>]*?)/?>").unwrap());
-static ATTR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"([\w-]+)="([^"]*)""#).unwrap());
+// uiautomator single-quotes a value that holds a double quote.
+static ATTR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"([\w-]+)=(?:"([^"]*)"|'([^']*)')"#).unwrap());
 static BOUNDS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]").unwrap());
 
@@ -172,7 +174,7 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
             .map(|c| {
                 (
                     c.get(1).unwrap().as_str(),
-                    unescape(c.get(2).unwrap().as_str()),
+                    unescape(c.get(2).or(c.get(3)).unwrap().as_str()),
                 )
             })
             .collect();
@@ -234,6 +236,20 @@ fn current_size(dumpsys: &str) -> Option<(f64, f64)> {
     static CUR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bcur=(\d+)x(\d+)").unwrap());
     let c = CUR.captures(dumpsys)?;
     Some((c[1].parse().ok()?, c[2].parse().ok()?))
+}
+
+fn touchable_region(dumpsys: &str) -> Option<Rect> {
+    static REGION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"touchable region=SkRegion\(\((\d+),(\d+),(\d+),(\d+)\)\)").unwrap()
+    });
+    let c = REGION.captures(dumpsys)?;
+    let n = |i: usize| c[i].parse::<f64>().ok();
+    Some(Rect {
+        x: n(1)?,
+        y: n(2)?,
+        width: n(3)? - n(1)?,
+        height: n(4)? - n(2)?,
+    })
 }
 
 /// Text for a reader query string, as `URLDecoder` reads it back.
@@ -337,6 +353,7 @@ impl Android {
         // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
         android.restore_forwards().await?;
         let forwards_at_connect = android.forwards().await?;
+        android.replace_stale_reader().await?;
         Ok(Android {
             forwards_at_connect,
             ..android
@@ -452,6 +469,34 @@ impl Android {
         self.reader_get(path).await.map(|_| ())
     }
 
+    /// A reader from another soundcheck build keeps answering with its own tree, so replace it unless it's this APK.
+    async fn replace_stale_reader(&self) -> Result<()> {
+        let Some(apk) = &self.reader_apk else {
+            return Ok(());
+        };
+        let installed = self.shell(&format!("pm path {READER_PACKAGE}")).await?;
+        let Some(path) = installed.trim().strip_prefix("package:") else {
+            return Ok(());
+        };
+        let hash = |out: String| out.split_whitespace().next().map(str::to_string);
+        let on_device = hash(self.shell(&format!("sha256sum {path}")).await?);
+        let apk_path = apk.display().to_string();
+        let built = hash(
+            run(
+                Path::new("/usr/bin/shasum"),
+                &["-a", "256", &apk_path],
+                Duration::from_secs(10),
+            )
+            .await?,
+        );
+        if on_device.is_some() && on_device == built {
+            return Ok(());
+        }
+        let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
+        self.adb(&["install", "-r", &apk_path]).await?;
+        Ok(())
+    }
+
     /// Starts the reader if it isn't answering. Only one UI automation client can connect at a time.
     async fn ensure_reader(&self) -> Result<()> {
         let port = format!("tcp:{READER_PORT}");
@@ -502,11 +547,14 @@ impl Android {
         )))
     }
 
-    async fn uiautomator_dump(&self) -> Result<String> {
+    async fn uiautomator_dump(&self, compressed: bool) -> Result<String> {
         let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
         let file = "/sdcard/soundcheck-ui.xml";
         self.shell(&format!("rm -f {file}")).await?;
-        let out = self.shell(&format!("uiautomator dump {file}")).await?;
+        let flag = if compressed { " --compressed" } else { "" };
+        let out = self
+            .shell(&format!("uiautomator dump{flag} {file}"))
+            .await?;
         if out.contains("ERROR") {
             return Err(device(out.trim()));
         }
@@ -526,12 +574,26 @@ impl Android {
             }
             let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
         }
-        self.uiautomator_dump().await
+        self.uiautomator_dump(false).await
     }
 
-    /// The screen as `uiautomator dump` reads it, for parity checks against the reader.
-    pub async fn read_uiautomator(&self) -> Result<Vec<Element>> {
-        Ok(parse(&self.uiautomator_dump().await?, true))
+    /// The screen as `uiautomator dump` reads it, for parity checks against the reader. `compressed` is the tree a
+    /// screen reader is given, which the reader's default view matches.
+    pub async fn read_uiautomator(&self, compressed: bool) -> Result<Vec<Element>> {
+        Ok(parse(
+            &self.uiautomator_dump(compressed).await?,
+            !compressed,
+        ))
+    }
+
+    /// Where the on-screen keyboard takes touches, if it's up: the reader leaves out what it covers, uiautomator doesn't.
+    pub async fn keyboard_region(&self) -> Result<Option<Rect>> {
+        if !self.keyboard_shown().await? {
+            return Ok(None);
+        }
+        Ok(touchable_region(
+            &self.shell("dumpsys window InputMethod").await?,
+        ))
     }
 
     /// The emulator, for things outside the app (its serial and adb).
@@ -966,6 +1028,12 @@ mod tests {
     }
 
     #[test]
+    fn a_single_quoted_value_keeps_its_double_quotes() {
+        let xml = r#"<node index="0" text='Delete "Strings"?' resource-id="android:id/message" content-desc="" bounds="[0,0][10,10]" />"#;
+        assert_eq!(parse(xml, false)[0].label, r#"Delete "Strings"?"#);
+    }
+
+    #[test]
     fn all_includes_id_only_labels() {
         let labels: Vec<_> = parse(XML, true).into_iter().map(|e| e.label).collect();
         assert!(labels.contains(&"phosphor-react-native-list-regular".to_string()));
@@ -997,6 +1065,13 @@ mod tests {
     fn the_screen_size_follows_rotation() {
         let out = "  mDisplayId=0\n    init=2560x1600 320dpi base=2560x1600 320dpi cur=1600x2560 app=1600x2464 rng=1600x1504-2560x2464";
         assert_eq!(current_size(out), Some((1600.0, 2560.0)));
+    }
+
+    #[test]
+    fn the_keyboard_region_is_its_touchable_region() {
+        let out = "    mTouchableInsets=3 mGivenInsetsPending=false\n    touchable region=SkRegion((0,1824,1600,2560))";
+        let region = touchable_region(out).unwrap();
+        assert_eq!((region.y, region.height), (1824.0, 736.0));
     }
 
     #[test]

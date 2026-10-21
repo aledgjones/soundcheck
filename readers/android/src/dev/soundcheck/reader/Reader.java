@@ -40,7 +40,8 @@ public class Reader extends Instrumentation {
   public void onStart() {
     automation = getUiAutomation(UiAutomation.FLAG_DONT_SUPPRESS_ACCESSIBILITY_SERVICES);
     AccessibilityServiceInfo info = automation.getServiceInfo();
-    // The same flags uiautomator sets for an uncompressed dump.
+    // uiautomator's flags for an uncompressed dump, plus interactive windows, as TalkBack asks: with it, Android counts
+    // a node the keyboard covers as not visible to the user, so a tap can't land on the keyboard instead.
     info.flags |=
         AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
             | AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
@@ -229,7 +230,7 @@ public class Reader extends Instrumentation {
     xml.append("<hierarchy rotation=\"").append(rotation).append("\">");
     if (root != null) {
       display = new Rect(0, 0, metrics.width(), metrics.height());
-      node(xml, root, 0, display, all);
+      node(xml, root, 0, display);
     }
     xml.append("</hierarchy>");
     return xml.toString();
@@ -237,7 +238,7 @@ public class Reader extends Instrumentation {
 
   private Rect display = new Rect();
 
-  private void node(StringBuilder xml, AccessibilityNodeInfo n, int index, Rect parentVisible, boolean all) {
+  private void node(StringBuilder xml, AccessibilityNodeInfo n, int index, Rect parentVisible) {
     Rect bounds = new Rect();
     n.getBoundsInScreen(bounds);
     // uiautomator reports bounds clipped to what is on screen; a tap at the centre must land on the node.
@@ -265,10 +266,10 @@ public class Reader extends Instrumentation {
     int childIndex = 0;
     for (int i = 0; i < n.getChildCount(); i++) {
       AccessibilityNodeInfo child = n.getChild(i);
-      // uiautomator skips children that aren't visible to the user. Known gap: the annotation text box's Done, move
-      // and resize controls report invisible to this connection though uiautomator lists them (2026-10-20).
-      if (child != null && (all || child.isVisibleToUser())) {
-        node(xml, child, childIndex++, bounds, all);
+      // uiautomator skips children that aren't visible to the user, even in a full dump. A control drawn outside its
+      // parent's bounds counts as invisible, as it does for TalkBack (the annotation text box's Done, 2026-10-21).
+      if (child != null && child.isVisibleToUser()) {
+        node(xml, child, childIndex++, bounds);
       }
     }
     xml.append("</node>");

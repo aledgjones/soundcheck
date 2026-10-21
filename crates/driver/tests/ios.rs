@@ -33,7 +33,7 @@ async fn the_ios_driver_reads_and_drives_settings() {
         .collect();
     let axe: BTreeSet<String> = driver
         .device
-        .read_axe()
+        .read_axe(true)
         .await
         .unwrap()
         .into_iter()

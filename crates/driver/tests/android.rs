@@ -50,7 +50,7 @@ async fn the_android_driver_reads_and_drives_settings() {
         .collect();
     let uiautomator: BTreeSet<String> = driver
         .device
-        .read_uiautomator()
+        .read_uiautomator(false)
         .await
         .unwrap()
         .into_iter()
