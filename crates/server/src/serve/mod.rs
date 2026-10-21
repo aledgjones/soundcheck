@@ -351,6 +351,23 @@ impl Hub {
         Ok(build)
     }
 
+    /// Builds and installs the current tree on a platform with the project's install hook.
+    pub async fn install(&self, platform: Platform) -> Result<()> {
+        let config = self
+            .suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let Some(install) = &config.hooks.install else {
+            anyhow::bail!("suite.yaml has no install hook, so builds are installed by hand");
+        };
+        let command = hooks::fill(install, "", &platform.to_string());
+        hooks::run(&self.suite.root, &command, hooks::INSTALL_TIMEOUT)
+            .await
+            .with_context(|| format!("the install hook failed on {platform}"))?;
+        Ok(())
+    }
+
     /// Records the build each platform has now, as the hook reports it. A platform whose hook fails is left
     /// unknown and named in the result, rather than stopping the run.
     pub async fn read_builds(&self, platforms: &[Platform]) -> Vec<String> {
@@ -375,11 +392,8 @@ impl Hub {
     }
 
     /// Saves what the device shows now for an attempt's non-pass: a screenshot, the element tree and the errors.
-    /// Returns the file names it managed; a platform without a driver yet saves nothing.
+    /// Returns the file names it managed.
     pub async fn capture(&self, spec: &str, platform: Platform, attempt: u32) -> Vec<String> {
-        if platform == Platform::Ios {
-            return Vec::new();
-        }
         let dir = self.run_dir.join(report::EVIDENCE_DIR);
         if std::fs::create_dir_all(&dir).is_err() {
             return Vec::new();

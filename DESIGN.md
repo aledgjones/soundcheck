@@ -289,7 +289,7 @@ Hooks are shell commands, so a project writes them in anything. The contract is 
 | `guard`               | Run start, and before every seed                                    | ok, or a refusal reason on stderr                      |
 | `seed {scenario}`     | Before every spec (always full reset)                               | optional `{ "context": {...} }` passed into the prompt |
 | `build-identity`      | Run start and after installs (gets the driver's app facts on stdin) | `{ "commit", "fingerprint", "version" }` per platform  |
-| `install {platform}`  | When the coordinator installs a build                               | ok                                                     |
+| `install {platform}`  | Run start, for a platform whose build can't be identified (every platform with `--install`); a coordinator's `install_build` with `install: true` | ok                                                     |
 | `check {name} [args]` | When a tester calls `check-data`                                    | JSON evidence (e.g. a database check)                  |
 
 Every spec starts from its own full seed: no skipping and no snapshots. A spec never relies on state another spec left behind, so a rerun is independent and results can't depend on run order.

@@ -86,6 +86,10 @@ struct RunArgs {
     /// steer a test.
     #[arg(long)]
     headed: bool,
+    /// Build and install the current tree on every platform before starting, with the suite's install hook. Without
+    /// it, only a platform whose installed build can't be identified is built.
+    #[arg(long)]
+    install: bool,
 }
 
 fn main() -> ExitCode {
@@ -147,6 +151,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         no_open,
         stall_seconds,
         headed,
+        install,
     } = args;
     let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
     let suite = suite::load(root);
@@ -229,6 +234,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         run_dir.join(serve::SUMMARY_FILE),
         soundcheck::report::run_summary(&run, &label).to_string(),
     )?;
+    let config_has_install = config.hooks.install.is_some();
     let config_web_start = config
         .platforms
         .get(&Platform::Web)
@@ -256,7 +262,26 @@ fn run_command(args: RunArgs) -> Result<()> {
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
         }
-        for problem in hub.read_builds(&platforms).await {
+        // Results count only for an identified build, so a platform without one is built before anything runs.
+        let has_install_hook = config_has_install;
+        for &platform in &platforms {
+            let unknown = hub.read_build(platform).await.err();
+            if !(install || unknown.is_some() && has_install_hook) {
+                continue;
+            }
+            match &unknown {
+                Some(why) if !install => {
+                    println!("{platform}: the installed build can't be identified ({why:#}); building and installing it now, which takes several minutes");
+                }
+                _ => println!("{platform}: building and installing the current tree, which takes several minutes"),
+            }
+            hub.install(platform).await?;
+        }
+        let problems = hub.read_builds(&platforms).await;
+        if has_install_hook && !problems.is_empty() {
+            bail!("the build can't be identified on {}", problems.join("; "));
+        }
+        for problem in problems {
             eprintln!("soundcheck: build identity unknown for {problem}");
         }
         let server = serve::start(hub, port).await?;

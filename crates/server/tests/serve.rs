@@ -389,8 +389,12 @@ async fn the_build_identity_hook_records_each_platforms_build() {
         .lines()
         .map(|line| {
             if line.trim_start().starts_with("build-identity:") {
-                // iOS has no build installed: its hook fails.
-                r#"  build-identity: "test {platform} = 'ios' && exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-'{platform}'\", \"version\": \"2.16.2\"}'""#.to_string()
+                // iOS has no build installed until the install hook runs: its identity hook fails.
+                [
+                    r#"  build-identity: "test {platform} = 'ios' && ! test -f installed-ios && exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-'{platform}'\", \"version\": \"2.16.2\"}'""#,
+                    r#"  install: "touch installed-{platform}""#,
+                ]
+                .join("\n")
             } else {
                 line.to_string()
             }
@@ -439,6 +443,10 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     let before = hub.with_run(|run, _| Ok(run.last_seq())).unwrap();
     assert!(hub.read_builds(&[Platform::Android]).await.is_empty());
     assert_eq!(hub.with_run(|run, _| Ok(run.last_seq())).unwrap(), before);
+
+    // The install hook builds and installs it; then it can be identified.
+    hub.install(Platform::Ios).await.unwrap();
+    assert!(hub.read_builds(&[Platform::Ios]).await.is_empty());
 }
 
 #[tokio::test]

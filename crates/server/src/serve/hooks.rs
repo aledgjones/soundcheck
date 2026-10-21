@@ -7,6 +7,8 @@ use std::time::Duration;
 /// A seed can rebuild a whole account; anything slower than this is stuck.
 pub const SEED_TIMEOUT: Duration = Duration::from_secs(300);
 pub const GUARD_TIMEOUT: Duration = Duration::from_secs(30);
+/// A release build of a mobile app takes several minutes, more with a cold cache.
+pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 
 /// Single-quoted for `sh`, so a scenario or platform name can't become shell syntax.
 fn quote(s: &str) -> String {

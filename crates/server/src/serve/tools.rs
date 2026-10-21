@@ -77,6 +77,10 @@ pub struct InstallBuildParams {
     pub platform: Platform,
     /// The build installed; leave it out to have the project's build-identity hook read it.
     pub build: Option<Build>,
+    /// Build and install the current tree with the project's install hook first (takes minutes), when the person
+    /// asks you to install their fix rather than having installed it themselves.
+    #[serde(default)]
+    pub install: bool,
     /// Rows you judge the change may affect, each with a reason. Native changes and open problems rerun anyway.
     #[serde(default)]
     pub reruns: Vec<Rerun>,
@@ -582,6 +586,11 @@ impl Tools {
         &self,
         Parameters(p): Parameters<InstallBuildParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        if p.install
+            && let Err(e) = self.hub.install(p.platform).await
+        {
+            return reply(Err(e));
+        }
         let build = match p.build {
             Some(build) => build,
             None => match self.hub.read_build(p.platform).await {
