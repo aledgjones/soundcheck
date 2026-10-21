@@ -165,7 +165,7 @@ async fn health_measures_the_emulator_and_puts_back_a_lost_forward() {
     let health = android.health().await.unwrap();
     for fact in [
         "memory",
-        "load",
+        "CPU",
         "launch",
         "restored the lost forward for port 18998",
     ] {

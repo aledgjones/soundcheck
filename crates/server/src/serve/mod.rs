@@ -97,7 +97,12 @@ pub struct Hub {
     pub stall_ms: u64,
     /// Devices found degraded after a spec, to restart before the next: platform → (spec, reason).
     restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
+    /// When each platform's device was last restarted, so a device that stays degraded isn't rebooted in a loop.
+    last_restart: Mutex<std::collections::HashMap<Platform, u64>>,
 }
+
+/// At most one restart per platform in this window; a device still degraded after that is only noted.
+const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
 
 impl Hub {
     pub fn new(suite: Suite, run: Run, label: String, run_dir: PathBuf, stall_ms: u64) -> Arc<Hub> {
@@ -112,6 +117,7 @@ impl Hub {
             without_devices: Vec::new(),
             stall_ms,
             restart_due: Mutex::new(std::collections::HashMap::new()),
+            last_restart: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -198,6 +204,10 @@ impl Hub {
             self.on_device(platform, async |d| d.device.restart().await)
                 .await
                 .context("restarting the degraded device")?;
+            self.last_restart
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(platform, now_ms());
             self.with_run(|run, now| run.device_restarted(now, platform, &after, &reason))?;
         }
         let root = &self.suite.root;
@@ -251,7 +261,13 @@ impl Hub {
         else {
             return;
         };
-        if !health.degraded.is_empty() {
+        let restarted_lately = self
+            .last_restart
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&platform)
+            .is_some_and(|at| now_ms().saturating_sub(*at) < RESTART_COOLDOWN_MS);
+        if !health.degraded.is_empty() && !restarted_lately {
             self.restart_due
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

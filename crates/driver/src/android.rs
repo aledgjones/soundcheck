@@ -37,7 +37,8 @@ pub struct Android {
 /// Health limits. A degraded emulator on 2026-10-20 had 0.4 of 4 GB free, the system busy while idle, ANRs in
 /// Google's own apps and a 59 s cold launch (normally about 1 s).
 const MIN_FREE_MEMORY: f64 = 0.10;
-const MAX_LOAD_PER_CORE: f64 = 2.0;
+const MAX_CPU_BUSY: f64 = 0.80;
+const SETTLED_CPU_BUSY: f64 = 0.50;
 const MAX_LAUNCH_MS: u64 = 15_000;
 
 /// A proxy listens on the forwarded host port plus this, so a forward left pointing at one can always be restored.
@@ -319,6 +320,30 @@ impl Android {
         self.adb(&["shell", command]).await
     }
 
+    /// The share of CPU time spent busy over two seconds, leaving out waiting for the disk.
+    async fn cpu_busy(&self) -> Option<f64> {
+        let out = self
+            .shell("head -1 /proc/stat; sleep 2; head -1 /proc/stat")
+            .await
+            .ok()?;
+        let sample = |line: &str| -> Option<(f64, f64)> {
+            let n: Vec<f64> = line
+                .split_whitespace()
+                .skip(1)
+                .filter_map(|v| v.parse().ok())
+                .collect();
+            // user nice system idle iowait irq softirq steal
+            let idle = n.get(3)? + n.get(4)?;
+            let total: f64 = n.iter().take(8).sum();
+            Some((total - idle, total - n.get(4)?))
+        };
+        let mut lines = out.lines().filter(|l| l.starts_with("cpu "));
+        let (busy1, total1) = sample(lines.next()?)?;
+        let (busy2, total2) = sample(lines.next()?)?;
+        let total = total2 - total1;
+        (total > 0.0).then(|| (busy2 - busy1) / total)
+    }
+
     /// `adb reverse` forwards as (device port, host port).
     async fn forwards(&self) -> Result<Vec<(u16, u16)>> {
         let list = self.adb(&["reverse", "--list"]).await?;
@@ -583,7 +608,12 @@ impl Device for Android {
             .to_string();
         self.adb(&["logcat", "-c"]).await?;
         // -W waits until the activity has drawn and reports how long that took.
-        let started = self.shell(&format!("am start -W -n {component}")).await?;
+        // A first launch after a reboot can take a minute: that's a slow launch for health to record, not a failure.
+        let limit = Duration::from_secs(120);
+        let command = format!("am start -W -n {component}");
+        let started = run(&self.adb, &["-s", &self.serial, "shell", &command], limit)
+            .await
+            .unwrap_or_else(|_| format!("TotalTime: {}", limit.as_millis()));
         let total = started.lines().find_map(|l| {
             l.trim()
                 .strip_prefix("TotalTime:")?
@@ -794,20 +824,11 @@ impl Device for Android {
                 free < MIN_FREE_MEMORY,
             );
         }
-        // The five-minute average: a launch alone spikes the one-minute figure past any sensible limit.
-        let load = self.shell("cat /proc/loadavg; nproc").await?;
-        let five_minutes = load
-            .split_whitespace()
-            .nth(1)
-            .and_then(|n| n.parse::<f64>().ok());
-        let cores = load
-            .lines()
-            .nth(1)
-            .and_then(|n| n.trim().parse::<f64>().ok());
-        if let (Some(five_minutes), Some(cores)) = (five_minutes, cores) {
+        // Busy CPU, not the load average: post-boot disk work keeps the load near 20 with the CPU idle.
+        if let Some(busy) = self.cpu_busy().await {
             health.measure(
-                format!("load {five_minutes:.1} on {cores:.0} cores"),
-                five_minutes > cores * MAX_LOAD_PER_CORE,
+                format!("CPU {:.0}% busy", busy * 100.0),
+                busy > MAX_CPU_BUSY,
             );
         }
         // The log is cleared at each launch, so these are since this spec's launch.
@@ -878,6 +899,17 @@ impl Device for Android {
             return Err(device(format!(
                 "{avd} didn't finish booting within 3 minutes"
             )));
+        }
+        // A fresh boot keeps the system busy for minutes: let it settle first.
+        for _ in 0..60 {
+            if self
+                .cpu_busy()
+                .await
+                .is_some_and(|busy| busy < SETTLED_CPU_BUSY)
+            {
+                break;
+            }
+            sleep(Duration::from_secs(1)).await;
         }
         // Wake and dismiss a keyguard without a PIN; a PIN needs a person.
         let _ = self.shell("input keyevent 224; wm dismiss-keyguard").await;
