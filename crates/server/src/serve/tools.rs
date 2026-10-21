@@ -64,6 +64,20 @@ pub struct ReviewFindParams {
     pub id: u32,
     /// A title in plain words makes it a finding; none means it isn't a problem.
     pub title: Option<String>,
+    /// The find's screenshots (from its `evidence`) on its topic, which help the person understand it; leave out
+    /// any of something else. Empty when none is.
+    pub keep: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct AddEvidenceParams {
+    pub problem: u32,
+    /// The local PNG to add, e.g. one `soundcheck drive <platform> shot` saved.
+    pub path: String,
+    /// A short name for it, e.g. `slider-102`.
+    pub name: String,
+    /// How it was taken and whether it confirms or contradicts the claim, in one line.
     pub reason: String,
 }
 
@@ -485,6 +499,7 @@ impl Tools {
         description = "Coordinator: the run at a glance: verdict and its reasons, every row's state, problems, side finds waiting, and what stops the run finishing."
     )]
     async fn status(&self) -> Result<CallToolResult, ErrorData> {
+        let evidence_dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
         reply(self.hub.with_run(|run, _| {
             let state = run.state();
             let rows: Vec<RowStatus> = state
@@ -530,6 +545,7 @@ impl Tools {
                 "rows": rows,
                 "problems": state.problems,
                 "side_finds_waiting": finds,
+                "evidence_dir": evidence_dir,
                 "notes": state.notes.iter().map(|n| format!("{} on {}: {}", n.spec, n.platform, n.text)).collect::<Vec<_>>(),
                 "unclear_specs": state.unclear_specs,
                 "finish_blockers": run.finish_blockers(),
@@ -614,15 +630,46 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: your call on a side find: give it a title in plain words to make it a finding, or none if it isn't one."
+        description = "Coordinator: your call on a side find: give it a title in plain words to make it a finding, or none if it isn't one. Read its screenshots first and keep only those on its topic, whether they confirm it or not."
     )]
     async fn review_find(
         &self,
         Parameters(p): Parameters<ReviewFindParams>,
     ) -> Result<CallToolResult, ErrorData> {
         reply(self.hub.with_run(|run, now| {
-            run.review_find(now, p.id, p.title, &p.reason)?;
+            run.review_find(now, p.id, p.title, p.keep, &p.reason)?;
             Ok(json!({ "reviewed_find": p.id }))
+        }))
+    }
+
+    #[tool(
+        description = "Coordinator: add a screenshot you took after review (reproducing a problem with `soundcheck drive`) to that problem's evidence, so the page shows it. A shot of where the problem should be, whether it confirms the claim or contradicts it; the reason says which."
+    )]
+    async fn add_evidence(
+        &self,
+        Parameters(p): Parameters<AddEvidenceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        reply(self.hub.with_run(|run, now| {
+            let Some(problem) = run.state().problem(p.problem) else {
+                anyhow::bail!("no problem {}", p.problem);
+            };
+            let base = report::evidence_base(&problem.spec, problem.attempt, problem.platform);
+            let file = report::shot_file(&base, &p.name);
+            if !report::safe_name(&file) {
+                anyhow::bail!("{}: use letters, digits, - and _ only", p.name);
+            }
+            let source = std::path::Path::new(&p.path);
+            if !p.path.ends_with(".png") || !source.is_file() {
+                anyhow::bail!("{}: not a PNG file", p.path);
+            }
+            if dir.join(&file).exists() {
+                anyhow::bail!("{file} is already saved: pick another name");
+            }
+            std::fs::create_dir_all(&dir)?;
+            std::fs::copy(source, dir.join(&file))?;
+            run.add_evidence(now, p.problem, &file, &p.reason)?;
+            Ok(json!({ "problem": p.problem, "added": file }))
         }))
     }
 

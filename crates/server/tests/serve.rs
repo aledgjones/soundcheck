@@ -150,6 +150,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         "review_find",
         "install_build",
         "triage",
+        "add_evidence",
         "pause",
         "resume",
         "finish",

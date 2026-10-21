@@ -120,6 +120,11 @@ pub fn summary(entry: &Entry) -> String {
         Event::Triaged {
             problem, reason, ..
         } => format!("problem {problem} triaged ({reason})"),
+        Event::EvidenceAdded {
+            problem,
+            file,
+            reason,
+        } => format!("problem {problem} shows {file} ({reason})"),
         Event::BuildInstalled {
             platform,
             build,

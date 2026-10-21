@@ -534,7 +534,7 @@ fn a_side_find_is_reviewed_on_its_own() {
     posted.side_finds.push(SideFind {
         summary: "Eraser width resets".into(),
         observed: "width went back to 4 after reopening".into(),
-        evidence: vec![],
+        evidence: vec!["before.png".into(), "after.png".into()],
     });
     run.post(2, &t, posted).unwrap();
     assert_eq!(
@@ -554,11 +554,22 @@ fn a_side_find_is_reviewed_on_its_own() {
             .contains("side find 1")
     );
 
+    let reopened = Some("Eraser width resets after reopening".to_string());
+    let err = run
+        .review_find(4, 1, reopened.clone(), vec!["end.png".into()], "shot")
+        .unwrap_err();
+    assert!(err.to_string().contains("before.png, after.png"), "{err}");
+    assert!(
+        run.review_find(4, 1, None, vec!["after.png".into()], "no")
+            .is_err(),
+        "a dismissed find keeps nothing"
+    );
     run.review_find(
         4,
         1,
-        Some("Eraser width resets after reopening".into()),
-        "reproducible from the screenshot",
+        reopened,
+        vec!["after.png".into()],
+        "the after shot shows width 4",
     )
     .unwrap();
     let problem = &run.state().problems[0];
@@ -568,6 +579,7 @@ fn a_side_find_is_reviewed_on_its_own() {
         problem.detail,
         "Eraser width resets: width went back to 4 after reopening"
     );
+    assert_eq!(problem.evidence, ["after.png"], "only the kept shot");
 }
 
 #[test]
@@ -865,7 +877,7 @@ fn fixed_needs_a_later_pass_of_its_row() {
     run.post(11, &t, posted).unwrap();
     run.review(12, BACK, Android, Call::SendBack, "wrong tap")
         .unwrap();
-    run.review_find(13, 2, Some("Menu flickers".into()), "seen in the shot")
+    run.review_find(13, 2, Some("Menu flickers".into()), vec![], "seen twice")
         .unwrap();
     pass(&mut run, 14, BACK, Android);
     run.triage(
@@ -1261,4 +1273,39 @@ fn a_spec_running_when_the_server_stopped_goes_first_without_using_an_attempt() 
     drop(resumed);
     let replayed = Run::open(plan(false), &path, 5).unwrap();
     assert_eq!(replayed.row(DRAW, Android).unwrap().budget, 1);
+}
+
+#[test]
+fn evidence_added_after_review_shows_on_the_problem_and_survives_a_reopen() {
+    let (mut run, path) = open("add-evidence");
+    fail_and_uphold(&mut run, 1, DRAW, Android);
+    let id = run.state().problems[0].id;
+    let shot = "annotations-001-draw-1-android-slider.png";
+    assert!(
+        run.add_evidence(2, id, shot, " ").is_err(),
+        "needs a reason"
+    );
+    assert!(run.add_evidence(2, 99, shot, "drive shot").is_err());
+    run.add_evidence(2, id, shot, "reproduced with drive")
+        .unwrap();
+    assert!(
+        run.add_evidence(3, id, shot, "again").is_err(),
+        "no doubles"
+    );
+    let line = soundcheck::serve::events::summary(run.entries_after(0).last().unwrap());
+    assert!(
+        line.ends_with(&format!(
+            "problem {id} shows {shot} (reproduced with drive)"
+        )),
+        "{line}"
+    );
+    drop(run);
+    let run = Run::open(plan(false), &path, 4).unwrap();
+    assert!(
+        run.state()
+            .problem(id)
+            .unwrap()
+            .evidence
+            .ends_with(&[shot.to_string()])
+    );
 }

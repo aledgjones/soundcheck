@@ -37,6 +37,7 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
         "review_find",
         "install_build",
         "triage",
+        "add_evidence",
         "pause",
         "resume",
         "finish",

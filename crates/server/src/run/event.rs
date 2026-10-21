@@ -36,6 +36,15 @@ pub enum Event {
         id: u32,
         title: Option<String>,
         reason: String,
+        /// The find's own screenshots on its topic; the rest are dropped.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keep: Vec<String>,
+    },
+    /// A screenshot the coordinator took after review, added to a problem's evidence.
+    EvidenceAdded {
+        problem: u32,
+        file: String,
+        reason: String,
     },
     /// What the server saved itself when a non-pass was posted, before the next seed could wipe it.
     EvidenceCaptured {

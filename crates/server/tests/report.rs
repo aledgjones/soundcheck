@@ -87,7 +87,8 @@ fn sample() -> (suite::Suite, Run) {
         t0 + 170_000,
         2,
         Some("The back arrow flickers on fast taps".into()),
-        "seen in the shot",
+        vec![],
+        "only the observation shows it",
     )
     .unwrap();
 
@@ -135,6 +136,7 @@ fn the_page_shows_failures_findings_and_checks() {
         "<span class=\"chip small finding\">1 finding</span>",
         "Finding 00",
         ": The back arrow flickers on fast taps",
+        "No screenshot of it; the detail above is all there is.",
         "<span class=\"pid\">00",
         "class=\"nowbar\"",
         "checking <b>annotations/001-draw</b>",

@@ -842,6 +842,9 @@ fn problems(page: &Page) -> String {
         }
         if p.source == ProblemSource::SideFind {
             body.push_str("<p>Found while probing, outside the check itself.</p>");
+            if p.evidence.is_empty() {
+                body.push_str("<p>No screenshot of it; the detail above is all there is.</p>");
+            }
         }
         if !also.is_empty() {
             let _ = write!(body, "<p>Also seen on {}.</p>", also.join(", "));

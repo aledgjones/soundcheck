@@ -444,23 +444,34 @@ impl Run {
         Ok(())
     }
 
-    /// The coordinator's call on a side find: a finding with a title in plain words, or not a problem.
+    /// The coordinator's call on a side find: a finding with a title in plain words, or not a problem. `keep` names
+    /// the find's own screenshots on its topic.
     pub fn review_find(
         &mut self,
         now: u64,
         id: u32,
         title: Option<String>,
+        keep: Vec<String>,
         reason: &str,
     ) -> Result<()> {
         self.open_for_commands()?;
         if reason.trim().is_empty() {
             bail!("every review call needs a one-line reason");
         }
-        if !self.state.pending_finds.iter().any(|f| f.id == id) {
+        let Some(pending) = self.state.pending_finds.iter().find(|f| f.id == id) else {
             bail!("side find {id} isn't waiting for review");
-        }
+        };
         if title.as_deref().is_some_and(|t| t.trim().is_empty()) {
             bail!("a finding's title can't be empty");
+        }
+        if title.is_none() && !keep.is_empty() {
+            bail!("a side find that isn't a problem keeps no screenshots");
+        }
+        if let Some(name) = keep.iter().find(|k| !pending.find.evidence.contains(k)) {
+            bail!(
+                "side find {id} has no screenshot {name}; keep only names from its evidence: {}",
+                pending.find.evidence.join(", ")
+            );
         }
         self.commit(
             now,
@@ -468,6 +479,7 @@ impl Run {
                 id,
                 title,
                 reason: reason.into(),
+                keep,
             },
         )
     }
@@ -805,6 +817,27 @@ impl Run {
             Event::Triaged {
                 problem,
                 decision,
+                reason: reason.into(),
+            },
+        )
+    }
+
+    /// A screenshot already saved in the run's evidence joins a problem's. Like triage, it works after finishing.
+    pub fn add_evidence(&mut self, now: u64, problem: u32, file: &str, reason: &str) -> Result<()> {
+        if reason.trim().is_empty() {
+            bail!("adding evidence needs a one-line reason");
+        }
+        let Some(p) = self.state.problem(problem) else {
+            bail!("no problem {problem}");
+        };
+        if p.evidence.iter().any(|e| e == file) {
+            bail!("problem {problem} already shows {file}");
+        }
+        self.commit(
+            now,
+            Event::EvidenceAdded {
+                problem,
+                file: file.into(),
                 reason: reason.into(),
             },
         )
@@ -1261,14 +1294,18 @@ impl State {
                     r.rerun_note.clone_from(rerun);
                 }
             }
-            Event::FindReviewed { id, title, reason } => {
+            Event::FindReviewed {
+                id,
+                title,
+                reason,
+                keep,
+            } => {
                 let Some(pos) = self.pending_finds.iter().position(|f| f.id == *id) else {
                     return;
                 };
                 let pending = self.pending_finds.remove(pos);
                 if let Some(title) = title {
-                    let evidence =
-                        self.shots(&(pending.spec.clone(), pending.platform), pending.attempt);
+                    let evidence = keep.clone();
                     self.problems.push(Problem {
                         id: pending.id,
                         spec: pending.spec,
@@ -1332,6 +1369,11 @@ impl State {
                         platform: *platform,
                         text: format!("reset failed: {reason}"),
                     });
+                }
+            }
+            Event::EvidenceAdded { problem, file, .. } => {
+                if let Some(p) = self.problems.iter_mut().find(|p| p.id == *problem) {
+                    p.evidence.push(file.clone());
                 }
             }
             Event::Triaged {

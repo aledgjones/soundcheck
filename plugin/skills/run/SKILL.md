@@ -5,6 +5,7 @@ allowed-tools:
   - Bash(soundcheck run:*)
   - Bash(soundcheck events:*)
   - Bash(soundcheck lint:*)
+  - Bash(soundcheck drive:*)
   - Monitor
   - Agent
   - Read
@@ -14,6 +15,7 @@ allowed-tools:
   - mcp__plugin_soundcheck_soundcheck__review
   - mcp__plugin_soundcheck_soundcheck__review_find
   - mcp__plugin_soundcheck_soundcheck__triage
+  - mcp__plugin_soundcheck_soundcheck__add_evidence
   - mcp__plugin_soundcheck_soundcheck__install_build
   - mcp__plugin_soundcheck_soundcheck__pause
   - mcp__plugin_soundcheck_soundcheck__resume
@@ -69,7 +71,7 @@ A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `sta
 - **Failure or finding is never your judgement call.** Upheld failures are failures; side finds and things that didn't reproduce are findings. If a failure doesn't seem worth blocking the release, that's for triage with the person, not a reason to file it as something milder.
 - **A degraded device** (`degraded` on the row in `status`, and a `DEGRADED` event): the server samples the device's health after every result and restarts a degraded one before the next spec. A failure seen on a degraded device can't be upheld until it reproduces: call **verify**, and the rerun runs on the restarted device. A BLOCKED with cause `harness` can still be upheld.
 - **Look at the evidence, not just the claim.** Open a screenshot only when the judgments don't settle it, which keeps your context small for a long run.
-- **Side finds** (`side find(s) need review: id <n>: <summary>`; `status` lists the waiting ones under `side_finds_waiting`): `review_find` with that `id` and a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem.
+- **Side finds** (`side find(s) need review: id <n>: <summary>`; `status` lists the waiting ones under `side_finds_waiting`): `review_find` with that `id` and a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem. Open each of its screenshots (in `evidence_dir`) and pass in `keep` only those on its topic: the control or screen the find is about, whether they confirm it or contradict it. Drop the rest (a slider finding doesn't keep shots of pen marks); when none is on topic, keep none and the page says so.
 - A spec gets at most 3 attempts. After that, file what's known.
 
 ## 4. Pause, resume, stop
@@ -111,5 +113,7 @@ Go through the open problems with the person, usually at the end, one at a time:
 - **similar but its own bug:** create a new ticket and link it to the existing one ("relates to"), so the two stay together.
 
 A finding that matches a known bug is still a finding; never dismiss it, or tell testers to skip it, because it's already ticketed.
+
+**Evidence on request.** When the person asks for a screenshot of a problem, reproduce it yourself, never during a run's specs: run the suite's `seed` hook (suite.yaml) with the spec's scenario, drive there with `soundcheck drive <platform> …`, and `soundcheck drive <platform> shot <file>.png` once it's on screen (one quick retry; if it doesn't come back, say so). `add_evidence` the shot of the screen where the problem should be, whether it confirms the claim or contradicts it: a contradiction (the claim says 102%, the screen 100%) is what the person needs to see. Say which in the reason and tell them; attach it to the problem's ticket too when there is one.
 
 The verdict (`status`) is Ready only when nothing is open. Export once triage is done. Report it to the person in one line, with its reasons if it isn't Ready.
