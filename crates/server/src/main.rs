@@ -171,8 +171,29 @@ fn run_command(
         root.file_name()
             .map_or_else(|| "regression".into(), |n| n.to_string_lossy().into_owned())
     });
+    let config_web_start = config
+        .platforms
+        .get(&Platform::Web)
+        .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)));
+    let root_dir = root.to_path_buf();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
+        // The web app under test, if the suite starts one: it runs as long as the run does.
+        let _web_app = match config_web_start {
+            Some((start, base_url)) if platforms.contains(&Platform::Web) => {
+                println!("starting the web app: {start}");
+                Some(
+                    serve::hooks::Service::start(
+                        &root_dir,
+                        &start,
+                        &base_url,
+                        serve::hooks::START_TIMEOUT,
+                    )
+                    .await?,
+                )
+            }
+            _ => None,
+        };
         let hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
         for problem in hub.read_builds(&platforms).await {
             eprintln!("soundcheck: build identity unknown for {problem}");

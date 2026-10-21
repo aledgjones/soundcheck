@@ -57,6 +57,64 @@ pub fn context(stdout: &str) -> Option<String> {
     })
 }
 
+/// How long a web app's dev server gets to start answering.
+pub const START_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A long-running process a hook started, such as the web app's dev server. Dropping it stops the whole process
+/// group, because a dev server usually runs under `npm` or `sh`, and killing only the parent leaves it serving.
+pub struct Service {
+    child: tokio::process::Child,
+}
+
+impl Service {
+    /// Starts `command` from the suite folder and waits until `url` answers (any HTTP status).
+    pub async fn start(
+        root: &Path,
+        command: &str,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<Service> {
+        let child = tokio::process::Command::new("sh")
+            .args(["-c", command])
+            .current_dir(root)
+            .process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("couldn't start `{command}`"))?;
+        let mut service = Service { child };
+        let client = reqwest::Client::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if client.get(url).send().await.is_ok() {
+                return Ok(service);
+            }
+            if let Ok(Some(status)) = service.child.try_wait() {
+                bail!("`{command}` stopped ({status}) before {url} answered");
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "{url} didn't answer within {} s of `{command}`",
+                    timeout.as_secs()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+    }
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        if let Some(pid) = self.child.id() {
+            // The group shares the child's id, as started with process_group(0).
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &format!("-{pid}")])
+                .status();
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,5 +159,33 @@ mod tests {
             .await
             .unwrap_err();
         assert!(slow.to_string().contains("took longer"), "{slow}");
+    }
+
+    #[tokio::test]
+    async fn a_web_app_is_started_until_it_answers_then_stopped() {
+        let dir = std::env::temp_dir().join(format!("soundcheck-service-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("index.html"), "<h1>app</h1>").unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let command = format!("sleep 0.5 && exec python3 -m http.server {port} --bind 127.0.0.1");
+        let service = Service::start(&dir, &command, &url, Duration::from_secs(20))
+            .await
+            .unwrap();
+        let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
+        assert!(body.contains("<h1>app</h1>"));
+        drop(service);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(reqwest::get(&url).await.is_err(), "stopped with the run");
+
+        let err = Service::start(&dir, "exit 4", &url, Duration::from_secs(5))
+            .await
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("stopped"), "{err}");
     }
 }
