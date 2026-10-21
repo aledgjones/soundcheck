@@ -63,7 +63,7 @@ pub const TOOLS: &[Tool] = &[
     basic("keyboard", ALL, "whether the on-screen keyboard is shown"),
     basic(
         "press",
-        &[Platform::Android, Platform::Web],
+        ALL,
         "press a hardware key (ArrowRight, Enter, Escape, Home…), as a keyboard or pedal would",
     ),
     basic("launch", ALL, "restart the app"),

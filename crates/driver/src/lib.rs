@@ -5,6 +5,7 @@ pub mod any;
 pub mod compare;
 pub mod device;
 pub mod element;
+pub mod ios;
 pub mod matcher;
 pub mod ops;
 pub mod tools;

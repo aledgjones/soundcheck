@@ -1,0 +1,64 @@
+//! Drives the booted iOS simulator with its own Settings app. Skips where no simulator is booted or AXe is missing.
+
+use soundcheck_driver::ios::Ios;
+use soundcheck_driver::{Device, Driver, Matcher};
+use std::collections::BTreeSet;
+use std::path::Path;
+
+fn m(target: &str) -> Matcher {
+    Matcher::parse(target).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ios_driver_reads_and_drives_settings() {
+    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/axe-reader");
+    let ios = match Ios::connect("com.apple.Preferences", reader.exists().then_some(reader)).await {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("skipping: {e}");
+            return;
+        }
+    };
+    let driver = Driver::new(ios);
+    driver.device.launch().await.unwrap();
+    driver.wait(&m("General"), 15_000).await.unwrap();
+
+    // The reader against `axe describe-ui` on the same screen: every element axe lists, the reader lists too.
+    let reader: BTreeSet<String> = driver
+        .see(None, true)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.label)
+        .collect();
+    let axe: BTreeSet<String> = driver
+        .device
+        .read_axe()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.label)
+        .collect();
+    let missing: Vec<_> = axe.difference(&reader).collect();
+    assert!(missing.is_empty(), "the reader misses {missing:?}");
+    let voiceover: BTreeSet<String> = driver
+        .see(None, false)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|e| e.label)
+        .collect();
+    assert!(voiceover.is_subset(&reader) && voiceover.contains("General"));
+
+    driver.tap(&m("General"), false).await.unwrap();
+    driver.wait(&m("About"), 10_000).await.unwrap();
+    driver.device.launch().await.unwrap();
+    driver.wait(&m("General"), 15_000).await.unwrap();
+
+    let (w, h) = driver.device.screen_size().await.unwrap();
+    assert!(w > 100.0 && h > 100.0);
+    assert!(driver.device.errors().await.unwrap().is_empty());
+    let shot = std::env::temp_dir().join("soundcheck-ios.png");
+    driver.device.screenshot(&shot).await.unwrap();
+    assert!(std::fs::metadata(&shot).unwrap().len() > 1000);
+}

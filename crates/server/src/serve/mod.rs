@@ -26,6 +26,7 @@ use serde::Deserialize;
 use soundcheck_driver::Driver;
 use soundcheck_driver::android::Android;
 use soundcheck_driver::any::AnyDevice;
+use soundcheck_driver::ios::Ios;
 use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, DriverError, Matcher};
 use std::net::SocketAddr;
@@ -37,14 +38,15 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
 /// A platform's reader: `SOUNDCHECK_<PLATFORM>_READER`, or the one built in this checkout.
-fn reader_apk(platform: &str) -> Option<PathBuf> {
+fn reader(platform: &str, built: &str) -> Option<PathBuf> {
     std::env::var_os(format!("SOUNDCHECK_{}_READER", platform.to_uppercase()))
         .map(PathBuf::from)
         .or_else(|| {
             let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .join("../../readers")
                 .join(platform)
-                .join("build/reader.apk");
+                .join("build")
+                .join(built);
             built.exists().then_some(built)
         })
 }
@@ -129,7 +131,7 @@ impl Hub {
     }
 
     /// Runs a device operation on a platform's driver, connecting it on first use: web launches its own Chrome
-    /// against the suite's base-url; Android connects to the emulator to drive the suite's app-id.
+    /// against the suite's base-url; Android and iOS connect to the emulator or simulator to drive the suite's app-id.
     pub async fn on_device<T>(
         &self,
         platform: Platform,
@@ -156,11 +158,16 @@ impl Hub {
                     let app = config
                         .and_then(|p| p.app_id.clone())
                         .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
-                    AnyDevice::Android(Android::connect(&app, reader_apk("android")).await?)
+                    AnyDevice::Android(
+                        Android::connect(&app, reader("android", "reader.apk")).await?,
+                    )
                 }
-                Platform::Ios => anyhow::bail!(
-                    "device tools for ios aren't in soundcheck yet (its driver is still to come)"
-                ),
+                Platform::Ios => {
+                    let app = config
+                        .and_then(|p| p.app_id.clone())
+                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
+                    AnyDevice::Ios(Ios::connect(&app, reader("ios", "axe-reader")).await?)
+                }
             };
             slot.insert(Driver::new(device));
         }
@@ -184,7 +191,7 @@ impl Hub {
                     .context("the guard refused")?;
                 let seed = hooks::fill(&config.hooks.seed, &spec.front.seed, &platform.to_string());
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
-                if platform != Platform::Ios && !self.without_devices.contains(&platform) {
+                if !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
                     let intercept = spec.front.tools.iter().any(|t| t == "network-drop");
                     self.on_device(platform, async |d| {

@@ -4,11 +4,13 @@ use crate::Platform;
 use crate::android::Android;
 use crate::device::{Device, Result};
 use crate::element::Element;
+use crate::ios::Ios;
 use crate::web::Web;
 use std::path::Path;
 
 pub enum AnyDevice {
     Android(Android),
+    Ios(Ios),
     Web(Box<Web>),
 }
 
@@ -16,6 +18,7 @@ macro_rules! each {
     ($self:ident, $d:ident => $e:expr) => {
         match $self {
             AnyDevice::Android($d) => $e,
+            AnyDevice::Ios($d) => $e,
             AnyDevice::Web($d) => $e,
         }
     };
@@ -49,6 +52,7 @@ impl Device for AnyDevice {
     async fn launch(&self) -> Result<()> {
         match self {
             AnyDevice::Android(d) => Device::launch(d).await,
+            AnyDevice::Ios(d) => Device::launch(d).await,
             AnyDevice::Web(d) => Device::launch(d.as_ref()).await,
         }
     }

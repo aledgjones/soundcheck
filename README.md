@@ -10,16 +10,20 @@ The design, and the reasons behind it, are in [DESIGN.md](DESIGN.md).
 - **The run:** a journal and its row states, review, attempts, stalls, fix builds mid-run, and the verdict and triage.
 - **The server:** MCP over local HTTP, the event stream, the live page, the runs index, and exports.
 - **Hooks:** guard, seed, build identity, and the web app's start command.
-- **Drivers:** the web driver (its own headless Chrome) with every tool, and evidence capture on failures. The Android and iOS drivers are still to come; until then their device tools say so.
+- **Drivers:** web (its own headless Chrome), Android (emulators, through a persistent reader APK, with adb for input) and iOS (simulators, through a persistent reader, with AXe for input), and evidence capture on failures.
 - **The Claude Code plugin:** MCP config, the tester agent, and the `run`, `setup` and `create-test` skills.
 
 ## Install
 
-You need a Rust toolchain, and Chrome for web suites.
+You need a Rust toolchain, plus what each platform drives: Chrome for web; the Android SDK (adb, build tools) for Android; Xcode and [AXe](https://github.com/cameroncooke/AXe) (`brew install cameroncooke/axe/axe`) for iOS.
 
 ```sh
 cargo install --path crates/server     # puts `soundcheck` on your PATH
+readers/android/build.sh               # the Android reader APK
+readers/ios/build.sh                   # the iOS reader
 ```
+
+The server finds the readers in `readers/<platform>/build/`, or where `SOUNDCHECK_ANDROID_READER` and `SOUNDCHECK_IOS_READER` point. It drives the one running emulator (`ANDROID_SERIAL` picks one) and the one booted simulator (`SOUNDCHECK_IOS_UDID` picks one).
 
 Then, in Claude Code:
 
@@ -39,7 +43,7 @@ Runs are written beside the suite in `reports/<run>/`: the journal, a summary, e
 ## Develop
 
 ```sh
-cargo test                  # the web tests skip where Chrome isn't installed
+cargo test                  # device tests skip where Chrome, an emulator or a booted simulator isn't there
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```

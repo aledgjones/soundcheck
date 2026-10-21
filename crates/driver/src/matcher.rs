@@ -36,6 +36,22 @@ impl Matcher {
             || e.value.as_deref().is_some_and(|v| self.test(v))
             || e.id.as_deref().is_some_and(|v| self.test(v))
             || self.test(&e.line())
+            || self.placeholder_label(e)
+    }
+
+    /// iOS appends a text field's placeholder to its label ("Feedback message Message"), so a field's own label
+    /// matches exactly at the start of it.
+    fn placeholder_label(&self, e: &Element) -> bool {
+        let Matcher::Exact(t) = self else {
+            return false;
+        };
+        matches!(
+            e.role.as_deref(),
+            Some("TextField" | "TextArea" | "SecureTextField")
+        ) && e
+            .label
+            .strip_prefix(t.as_str())
+            .is_some_and(|rest| rest.starts_with(' '))
     }
 }
 
