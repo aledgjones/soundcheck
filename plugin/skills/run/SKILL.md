@@ -38,14 +38,14 @@ The project's regression skill gives you:
 ## 1. Start
 
 1. `soundcheck lint <suite>`: it must be clean. If it isn't, stop and report; never edit specs mid-run.
-2. Start the server in the background: `soundcheck run <suite> --platforms <list>`, or `--resume <run folder>` to carry on an earlier run. Wait for its `MCP at http://127.0.0.1:7357/mcp` line; it also prints the run folder.
+2. Start the server in the background: `soundcheck run <suite> --platforms <list> --scope <features or spec IDs> --label "<release under test>"` (leave out `--scope` for every spec), or `--resume <run folder>` to carry on an earlier run. Wait for its `MCP at http://127.0.0.1:7357/mcp` line; it also prints the run folder. Only specs in scope become rows, one per platform the spec runs on, so the verdict covers exactly the scope.
 3. If the `mcp__plugin_soundcheck_soundcheck__*` tools aren't available, this session connected before the server was up: ask the person to reconnect soundcheck with `/mcp`, then carry on.
-4. Run `soundcheck events <run folder>` under a Monitor. Each line is one event, and each wakes you. A Monitor lasts at most 30 minutes: re-arm it with `--after <last sequence number you saw>`, so nothing is missed.
+4. Run `soundcheck events <run folder>` under a Monitor. It follows the run until the server stops; each line is one event, and each wakes you. A Monitor lasts at most 30 minutes: re-arm it with `--after <last sequence number you saw>`, so nothing is missed. `--once` prints what has happened so far and exits.
 
 ## 2. Dispatch
 
 - Call `dispatch` with the next spec in scope and its platform. It returns the tester's `brief`, a `token` and the spec's `model`.
-- Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `brief` as its prompt, **unchanged**. Name it after the token.
+- Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `brief` as its prompt, **unchanged**, and the token as its description.
 - One spec runs at a time unless the suite says `parallel: true`. The server refuses a second dispatch and says why; that's your cue to wait for the next event.
 - When a tester posts (`posted … filed` or `needs review`) or stalls (`stalled … queued again`), dispatch the next spec straight away, **before** reviewing anything. Reviews never hold up testing.
 - Queued rows (send-backs, verifications, stalls) go before untested specs.
@@ -82,7 +82,7 @@ When the person has a fix built and installed on a platform, the run carries on 
 
 ## 6. Finish
 
-When `status` shows nothing running, queued or waiting for review, call `finish`. It refuses, and names what's in the way, if anything is still open.
+When every row in scope has a result and nothing is running, queued or waiting for review, call `finish`. It refuses, and names what's in the way, if anything is still open. Rows never dispatched don't block it, but they leave the verdict Not ready.
 
 Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline). Call `export` again after triage, so the kept copy shows the decisions; `export` also works mid-run, stamped in progress.
 

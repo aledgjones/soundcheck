@@ -22,26 +22,7 @@ enum Command {
         suite: PathBuf,
     },
     /// Start a run: lint, guard, then serve the MCP tools and event stream until stopped.
-    Run {
-        suite: PathBuf,
-        /// Platforms to run (default: every platform in suite.yaml).
-        #[arg(long, value_delimiter = ',')]
-        platforms: Vec<Platform>,
-        /// Carry on a run from its folder instead of starting a new one.
-        #[arg(long)]
-        resume: Option<PathBuf>,
-        #[arg(long, default_value_t = 7357)]
-        port: u16,
-        /// The release under test, shown as the page's title, e.g. "v2.16.2 · candidate".
-        #[arg(long)]
-        label: Option<String>,
-        /// Don't open the live page in the browser when the run starts.
-        #[arg(long)]
-        no_open: bool,
-        /// Tester silence between tool calls before its spec counts as stalled.
-        #[arg(long, default_value_t = 120)]
-        stall_seconds: u64,
-    },
+    Run(RunArgs),
     /// Run one driver command on the emulator or simulator, outside a run: `soundcheck drive ios see`.
     Drive {
         platform: Platform,
@@ -58,30 +39,43 @@ enum Command {
         /// Only events after this sequence number.
         #[arg(long, default_value_t = 0)]
         after: u64,
+        /// Print what the journal holds now and exit, instead of following the live stream.
+        #[arg(long)]
+        once: bool,
     },
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    suite: PathBuf,
+    /// Platforms to run (default: every platform in suite.yaml).
+    #[arg(long, value_delimiter = ',')]
+    platforms: Vec<Platform>,
+    /// Features or spec IDs to run, e.g. `help,scores/003-add-part` (default: every spec). Only these become
+    /// rows, so the verdict covers exactly the scope.
+    #[arg(long, value_delimiter = ',')]
+    scope: Vec<String>,
+    /// Carry on a run from its folder instead of starting a new one.
+    #[arg(long)]
+    resume: Option<PathBuf>,
+    #[arg(long, default_value_t = 7357)]
+    port: u16,
+    /// The release under test, shown as the page's title, e.g. "v2.16.2 · candidate".
+    #[arg(long)]
+    label: Option<String>,
+    /// Don't open the live page in the browser when the run starts.
+    #[arg(long)]
+    no_open: bool,
+    /// Tester silence between tool calls before its spec counts as stalled.
+    #[arg(long, default_value_t = 120)]
+    stall_seconds: u64,
 }
 
 fn main() -> ExitCode {
     let result = match Cli::parse().command {
         Command::Lint { suite } => return lint_command(&suite),
-        Command::Run {
-            suite,
-            platforms,
-            resume,
-            port,
-            label,
-            no_open,
-            stall_seconds,
-        } => run_command(
-            &suite,
-            platforms,
-            resume,
-            port,
-            label,
-            !no_open,
-            stall_seconds,
-        ),
-        Command::Events { run, after } => events_command(&run, after),
+        Command::Run(args) => run_command(args),
+        Command::Events { run, after, once } => events_command(&run, after, once),
         Command::Drive {
             platform,
             suite,
@@ -119,15 +113,18 @@ fn lint_command(root: &Path) -> ExitCode {
     }
 }
 
-fn run_command(
-    root: &Path,
-    platforms: Vec<Platform>,
-    resume: Option<PathBuf>,
-    port: u16,
-    label: Option<String>,
-    open_page: bool,
-    stall_seconds: u64,
-) -> Result<()> {
+fn run_command(args: RunArgs) -> Result<()> {
+    let RunArgs {
+        suite: root,
+        platforms,
+        scope,
+        resume,
+        port,
+        label,
+        no_open,
+        stall_seconds,
+    } = args;
+    let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
     let suite = suite::load(root);
     let problems = lint::lint(&suite, VERSION);
     if !problems.is_empty() {
@@ -154,10 +151,20 @@ fn run_command(
     } else {
         platforms
     };
+    for item in scope {
+        let known = suite
+            .specs
+            .iter()
+            .any(|s| s.id == *item || s.feature == *item);
+        if !known {
+            bail!("--scope {item}: no feature or spec by that name");
+        }
+    }
     let plan = Plan {
         specs: suite
             .specs
             .iter()
+            .filter(|s| scope.is_empty() || scope.iter().any(|i| s.id == *i || s.feature == *i))
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s
@@ -181,6 +188,7 @@ fn run_command(
         }
     };
     std::fs::create_dir_all(&run_dir)?;
+    let run_dir = std::fs::canonicalize(&run_dir)?;
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms())?;
     let stall_ms = stall_seconds * 1000;
 
@@ -240,7 +248,19 @@ fn run_command(
     })
 }
 
-fn events_command(run_dir: &Path, after: u64) -> Result<()> {
+fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
+    if once {
+        let journal = std::fs::read_to_string(run_dir.join("journal.jsonl"))
+            .context("no journal.jsonl: is this a run folder?")?;
+        let mut out = std::io::stdout();
+        for line in journal.lines().filter(|l| !l.trim().is_empty()) {
+            let entry: soundcheck::run::journal::Entry = serde_json::from_str(line)?;
+            if entry.seq > after {
+                writeln!(out, "{}", serve::events::summary(&entry))?;
+            }
+        }
+        return Ok(());
+    }
     let info: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(run_dir.join("server.json"))
             .context("no server.json: is the run started?")?,
