@@ -90,8 +90,8 @@ struct RunArgs {
     /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
     #[arg(long, default_value_t = 600)]
     first_call_seconds: u64,
-    /// Show web's Chrome in a window to watch the run, rather than headless. Look only: a click or resize in it can
-    /// steer a test.
+    /// Show the devices to watch the run (Chrome, Simulator.app, and the window of an emulator soundcheck restarts),
+    /// rather than headless. Look only: a click or resize in one can steer a test.
     #[arg(long)]
     headed: bool,
     /// Build and install the current tree on every platform before starting, with the suite's install hook. Without

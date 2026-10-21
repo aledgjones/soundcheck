@@ -53,8 +53,8 @@ fn reader(platform: &str, built: &str) -> Option<PathBuf> {
 }
 
 /// Connects a platform's device the way a run does: web launches its own Chrome against the suite's base-url; Android
-/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id. `headed` shows web's
-/// Chrome in a window to watch.
+/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id. `headed` shows each
+/// device in a window to watch: Chrome, Simulator.app, and the window of an emulator soundcheck boots.
 pub async fn connect(
     platform: Platform,
     config: Option<&PlatformConfig>,
@@ -71,13 +71,21 @@ pub async fn connect(
             let app = config
                 .and_then(|p| p.app_id.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
-            AnyDevice::Android(Android::connect(&app, reader("android", "reader.apk")).await?)
+            AnyDevice::Android(
+                Android::connect(&app, reader("android", "reader.apk"))
+                    .await?
+                    .headed(headed),
+            )
         }
         Platform::Ios => {
             let app = config
                 .and_then(|p| p.app_id.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
-            AnyDevice::Ios(Ios::connect(&app, reader("ios", "axe-reader")).await?)
+            AnyDevice::Ios(
+                Ios::connect(&app, reader("ios", "axe-reader"))
+                    .await?
+                    .headed(headed),
+            )
         }
     })
 }

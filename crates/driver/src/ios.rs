@@ -140,6 +140,8 @@ pub struct Ios {
     last_launch_ms: std::sync::Mutex<Option<u64>>,
     /// Whether the hardware keyboard is known to be connected, so typing needn't look for the on-screen one.
     hardware_keyboard: std::sync::atomic::AtomicBool,
+    /// Whether Simulator.app shows the device; the simulator itself runs either way.
+    headed: bool,
 }
 
 /// Health limits for the Mac that runs the simulator, and the app's launch.
@@ -277,6 +279,7 @@ impl Ios {
             launched: std::sync::Mutex::new(SystemTime::now()),
             last_launch_ms: std::sync::Mutex::new(None),
             hardware_keyboard: std::sync::atomic::AtomicBool::new(false),
+            headed: false,
         };
         ios.no_hardware_keyboard().await?;
         run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
@@ -435,6 +438,26 @@ impl Ios {
         Err(device(
             "the Files app's local storage isn't there yet; open Files once",
         ))
+    }
+
+    /// Shows the simulator in Simulator.app now and after a restart; without it the simulator runs with no window.
+    pub fn headed(self, headed: bool) -> Ios {
+        if headed {
+            self.show();
+        }
+        Ios { headed, ..self }
+    }
+
+    fn show(&self) {
+        let _ = std::process::Command::new("open")
+            .args([
+                "-a",
+                "Simulator",
+                "--args",
+                "-CurrentDeviceUDID",
+                &self.udid,
+            ])
+            .status();
     }
 
     pub fn udid(&self) -> &str {
@@ -799,6 +822,9 @@ impl Device for Ios {
         let _ = run("xcrun", &["simctl", "shutdown", &self.udid]).await;
         run("xcrun", &["simctl", "boot", &self.udid]).await?;
         run("xcrun", &["simctl", "bootstatus", &self.udid, "-b"]).await?;
+        if self.headed {
+            self.show();
+        }
         Ok(())
     }
 

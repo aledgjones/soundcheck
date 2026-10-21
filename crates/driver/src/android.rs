@@ -34,6 +34,8 @@ pub struct Android {
     forwards_at_connect: Vec<(u16, u16)>,
     /// How long the last launch took, in milliseconds, as `am start -W` reports it.
     last_launch_ms: std::sync::Mutex<Option<u64>>,
+    /// Whether an emulator soundcheck boots shows its window.
+    headed: bool,
 }
 
 /// Health limits. A degraded emulator on 2026-10-20 had 0.4 of 4 GB free, the system busy while idle, ANRs in
@@ -344,6 +346,7 @@ impl Android {
             proxies: tokio::sync::Mutex::new(None),
             forwards_at_connect: Vec::new(),
             last_launch_ms: std::sync::Mutex::new(None),
+            headed: false,
         };
         // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
         android.restore_forwards().await?;
@@ -589,6 +592,11 @@ impl Android {
         Ok(touchable_region(
             &self.shell("dumpsys window InputMethod").await?,
         ))
+    }
+
+    /// Whether an emulator this driver boots (a restart) shows its window; headless by default.
+    pub fn headed(self, headed: bool) -> Android {
+        Android { headed, ..self }
     }
 
     /// The emulator, for things outside the app (its serial and adb).
@@ -941,6 +949,11 @@ impl Device for Android {
         // Its own process group, so it outlives this server; SwiftShader drops taps, so the host GPU.
         std::process::Command::new(emulator)
             .args(["-avd", &avd, "-port", port, "-gpu", "host", "-no-snapshot"])
+            .args(if self.headed {
+                None
+            } else {
+                Some("-no-window")
+            })
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
