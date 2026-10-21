@@ -262,13 +262,38 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         return;
     }
     assert!(text.contains("Save"), "{text}");
-    call(&client, "tap", json!({ "token": token, "target": "Save" })).await;
-    call(
+    let done = call(
         &client,
-        "wait",
-        json!({ "token": token, "target": "Saved", "timeout_ms": 3000 }),
+        "batch",
+        json!({ "token": token, "steps": [
+            { "tool": "expect", "target": "Not saved" },
+            { "tool": "tap", "target": "Save" },
+            { "tool": "wait", "target": "Saved", "timeout_ms": 3000 },
+            { "tool": "check", "assertions": ["Saved", "!Not saved"] }
+        ]}),
     )
     .await;
+    assert_eq!(done.as_array().unwrap().len(), 4, "{done}");
+    let stopped = client
+        .call_tool(
+            CallToolRequestParams::new("batch").with_arguments(
+                json!({ "token": token, "steps": [
+                    { "tool": "expect", "target": "Saved" },
+                    { "tool": "expect", "target": "Nope" },
+                    { "tool": "tap", "target": "Save" }
+                ]})
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+        )
+        .await
+        .unwrap();
+    let text = stopped.content[0].as_text().unwrap().text.clone();
+    assert!(
+        text.contains("step 2 failed") && text.contains("done before it: found"),
+        "{text}"
+    );
     let shot = call(&client, "shot", json!({ "token": token, "name": "saved" })).await;
     assert_eq!(shot, "saved.png");
     assert!(run_dir.join("evidence/saved.png").exists());

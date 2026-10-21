@@ -206,6 +206,120 @@ pub struct StressParams {
     pub seconds: u64,
 }
 
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct BatchParams {
+    pub token: String,
+    /// Steps in order; the batch stops at the first that fails.
+    pub steps: Vec<Step>,
+}
+
+/// One batch step: the same tools, with the same arguments, minus the token.
+#[derive(Deserialize, schemars::JsonSchema)]
+#[serde(tag = "tool", rename_all = "snake_case")]
+pub enum Step {
+    Tap {
+        target: String,
+        #[serde(default)]
+        last: bool,
+    },
+    Fill {
+        target: String,
+        text: String,
+    },
+    Type {
+        text: String,
+    },
+    Clear {
+        chars: Option<usize>,
+    },
+    Expect {
+        target: String,
+    },
+    Gone {
+        target: String,
+    },
+    Wait {
+        target: String,
+        timeout_ms: u64,
+    },
+    Check {
+        assertions: Vec<String>,
+    },
+    Hold {
+        target: String,
+        ms: u64,
+    },
+    Swipe {
+        from: [f64; 2],
+        to: [f64; 2],
+        ms: u64,
+    },
+    Hover {
+        target: String,
+    },
+    Goto {
+        url: String,
+    },
+}
+
+async fn step(d: &Driver<Web>, step: &Step) -> Result<String, DriverError> {
+    Ok(match step {
+        Step::Tap { target, last } => {
+            format!("tapped {}", line(&d.tap(&matcher(target)?, *last).await?))
+        }
+        Step::Fill { target, text } => {
+            d.fill(&matcher(target)?, text).await?;
+            format!("filled {target}")
+        }
+        Step::Type { text } => {
+            d.device.type_text(text).await?;
+            "typed".into()
+        }
+        Step::Clear { chars } => {
+            d.device.clear(chars.unwrap_or(60)).await?;
+            "cleared".into()
+        }
+        Step::Expect { target } => format!("found {}", line(&d.expect(&matcher(target)?).await?)),
+        Step::Gone { target } => {
+            d.gone(&matcher(target)?).await?;
+            format!("gone {target}")
+        }
+        Step::Wait { target, timeout_ms } => {
+            format!(
+                "found {}",
+                line(&d.wait(&matcher(target)?, *timeout_ms).await?)
+            )
+        }
+        Step::Check { assertions } => {
+            let lines = d.check(assertions).await?;
+            if let Some(bad) = lines.iter().find(|l| !l.ok) {
+                return Err(DriverError::Invalid(format!(
+                    "check failed: {}",
+                    bad.assertion
+                )));
+            }
+            "checked".into()
+        }
+        Step::Hold { target, ms } => {
+            format!("held {}", line(&d.hold(&matcher(target)?, *ms).await?))
+        }
+        Step::Swipe { from, to, ms } => {
+            d.swipe((from[0], from[1]), (to[0], to[1]), *ms).await?;
+            "swiped".into()
+        }
+        Step::Hover { target } => {
+            let e = d.expect(&matcher(target)?).await?;
+            let (x, y) = e.tap_point();
+            d.device.hover_at(x, y).await?;
+            format!("hovered {}", line(&e))
+        }
+        Step::Goto { url } => {
+            d.device.goto(url).await?;
+            format!("opened {url}")
+        }
+    })
+}
+
 fn matcher(target: &str) -> Result<Matcher, DriverError> {
     Matcher::parse(target).map_err(|e| DriverError::Invalid(format!("{target}: {e}")))
 }
@@ -698,6 +812,36 @@ impl Tools {
                 .viewport(p.width, p.height)
                 .await
                 .map(|()| "resized")
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, hover, goto), stopping at the first that fails. Returns what each step did."
+    )]
+    async fn batch(
+        &self,
+        Parameters(p): Parameters<BatchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            let mut done = Vec::new();
+            for (i, s) in p.steps.iter().enumerate() {
+                match step(d, s).await {
+                    Ok(what) => done.push(what),
+                    Err(e) => {
+                        return Err(DriverError::Invalid(format!(
+                            "step {} failed ({e}); done before it: {}",
+                            i + 1,
+                            if done.is_empty() {
+                                "nothing".into()
+                            } else {
+                                done.join("; ")
+                            }
+                        )));
+                    }
+                }
+            }
+            Ok(done)
         })
         .await
     }
