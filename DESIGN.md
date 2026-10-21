@@ -410,7 +410,7 @@ Built against Solo Scores, which proves the concept; there's no separate demo ap
 
 ## 10. Open questions
 
-- **Licence:** it will be public eventually, so choose one before the first push. MIT is proposed, since the iOS reader follows AXe's MIT code.
+- **Licence:** MIT (decided 2026-10-21, `LICENSE`); the iOS reader follows AXe's MIT code.
 - **Port:** 7357 by default. A session opened before `soundcheck run` must reconnect once (`/mcp`); the `run` skill handles it.
 - **The tester's silence timeout** before a running spec is treated as stopped.
 - **Web start hook:** a local dev server or a preview build, and how its build identity is read.
