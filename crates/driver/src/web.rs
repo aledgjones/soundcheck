@@ -156,6 +156,26 @@ impl Web {
         }
     }
 
+    /// Scrolls a point into the viewport if it's outside, the way a user would before touching it, and returns
+    /// where it is now. The whole page is in the tree, but a click outside the viewport lands on nothing.
+    async fn reveal(&self, x: f64, y: f64) -> Result<(f64, f64)> {
+        let script = format!(
+            "(() => {{ const x = {x}, y = {y}; \
+               if (y >= 0 && y < innerHeight && x >= 0 && x < innerWidth) return [x, y]; \
+               const before = [scrollX, scrollY]; \
+               scrollBy(x < 0 || x >= innerWidth ? x - innerWidth / 2 : 0, y < 0 || y >= innerHeight ? y - innerHeight / 2 : 0); \
+               return [x - (scrollX - before[0]), y - (scrollY - before[1])]; }})()"
+        );
+        let point: Vec<f64> = self
+            .page
+            .evaluate(script)
+            .await
+            .map_err(device)?
+            .into_value()
+            .map_err(device)?;
+        Ok((point[0], point[1]))
+    }
+
     async fn mouse(
         &self,
         kind: DispatchMouseEventType,
@@ -282,6 +302,7 @@ impl Device for Web {
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
+        let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
         self.mouse(DispatchMouseEventType::MousePressed, x, y, true)
@@ -291,6 +312,7 @@ impl Device for Web {
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
+        let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
         self.mouse(DispatchMouseEventType::MousePressed, x, y, true)
@@ -301,6 +323,9 @@ impl Device for Web {
     }
 
     async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
+        let revealed = self.reveal(from.0, from.1).await?;
+        let shift = (revealed.0 - from.0, revealed.1 - from.1);
+        let (from, to) = (revealed, (to.0 + shift.0, to.1 + shift.1));
         self.mouse(DispatchMouseEventType::MouseMoved, from.0, from.1, false)
             .await?;
         self.mouse(DispatchMouseEventType::MousePressed, from.0, from.1, true)
@@ -397,6 +422,7 @@ impl Device for Web {
     }
 
     async fn hover_at(&self, x: f64, y: f64) -> Result<()> {
+        let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await
     }

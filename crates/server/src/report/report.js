@@ -49,6 +49,17 @@
   setInterval(tick, 10000);
   if (!root || root.dataset.live !== "true") return;
 
+  // Only rows the viewer opened or closed keep that state; the rest follow the page (a new failure opens itself).
+  const chosen = new Map();
+  let restoring = false;
+  root.addEventListener(
+    "toggle",
+    (e) => {
+      if (!restoring && e.target.id) chosen.set(e.target.id, e.target.open);
+    },
+    true,
+  );
+
   let refreshing = false;
   let again = false;
   async function refresh() {
@@ -57,15 +68,17 @@
       return;
     }
     refreshing = true;
-    const state = new Map([...document.querySelectorAll("details[id]")].map((d) => [d.id, d.open]));
     try {
       const response = await fetch("fragment");
       if (response.ok) {
+        restoring = true;
         root.innerHTML = await response.text();
-        for (const [id, open] of state) {
+        for (const [id, open] of chosen) {
           const d = document.getElementById(id);
           if (d) d.open = open;
         }
+        // toggle events fire after this task; let them pass before listening again.
+        setTimeout(() => (restoring = false), 0);
         tick();
         applyFilter();
       }
