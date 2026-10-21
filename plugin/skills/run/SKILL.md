@@ -105,4 +105,11 @@ Go through the open problems with the person, usually at the end, one at a time:
 - **defer:** create a ticket; it's accepted for this release;
 - **duplicate:** of an earlier problem, which it then follows.
 
+**Existing tickets are matched with the person, never automatically.** Before proposing a new ticket, search the tracker for an open one that covers the problem. If you find one, suggest it with its key and summary, and wait. The person decides:
+
+- **the same bug:** record `fix` or `defer` with that ticket;
+- **similar but its own bug:** create a new ticket and link it to the existing one ("relates to"), so the two stay together.
+
+A finding that matches a known bug is still a finding; never dismiss it, or tell testers to skip it, because it's already ticketed.
+
 The verdict (`status`) is Ready only when nothing is open. Export once triage is done. Report it to the person in one line, with its reasons if it isn't Ready.

@@ -96,7 +96,7 @@ Each spec on each platform moves through `not run → running → needs review �
   - **send back:** the tester erred (a misread screen, a wrong tap, a device glitch), so a fresh attempt is queued without the claim.
   - Every call carries one line of reasoning ("upheld: the screenshot shows the stroke after undo"), shown on the row with whether it was verified or a single attempt, so the person's review at the end is an audit of the coordinator's calls.
   - All attempts stay in the journal.
-- **Triage** happens in chat: the person with the coordinator, who records each decision through the server and creates the tickets, so the page (read-only) updates live. It's usually at the end of the run but possible at any time (a serious problem mid-run may need a fix decision straight away). Each open problem is:
+- **Triage** happens in chat: the person with the coordinator, who records each decision through the server and creates the tickets, so the page (read-only) updates live. Matching a problem to an existing ticket is collaborative, never automatic (Aled, 2026-10-21): the coordinator searches the tracker and suggests a ticket; the person says whether it's the same bug (recorded under that ticket) or similar but its own (a new ticket, linked to the existing one). It's usually at the end of the run but possible at any time (a serious problem mid-run may need a fix decision straight away). Each open problem is:
   - **dismissed**: not a bug, or not reproduced;
   - **fixed**: a ticket is created and the fix lands;
   - **deferred**: a ticket is created and it's accepted for this release.
