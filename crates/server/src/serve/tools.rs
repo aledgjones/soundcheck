@@ -9,7 +9,7 @@ use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerConfig
 use rmcp::{ErrorData, ServerHandler, schemars, tool, tool_handler, tool_router};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use soundcheck_driver::web::Web;
+use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
@@ -306,7 +306,7 @@ pub enum Step {
     },
 }
 
-async fn step(d: &Driver<Web>, step: &Step) -> Result<String, DriverError> {
+async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverError> {
     Ok(match step {
         Step::Tap { target, last } => {
             format!("tapped {}", line(&d.tap(&matcher(target)?, *last).await?))
@@ -1091,7 +1091,7 @@ impl Tools {
     async fn device<T: Serialize>(
         &self,
         token: &str,
-        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
+        op: impl AsyncFnOnce(&Driver<AnyDevice>) -> Result<T, DriverError>,
     ) -> Result<CallToolResult, ErrorData> {
         let platform = match self.hub.with_run(|run, now| {
             let (_, platform) = run.running(token)?;

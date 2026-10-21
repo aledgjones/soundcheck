@@ -24,6 +24,8 @@ use rmcp::transport::streamable_http_server::session::local::LocalSessionManager
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde::Deserialize;
 use soundcheck_driver::Driver;
+use soundcheck_driver::android::Android;
+use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, DriverError, Matcher};
 use std::net::SocketAddr;
@@ -33,6 +35,19 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
+
+/// A platform's reader: `SOUNDCHECK_<PLATFORM>_READER`, or the one built in this checkout.
+fn reader_apk(platform: &str) -> Option<PathBuf> {
+    std::env::var_os(format!("SOUNDCHECK_{}_READER", platform.to_uppercase()))
+        .map(PathBuf::from)
+        .or_else(|| {
+            let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../readers")
+                .join(platform)
+                .join("build/reader.apk");
+            built.exists().then_some(built)
+        })
+}
 
 pub fn now_ms() -> u64 {
     SystemTime::now()
@@ -48,8 +63,10 @@ pub struct Hub {
     pub run_dir: PathBuf,
     run: Mutex<Run>,
     events: broadcast::Sender<Entry>,
-    /// The web driver, launched on the first device tool call for a web spec.
-    pub web: tokio::sync::Mutex<Option<Driver<Web>>>,
+    /// Platforms whose devices are left alone: specs on them seed but never touch a device (the server's own tests).
+    pub without_devices: Vec<Platform>,
+    /// A driver per platform, connected on its first device call.
+    pub devices: tokio::sync::Mutex<std::collections::HashMap<Platform, Driver<AnyDevice>>>,
     pub stall_ms: u64,
 }
 
@@ -62,9 +79,24 @@ impl Hub {
             run_dir,
             run: Mutex::new(run),
             events,
-            web: tokio::sync::Mutex::new(None),
+            devices: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            without_devices: Vec::new(),
             stall_ms,
         })
+    }
+
+    /// A hub that never touches the devices of `platforms`, for testing the server where no device is attached.
+    pub fn without_devices(
+        suite: Suite,
+        run: Run,
+        label: String,
+        run_dir: PathBuf,
+        stall_ms: u64,
+        platforms: Vec<Platform>,
+    ) -> Arc<Hub> {
+        let mut hub = Arc::into_inner(Hub::new(suite, run, label, run_dir, stall_ms)).unwrap();
+        hub.without_devices = platforms;
+        Arc::new(hub)
     }
 
     /// Runs a command against the run, then pushes whatever it journalled to the event stream.
@@ -96,29 +128,43 @@ impl Hub {
         }
     }
 
-    /// Runs a device operation on a platform's driver. Web's starts on first use against the suite's base-url.
+    /// Runs a device operation on a platform's driver, connecting it on first use: web launches its own Chrome
+    /// against the suite's base-url; Android connects to the emulator to drive the suite's app-id.
     pub async fn on_device<T>(
         &self,
         platform: Platform,
-        op: impl AsyncFnOnce(&Driver<Web>) -> Result<T, DriverError>,
+        op: impl AsyncFnOnce(&Driver<AnyDevice>) -> Result<T, DriverError>,
     ) -> Result<T> {
-        if platform != Platform::Web {
-            anyhow::bail!(
-                "device tools for {platform} aren't in soundcheck yet (its driver is still to come); only web is"
-            );
+        if self.without_devices.contains(&platform) {
+            anyhow::bail!("this server leaves {platform}'s device alone");
         }
-        let mut web = self.web.lock().await;
-        if web.is_none() {
-            let base_url = self
+        let mut devices = self.devices.lock().await;
+        if let std::collections::hash_map::Entry::Vacant(slot) = devices.entry(platform) {
+            let config = self
                 .suite
                 .config
                 .as_ref()
-                .and_then(|c| c.platforms.get(&Platform::Web))
-                .and_then(|p| p.base_url.clone())
-                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-            *web = Some(Driver::new(Web::launch(&base_url, 1280, 800).await?));
+                .and_then(|c| c.platforms.get(&platform));
+            let device = match platform {
+                Platform::Web => {
+                    let base_url = config
+                        .and_then(|p| p.base_url.clone())
+                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
+                    AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800).await?))
+                }
+                Platform::Android => {
+                    let app = config
+                        .and_then(|p| p.app_id.clone())
+                        .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
+                    AnyDevice::Android(Android::connect(&app, reader_apk("android")).await?)
+                }
+                Platform::Ios => anyhow::bail!(
+                    "device tools for ios aren't in soundcheck yet (its driver is still to come)"
+                ),
+            };
+            slot.insert(Driver::new(device));
         }
-        Ok(op(web.as_ref().unwrap()).await?)
+        Ok(op(&devices[&platform]).await?)
     }
 
     /// Resets a platform for a spec: guard, seed, relaunch, then its starts-on labels. Tried three times; the
@@ -138,7 +184,7 @@ impl Hub {
                     .context("the guard refused")?;
                 let seed = hooks::fill(&config.hooks.seed, &spec.front.seed, &platform.to_string());
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
-                if platform == Platform::Web {
+                if platform != Platform::Ios && !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
                     self.on_device(platform, async |d| {
                         Device::launch(&d.device).await?;
@@ -246,7 +292,7 @@ impl Hub {
     /// Saves what the device shows now for an attempt's non-pass: a screenshot, the element tree and the errors.
     /// Returns the file names it managed; a platform without a driver yet saves nothing.
     pub async fn capture(&self, spec: &str, platform: Platform, attempt: u32) -> Vec<String> {
-        if platform != Platform::Web {
+        if platform == Platform::Ios {
             return Vec::new();
         }
         let dir = self.run_dir.join(report::EVIDENCE_DIR);

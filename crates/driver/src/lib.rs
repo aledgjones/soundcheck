@@ -1,6 +1,7 @@
 //! One interface over Android, iOS and web devices. This crate knows devices only: never suites, rows or an app.
 
 pub mod android;
+pub mod any;
 pub mod compare;
 pub mod device;
 pub mod element;

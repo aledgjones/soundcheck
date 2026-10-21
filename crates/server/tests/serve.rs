@@ -42,7 +42,14 @@ async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
     let server = serve::start(
-        Hub::new(suite, run, "v0.0.0 · test".into(), dir.clone(), 120_000),
+        Hub::without_devices(
+            suite,
+            run,
+            "v0.0.0 · test".into(),
+            dir.clone(),
+            120_000,
+            vec![Platform::Android, Platform::Ios],
+        ),
         0,
     )
     .await
@@ -408,7 +415,14 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let hub = Hub::new(suite, run, "builds".into(), run_dir, 120_000);
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "builds".into(),
+        run_dir,
+        120_000,
+        vec![Platform::Android, Platform::Ios],
+    );
 
     let problems = hub.read_builds(&[Platform::Android, Platform::Ios]).await;
     assert_eq!(problems.len(), 1);

@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use soundcheck::run::{Plan, PlannedSpec, Run};
 use soundcheck::serve::{self, Hub};
 use soundcheck::suite;
+use soundcheck::suite::config::Platform;
 use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::Path;
@@ -58,7 +59,14 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
     let server = serve::start(
-        Hub::new(suite, run, "v9.9.9 · live".into(), dir, 120_000),
+        Hub::without_devices(
+            suite,
+            run,
+            "v9.9.9 · live".into(),
+            dir,
+            120_000,
+            vec![Platform::Android, Platform::Ios],
+        ),
         0,
     )
     .await
@@ -212,7 +220,14 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     std::fs::create_dir_all(&run_dir).unwrap();
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
     let server = serve::start(
-        Hub::new(suite, run, "web".into(), run_dir.clone(), 120_000),
+        Hub::without_devices(
+            suite,
+            run,
+            "web".into(),
+            run_dir.clone(),
+            120_000,
+            vec![Platform::Android, Platform::Ios],
+        ),
         0,
     )
     .await
@@ -341,7 +356,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         "and links the tree"
     );
 
-    // Android's driver isn't in soundcheck yet: it says so rather than pretending.
+    // This server leaves Android's device alone: it says so rather than pretending.
     let android = call(
         &client,
         "dispatch",
@@ -365,7 +380,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             .as_text()
             .unwrap()
             .text
-            .contains("only web is")
+            .contains("leaves android")
     );
 
     client.cancel().await.unwrap();
@@ -424,9 +439,19 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(Hub::new(suite, run, "reset".into(), run_dir, 120_000), 0)
-        .await
-        .unwrap();
+    let server = serve::start(
+        Hub::without_devices(
+            suite,
+            run,
+            "reset".into(),
+            run_dir,
+            120_000,
+            vec![Platform::Android, Platform::Ios],
+        ),
+        0,
+    )
+    .await
+    .unwrap();
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(format!("http://{}/mcp", server.addr)),
     );

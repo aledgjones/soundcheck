@@ -21,7 +21,10 @@ async fn the_android_driver_reads_and_drives_settings() {
     };
     let driver = Driver::new(android);
     driver.device.launch().await.unwrap();
-    driver.wait(&m("Network & internet"), 10_000).await.unwrap();
+    if driver.wait(&m("Network & internet"), 10_000).await.is_err() {
+        let seen: Vec<String> = driver.see(None, true).await.unwrap().iter().map(|e| e.line()).collect();
+        panic!("Settings didn't open on its home screen: {seen:?}");
+    }
 
     // The reader against uiautomator on the same screen: every element uiautomator lists, the reader lists too.
     let reader: BTreeSet<String> = driver
