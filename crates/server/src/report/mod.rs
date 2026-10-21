@@ -178,43 +178,61 @@ fn date_time(at: u64) -> String {
     )
 }
 
-fn ago(since: u64, warn_ms: u64) -> String {
-    format!("<span class=\"ago\" data-since=\"{since}\" data-warn=\"{warn_ms}\"></span>")
+/// A warning that stays hidden until `warn_ms` after `since`, then reads `label` with `{t}` as the time passed.
+fn overdue(since: u64, warn_ms: u64, label: &str) -> String {
+    format!(
+        "<span class=\"ago warn\" data-since=\"{since}\" data-warn=\"{warn_ms}\" data-label=\"{}\" hidden></span>",
+        esc(label)
+    )
 }
 
 fn now_bar(page: &Page) -> String {
     let state = page.run.state();
-    let mut items =
-        vec!["<span><i class=\"live-dot\" aria-hidden=\"true\"></i><b>Live</b></span>".to_string()];
-    if state.paused {
-        items.push("<span class=\"warn\">Paused</span>".into());
-    }
+    let entries = page.run.entries_after(0);
+    let live = if state.paused {
+        "<span class=\"nowbar-live warn\">Paused</span>"
+    } else {
+        "<span class=\"nowbar-live\"><i class=\"live-dot\" aria-hidden=\"true\"></i><b>Live</b></span>"
+    };
+    let mut doing = Vec::new();
     for ((spec, platform), r) in &state.rows {
         match &r.row {
-            Row::Running { .. } => items.push(format!(
-                "<span>{} · <b>{}</b> · running {}</span>",
+            Row::Running { .. } => doing.push(format!(
+                "<span>{} · <b>{}</b></span>",
                 platform_name(*platform),
-                esc(spec),
-                ago(r.dispatched_at.unwrap_or(0), 0)
+                esc(spec)
             )),
-            Row::NeedsReview { since, .. } => items.push(format!(
+            Row::NeedsReview { since, .. } => doing.push(format!(
                 "<span>{} · checking <b>{}</b> {}</span>",
                 platform_name(*platform),
                 esc(spec),
-                ago(*since, CHECKING_WARN_MS)
+                overdue(*since, CHECKING_WARN_MS, "for {t}")
             )),
             _ => {}
         }
     }
-    if let Some(last) = page.run.entries_after(0).last() {
-        items.push(format!(
-            "<span class=\"muted\">Last event {} ago</span>",
-            ago(last.at, IDLE_WARN_MS)
+    if doing.is_empty() {
+        doing.push("<span class=\"muted\">Nothing running</span>".into());
+    }
+    if let Some(last) = entries.last() {
+        doing.push(overdue(
+            last.at,
+            IDLE_WARN_MS,
+            "idle {t}: coordinator not responding",
         ));
     }
+    let timer = entries
+        .first()
+        .map(|first| {
+            format!(
+                "<span class=\"nowbar-time elapsed\" data-since=\"{}\"></span>",
+                first.at
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "<div class=\"nowbar\" role=\"status\"><div class=\"nowbar-in\">{}</div></div>",
-        items.join("")
+        "<div class=\"nowbar\" role=\"status\"><div class=\"nowbar-in\">{live}<div class=\"nowbar-doing\">{}</div>{timer}</div></div>",
+        doing.join("")
     )
 }
 
@@ -241,8 +259,14 @@ fn header(page: &Page) -> String {
             time(export.at)
         ));
     }
+    // Relative, so it works on the live page (`/download`) and a past run's (`/runs/<name>/download`).
+    let download = if page.export.is_none() {
+        "<a class=\"download\" href=\"download\" download>Download report</a>"
+    } else {
+        ""
+    };
     format!(
-        "<header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>{}</h1><div class=\"facts\">{}</div></div></header>",
+        "<header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>{}</h1><div class=\"facts\">{}</div>{download}</div></header>",
         esc(page.label),
         facts.join("")
     )
@@ -627,7 +651,8 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
     for f in findings_for(page, &spec.id, platform) {
         let _ = write!(
             out,
-            "<div class=\"finding-block\"><span class=\"expect\">Finding: {}</span><span class=\"saw\">{} <a href=\"#problem-{}\">In Problems</a></span>{}</div>",
+            "<div class=\"finding-block\"><span class=\"expect\">Finding {:03}: {}</span><span class=\"saw\">{} <a href=\"#problem-{}\">In Problems</a></span>{}</div>",
+            f.id,
             esc(&f.title),
             esc(&f.detail),
             f.id,
@@ -829,7 +854,8 @@ fn problems(page: &Page) -> String {
             anchor(&p.spec)
         );
         format!(
-            "<details class=\"problem\" id=\"problem-{}\"><summary class=\"p2\"><span class=\"pticket\">{badge}</span><h3>{}</h3><span class=\"pwhere\">{} · {}</span></summary><div class=\"problem-body\">{body}</div></details>",
+            "<details class=\"problem\" id=\"problem-{}\"><summary class=\"p2\"><span class=\"pticket\">{badge}</span><h3><span class=\"pid\">{:03}</span>{}</h3><span class=\"pwhere\">{} · {}</span></summary><div class=\"problem-body\">{body}</div></details>",
+            p.id,
             p.id,
             esc(&p.title),
             platform_name(p.platform),

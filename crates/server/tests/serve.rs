@@ -350,6 +350,44 @@ async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
 }
 
 #[tokio::test]
+async fn the_page_offers_its_report_as_a_download() {
+    let (server, url, dir) = server_in().await;
+    let client = client(&url).await;
+    call(&client, "pause", json!({ "reason": "an event to report" })).await;
+
+    let page = reqwest::get(format!("{url}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("href=\"download\""));
+    assert!(
+        page.contains("class=\"nowbar-time elapsed\""),
+        "one timer for the run"
+    );
+    let download = reqwest::get(format!("{url}/download")).await.unwrap();
+    let disposition = download.headers()["content-disposition"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+    assert_eq!(
+        disposition,
+        format!("attachment; filename=\"soundcheck-{name}.html\"")
+    );
+    let html = download.text().await.unwrap();
+    assert!(html.contains("In progress, exported"));
+    assert!(
+        !html.contains("href=\"download\""),
+        "an export has no button"
+    );
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
 async fn evidence_is_served_from_the_run_folder_only() {
     let (server, url, dir) = server_in().await;
     std::fs::create_dir_all(dir.join("evidence")).unwrap();

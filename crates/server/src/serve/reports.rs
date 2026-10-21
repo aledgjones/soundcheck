@@ -25,6 +25,7 @@ pub fn router(reports: Reports) -> axum::Router {
         .route("/runs/{name}/", get(run_page))
         .route("/runs/{name}/files/evidence/{file}", get(evidence))
         .route("/runs/{name}/report.html", get(exported))
+        .route("/runs/{name}/download", get(download))
         .with_state(Arc::new(reports))
 }
 
@@ -108,6 +109,53 @@ async fn evidence(
     match tokio::fs::read(&path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, kind)], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The export as a file to save, named after its run folder.
+pub fn attachment(run_dir: &std::path::Path, html: String) -> Response {
+    let name = run_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "run".into());
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"soundcheck-{name}.html\""),
+            ),
+        ],
+        html,
+    )
+        .into_response()
+}
+
+async fn download(State(reports): State<Arc<Reports>>, Path(name): Path<String>) -> Response {
+    let Some(dir) = folder(&reports, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let rendered = tokio::task::spawn_blocking(move || {
+        let (suite, run, label) = saved::load(&dir, now_ms())?;
+        let finished = run.state().finished;
+        let html = report::document(&report::Page {
+            suite: &suite,
+            run: &run,
+            label: &label,
+            live: false,
+            run_dir: Some(&dir),
+            export: Some(report::Export {
+                at: now_ms(),
+                finished,
+            }),
+        });
+        anyhow::Ok((dir, html))
+    })
+    .await;
+    match rendered {
+        Ok(Ok((dir, html))) => attachment(&dir, html),
+        Ok(Err(e)) => (StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 

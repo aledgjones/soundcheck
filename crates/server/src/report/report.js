@@ -14,12 +14,23 @@
           : hm;
     }
     const now = Date.now();
+    const span = (ms) => {
+      const min = Math.floor(ms / 60000);
+      if (min < 1) {
+        return `${Math.max(0, Math.floor(ms / 1000))} s`;
+      }
+      return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`;
+    };
+    for (const e of document.querySelectorAll(".elapsed[data-since]")) {
+      const s = Math.max(0, Math.floor((now - Number(e.dataset.since)) / 1000));
+      const h = Math.floor(s / 3600);
+      const ms = `${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+      e.textContent = h > 0 ? `${h}:${ms}` : ms;
+    }
     for (const a of document.querySelectorAll(".ago[data-since]")) {
       const ms = now - Number(a.dataset.since);
-      const min = Math.floor(ms / 60000);
-      a.textContent = min < 1 ? `${Math.max(0, Math.floor(ms / 1000))} s` : `${min} min`;
-      const warn = Number(a.dataset.warn || 0);
-      a.classList.toggle("warn", warn > 0 && ms >= warn);
+      a.hidden = ms < Number(a.dataset.warn || 0);
+      a.textContent = a.hidden ? "" : a.dataset.label.replace("{t}", span(ms));
     }
   }
 
@@ -90,7 +101,7 @@
 
   tick();
   applyFilter();
-  setInterval(tick, 10000);
+  setInterval(tick, 1000);
   if (!root || root.dataset.live !== "true") return;
 
   // Only rows the viewer opened or closed keep that state; the rest follow the page (a new failure opens itself).

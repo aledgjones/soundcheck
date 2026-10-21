@@ -729,6 +729,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/events", get(events_stream))
         .route("/", get(page))
         .route("/fragment", get(fragment))
+        .route("/download", get(download))
         .route("/files/evidence/{name}", get(evidence_file))
         .route("/runs", get(runs_index))
         .with_state(hub.clone())
@@ -795,6 +796,17 @@ async fn page(State(hub): State<Arc<Hub>>) -> Response {
         .with_run(|run, _| Ok(report::document(&hub.page(&hub.suite(), run, None))))
         .unwrap_or_default();
     axum::response::Html(html).into_response()
+}
+
+async fn download(State(hub): State<Arc<Hub>>) -> Response {
+    let exported = hub.with_run(|run, now| {
+        let path = hub.export(run, now)?;
+        Ok(std::fs::read_to_string(path)?)
+    });
+    match exported {
+        Ok(html) => reports::attachment(&hub.run_dir, html),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
+    }
 }
 
 async fn fragment(State(hub): State<Arc<Hub>>) -> Response {

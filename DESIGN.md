@@ -162,10 +162,10 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
 
   The collapsed row hints at a finding ("Passed · 1 finding"). The server enforces the failure block's input: a non-pass must name the outcomes it failed, with observed text for each.
 
-- **The page header says what's happening now:** the spec running on each platform and for how long, or "idle 20 min: coordinator not responding". That's the only alarm an unattended run needs.
+- **The page header says what's happening now:** how long the run has been going and the spec running on each platform, plus "idle 20 min: coordinator not responding" once it's true. That's the only alarm an unattended run needs.
 - **Page decisions** (Aled, 2026-10-21):
   - **Header:** the release label, devices, run start and last update. Commits stay out: the notes say which build each row ran on.
-  - **A slim sticky bar while the run is live** says what's happening now ("Android · annotations/003 · 2 min", or "idle 20 min: coordinator not responding" in amber), and goes once the run finishes.
+  - **A slim sticky bar while the run is live** says what's happening now ("Run · 1 h 12 min · Android · annotations/003"), and goes once the run finishes. One timer, for the whole run: per-spec timers and "last event N ago" were noise (Aled, 2026-10-21). A check or an idle coordinator shows its time only once it's overdue, in amber.
   - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
   - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
   - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
@@ -175,7 +175,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
 - **Light enough to sit open for hours** beside an emulator: animate only opacity and transform, and leave no spinner on a row nobody is working on.
 - **Export:** a self-contained HTML file with screenshots embedded, which opens offline indefinitely.
-  - Available at any time. A mid-run export is stamped "in progress" with the verdict so far.
+  - Available at any time, from the page's **Download report** button (live or past run) or the coordinator's `export`. A mid-run export is stamped "in progress" with the verdict so far.
   - The final export is stamped with the verdict and build identities and doesn't change.
 
 ### 3.10 Unattended runs

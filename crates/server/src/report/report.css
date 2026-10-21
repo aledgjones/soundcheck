@@ -13,6 +13,8 @@ a:hover{text-decoration:underline}
 .muted{color:var(--label2)}
 .card{background:var(--card);border-radius:22px}
 .head-text{display:flex;flex-direction:column;gap:8px}
+.download{align-self:flex-start;margin-top:10px;background:var(--fill);color:var(--ink);border-radius:8px;padding:6px 14px;font-size:14px;font-weight:500}
+.download:hover{text-decoration:none;background:var(--sep)}
 .eyebrow{font-size:14px;font-weight:600;letter-spacing:0;color:var(--label2)}
 .facts{display:flex;flex-wrap:wrap;gap:4px 18px;margin-top:6px;font-size:14px;color:var(--label2)}
 .summary{margin-top:36px;overflow:hidden}
@@ -92,6 +94,8 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .problem+.problem::before{content:"";position:absolute;top:0;left:24px;right:0;height:1px;background:var(--sep)}
 .problem summary.p2{display:grid;grid-template-columns:96px 1fr 170px;gap:12px;align-items:center}
 .problem summary.p2 h3{font-size:17px;font-weight:600;letter-spacing:-.022em}
+.pid{color:var(--label2);font-weight:500;font-variant-numeric:tabular-nums;margin-right:8px}
+.elapsed{font-variant-numeric:tabular-nums}
 .pwhere{font-size:14px;text-align:right;color:var(--label2)}
 .psev{display:flex;justify-content:flex-end;gap:6px}
 .pgroup{display:block;margin:30px 0 12px 4px;font-size:15px;font-weight:600;color:var(--label2);text-transform:uppercase;letter-spacing:.02em}
@@ -160,8 +164,11 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 /* new: sticky "now" bar while the run is live */
 body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bar)}
 .nowbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;backdrop-filter:saturate(1.8) blur(16px);-webkit-backdrop-filter:saturate(1.8) blur(16px);background:var(--bar);border-bottom:1px solid var(--sep)}
-.nowbar-in{max-width:980px;margin:0 auto;display:flex;flex-wrap:wrap;gap:6px 22px;align-items:center;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.nowbar-in{max-width:980px;margin:0 auto;display:flex;gap:6px 22px;align-items:flex-start;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .nowbar b{font-weight:600}
+.nowbar-live{flex:none}
+.nowbar-doing{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 22px}
+.nowbar-time{flex:none;margin-left:auto;font-weight:600}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:6px;animation:breathe 2.4s ease-in-out infinite}
 .nowbar .warn{color:var(--partial);font-weight:600}
 .notes{padding:20px 28px;display:flex;flex-direction:column;gap:14px;font-size:15px}
