@@ -373,10 +373,16 @@ fn summary(page: &Page, v: &Verdict) -> String {
         grid.push_str("</a>");
     }
     grid.push_str("</div>");
+    let pct = all.pct(all.pass);
+    // Three digits don't fit the ring's hole at the two-digit size.
+    let size = if pct.round() >= 100.0 {
+        " class=\"full\""
+    } else {
+        ""
+    };
     format!(
-        "<section class=\"summary card\" aria-label=\"Summary\"><div class=\"summary-head\"><div class=\"ringwrap\">{}<div class=\"ringlabel\"><b>{:.0}%</b></div></div><div class=\"summary-verdict\"><strong class=\"{class}\">{word}</strong>{}</div></div>{grid}</section>",
+        "<section class=\"summary card\" aria-label=\"Summary\"><div class=\"summary-head\"><div class=\"ringwrap\">{}<div class=\"ringlabel\"><b{size}>{pct:.0}%</b></div></div><div class=\"summary-verdict\"><strong class=\"{class}\">{word}</strong>{}</div></div>{grid}</section>",
         ring(&all),
-        all.pct(all.pass),
         if reasons.is_empty() {
             String::new()
         } else {

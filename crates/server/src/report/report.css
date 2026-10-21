@@ -32,6 +32,7 @@ a:hover{text-decoration:underline}
 .ring-seg.blocked{stroke:var(--blocked)}
 .ringlabel{position:absolute;inset:0;display:grid;place-content:center;text-align:center}
 .ringlabel b{font-size:44px;font-weight:700;letter-spacing:-.03em}
+.ringlabel b.full{font-size:34px}
 .cell{display:inline-flex;flex-direction:column;gap:7px;min-width:0}
 .cell-text{display:inline-flex;align-items:center;gap:8px;font-size:15px;color:var(--label2);white-space:nowrap}
 .cell-text i{width:10px;height:10px;border-radius:50%;flex:none;background:var(--notrun)}
