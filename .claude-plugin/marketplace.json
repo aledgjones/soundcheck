@@ -1,0 +1,15 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "soundcheck",
+  "description": "Soundcheck: regression testing for apps with AI testers on Android, iOS and web.",
+  "owner": {
+    "name": "Aled Jones"
+  },
+  "plugins": [
+    {
+      "name": "soundcheck",
+      "description": "Set a project up for soundcheck, author specs, and run a suite with live results.",
+      "source": "./plugin"
+    }
+  ]
+}
