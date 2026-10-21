@@ -248,14 +248,17 @@ Nothing in a run may wait for a human:
 ```
 <project skill>/
   SKILL.md                     # accounts, device setup and quirks; takes a scope, delegates the run to soundcheck:run
-  suite/
-    suite.yaml
-    id-map.yaml                # old spec ID → current ID, so history survives renames
-    hooks/                     # the project's hook scripts
+  suite.yaml                   # with `specs: suite`
+  id-map.yaml                  # old spec ID → current ID, so history survives renames
+  hooks/                       # the project's hook scripts, each self-contained
+  fixtures/                    # files testers can push onto a device
+  suite/                       # only the specs
     <feature>/
       _feature.md              # shared context: how to get there, label hints, platform differences
       001-<name>.spec.md
 ```
+
+Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but features, so it reads as the description of what's tested.
 
 ### 5.2 `suite.yaml`
 
@@ -265,6 +268,7 @@ Nothing in a run may wait for a human:
   - for web: base URL, a start hook, browsers and viewports;
   - the account each platform signs in with.
 - `hooks`: the commands in 5.3.
+- `specs`: the folder holding the feature folders (default: the suite folder itself).
 - `seeds`: the seed scenario names the `seed` hook accepts, so lint can check every spec's seed.
 - `reports`: where runs are written.
 - `models`: the default tester model (Sonnet).

@@ -25,16 +25,17 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
 7. **Installing a build** on each device, if soundcheck should do it.
 8. **Data checks** testers may need, e.g. "what's in the database for this account".
 9. **Tickets:** the tracker and its link format, for triage.
-10. **Where things live:** the suite folder (usually inside the project skill's folder) and where runs are written.
+10. **Where things live:** the suite folder (usually the project skill's own folder, with the specs in `suite/`) and where runs are written.
 
 ## 2. Write the suite
 
 ```
 <project skill folder>/
   SKILL.md
-  suite/
-    suite.yaml
-    hooks/
+  suite.yaml
+  hooks/          # one self-contained script per concern; no reaching into other folders
+  fixtures/
+  suite/          # only the specs
     <feature>/
       _feature.md
       001-<name>.spec.md
@@ -58,14 +59,15 @@ hooks:
   install: node hooks/install.mjs {platform}
   check: node hooks/check.mjs
 seeds: [empty, one-score]
-reports: ../../../reports # relative to the suite; runs are written here
+specs: suite
+reports: ../../../reports # relative to suite.yaml; runs are written here
 tickets:
   url: https://example.atlassian.net/browse/{id}
 ```
 
 ### Hooks
 
-Shell commands, run from the suite folder, in any language. Exit 0 for ok; anything else is a refusal, with the reason on stderr. Where data comes back, it's JSON on stdout.
+Shell commands, run from the folder holding suite.yaml, in any language. Exit 0 for ok; anything else is a refusal, with the reason on stderr. Where data comes back, it's JSON on stdout.
 
 | Hook                        | Called                                  | Prints                                                      |
 | --------------------------- | --------------------------------------- | ----------------------------------------------------------- |

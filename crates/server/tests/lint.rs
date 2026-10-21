@@ -90,3 +90,26 @@ fn a_reports_folder_inside_the_suite_is_not_a_feature() {
     std::fs::write(root.join("suite.yaml"), config).unwrap();
     assert_eq!(lint(&suite::load(&root), "0.1.0"), vec![]);
 }
+
+#[test]
+fn specs_can_live_in_their_own_folder() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("soundcheck-specs-{nanos}"));
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(root.join("suite/annotations")).unwrap();
+    std::fs::copy(
+        good.join("annotations/001-draw.spec.md"),
+        root.join("suite/annotations/001-draw.spec.md"),
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(good.join("suite.yaml")).unwrap() + "specs: suite\n";
+    std::fs::write(root.join("suite.yaml"), config).unwrap();
+    let suite = suite::load(&root);
+    assert_eq!(suite.specs.len(), 1);
+    // The missing _feature.md is reported where it belongs.
+    let paths: Vec<_> = lint(&suite, "0.1.0").into_iter().map(|p| p.path).collect();
+    assert_eq!(paths, [Path::new("suite/annotations/_feature.md")]);
+}

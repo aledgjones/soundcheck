@@ -37,6 +37,8 @@ pub struct Feature {
 #[derive(Debug)]
 pub struct Suite {
     pub root: PathBuf,
+    /// The feature folders' folder, relative to `root` (empty when they sit in it).
+    pub specs_dir: PathBuf,
     pub config: Option<SuiteConfig>,
     pub features: Vec<Feature>,
     /// In run order: by feature folder, then file name.
@@ -60,6 +62,7 @@ static SPEC_FILE: LazyLock<Regex> =
 pub fn load(root: &Path) -> Suite {
     let mut suite = Suite {
         root: root.to_path_buf(),
+        specs_dir: PathBuf::new(),
         config: None,
         features: Vec::new(),
         specs: Vec::new(),
@@ -86,12 +89,25 @@ pub fn load(root: &Path) -> Suite {
         }
     }
 
-    for entry in sorted_entries(root) {
+    let prefix = suite
+        .config
+        .as_ref()
+        .and_then(|c| c.specs.clone())
+        .unwrap_or_default();
+    suite.specs_dir = prefix.clone();
+    let specs_dir = root.join(&prefix);
+    if !specs_dir.is_dir() {
+        suite.problems.push(Problem::new(
+            &prefix,
+            "the specs folder suite.yaml names isn't there",
+        ));
+    }
+    for entry in sorted_entries(&specs_dir) {
         let name = name_of(&entry);
         if entry.is_file() {
             if name.ends_with(".spec.md") {
                 suite.problems.push(Problem::new(
-                    &name,
+                    prefix.join(&name),
                     "specs belong in a feature folder: <feature>/NNN-name.spec.md",
                 ));
             }
@@ -107,22 +123,22 @@ pub fn load(root: &Path) -> Suite {
         {
             continue;
         }
-        load_feature(&mut suite, &entry, &name);
+        load_feature(&mut suite, &entry, &name, &prefix);
     }
     suite
 }
 
-fn load_feature(suite: &mut Suite, dir: &Path, name: &str) {
+fn load_feature(suite: &mut Suite, dir: &Path, name: &str, prefix: &Path) {
     if !FEATURE_NAME.is_match(name) {
         suite.problems.push(Problem::new(
-            name,
+            prefix.join(name),
             "feature folders are lower-case words joined by hyphens",
         ));
     }
     let context = fs::read_to_string(dir.join(FEATURE_FILE)).ok();
     for entry in sorted_entries(dir) {
         let file = name_of(&entry);
-        let rel = Path::new(name).join(&file);
+        let rel = prefix.join(name).join(&file);
         if entry.is_dir() {
             suite.problems.push(Problem::new(
                 rel,

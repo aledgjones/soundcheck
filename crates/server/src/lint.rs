@@ -105,7 +105,7 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
     for feature in &suite.features {
         if feature.context.is_none() {
             push(
-                PathBuf::from(&feature.name).join(FEATURE_FILE),
+                suite.specs_dir.join(&feature.name).join(FEATURE_FILE),
                 "every feature needs a _feature.md: how to get there, label hints, platform differences".into(),
             );
         }
@@ -113,7 +113,7 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
 
     let ids: BTreeSet<&str> = suite.specs.iter().map(|s| s.id.as_str()).collect();
     for spec in &suite.specs {
-        let path = PathBuf::from(format!("{}.spec.md", spec.id));
+        let path = suite.specs_dir.join(format!("{}.spec.md", spec.id));
         let f = &spec.front;
         let mut push = |message: String| push(path.clone(), message);
 
