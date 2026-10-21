@@ -250,7 +250,6 @@ Nothing in a run may wait for a human:
 <project skill>/
   SKILL.md                     # accounts, device setup and quirks; takes a scope, delegates the run to soundcheck:run
   suite.yaml                   # with `specs: suite`
-  id-map.yaml                  # old spec ID → current ID, so history survives renames
   hooks/                       # the project's hook scripts, each self-contained
   fixtures/                    # files testers can push onto a device
   suite/                       # only the specs
@@ -319,7 +318,7 @@ Undo straight after the first stroke; undo twice quickly.
 ```
 
 - **Every spec is isolated:** its own seed, its `starts-on` check, and no reliance on another spec, so it can run alone, in any order, or again. Lint requires both.
-- **The path is the identity and the order** (`annotations/001-draw`). Renames go in an ID map, so history survives.
+- **The path is the identity and the order** (`annotations/001-draw`). A renamed spec starts a fresh history.
 - **Sections:** `## Goal` and `## Outcomes` (a `- ` list) are required; `## Probe around it` is optional, and so is `## Pinned`: exact steps, only where they guard a past bug or reach a control an agent can't discover.
 - **Each outcome is judged on its own** (held, failed, unsure, couldn't check), with evidence; the spec's result follows from them (3.3).
 - **A seen bug gets a regression spec:** more specific instructions, plus a probe around the old failure. Mechanics an agent can't do are driver tools the spec names; boundaries are seed scenarios.

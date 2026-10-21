@@ -55,8 +55,6 @@ fn a_broken_suite_reports_every_rule() {
         "annotations/001-noisy.spec.md: platforms: ios isn't configured",
         "annotations/001-noisy.spec.md: model: gpt",
         "annotations/001-noisy.spec.md: tools: back-burst isn't a driver tool",
-        "id-map.yaml: annotations/001-noisy is still a spec",
-        "id-map.yaml: OLD-1 maps to annotations/099-gone, which doesn't exist",
     ];
     for want in expect {
         assert!(

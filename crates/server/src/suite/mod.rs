@@ -4,7 +4,6 @@ pub mod spec;
 use config::SuiteConfig;
 use regex::Regex;
 use spec::Spec;
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -43,13 +42,10 @@ pub struct Suite {
     pub features: Vec<Feature>,
     /// In run order: by feature folder, then file name.
     pub specs: Vec<Spec>,
-    /// `id-map.yaml`: old spec ID → current spec ID, so history survives renames.
-    pub id_map: BTreeMap<String, String>,
     pub problems: Vec<Problem>,
 }
 
 pub const CONFIG_FILE: &str = "suite.yaml";
-pub const ID_MAP_FILE: &str = "id-map.yaml";
 pub const FEATURE_FILE: &str = "_feature.md";
 /// Folders in the suite root that aren't features.
 const NOT_FEATURES: &[&str] = &["hooks", "fixtures"];
@@ -66,7 +62,6 @@ pub fn load(root: &Path) -> Suite {
         config: None,
         features: Vec::new(),
         specs: Vec::new(),
-        id_map: BTreeMap::new(),
         problems: Vec::new(),
     };
     match fs::read_to_string(root.join(CONFIG_FILE)) {
@@ -80,15 +75,6 @@ pub fn load(root: &Path) -> Suite {
             .problems
             .push(Problem::new(CONFIG_FILE, format!("can't read it: {e}"))),
     }
-    if let Ok(text) = fs::read_to_string(root.join(ID_MAP_FILE)) {
-        match serde_yaml_ng::from_str(&text) {
-            Ok(map) => suite.id_map = map,
-            Err(e) => suite
-                .problems
-                .push(Problem::new(ID_MAP_FILE, e.to_string())),
-        }
-    }
-
     let prefix = suite
         .config
         .as_ref()

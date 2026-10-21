@@ -1,5 +1,5 @@
 use crate::suite::config::{Platform, compatible};
-use crate::suite::{CONFIG_FILE, FEATURE_FILE, ID_MAP_FILE, Problem, Suite};
+use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
 use std::collections::BTreeSet;
@@ -111,7 +111,6 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         }
     }
 
-    let ids: BTreeSet<&str> = suite.specs.iter().map(|s| s.id.as_str()).collect();
     for spec in &suite.specs {
         let path = suite.specs_dir.join(format!("{}.spec.md", spec.id));
         let f = &spec.front;
@@ -182,19 +181,5 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         }
     }
 
-    for (old, new) in &suite.id_map {
-        if ids.contains(old.as_str()) {
-            push(
-                ID_MAP_FILE.into(),
-                format!("{old} is still a spec, so it can't be an old ID"),
-            );
-        }
-        if !ids.contains(new.as_str()) {
-            push(
-                ID_MAP_FILE.into(),
-                format!("{old} maps to {new}, which doesn't exist"),
-            );
-        }
-    }
     problems
 }

@@ -85,8 +85,8 @@ The run's notes name the spec and the outcome that two testers couldn't judge. R
 
 ## Renaming or moving
 
-Give the spec its new path and add `old-id: new-id` to `id-map.yaml` in the suite root, so its history survives. Never put an ID that still exists on the left.
+Give the spec its new path; the path is its ID, so a renamed spec starts a fresh history.
 
 ## Finish
 
-Run `soundcheck lint <suite folder>` and fix every problem it reports. Lint checks the config, file names, frontmatter, sections, seeds, platforms, tools, title rules and the ID map. A run refuses to start on a suite that doesn't lint clean.
+Run `soundcheck lint <suite folder>` and fix every problem it reports. Lint checks the config, file names, frontmatter, sections, seeds, platforms, tools, and title rules. A run refuses to start on a suite that doesn't lint clean.
