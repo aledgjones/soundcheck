@@ -95,8 +95,8 @@ impl Device for AnyDevice {
     async fn viewport(&self, width: u32, height: u32) -> Result<()> {
         each!(self, d => d.viewport(width, height).await)
     }
-    async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
-        each!(self, d => d.tap_burst(x, y, count, interval_ms).await)
+    async fn double_tap(&self, x: f64, y: f64) -> Result<()> {
+        each!(self, d => d.double_tap(x, y).await)
     }
     async fn intercept_network(&self, on: bool) -> Result<()> {
         each!(self, d => d.intercept_network(on).await)
@@ -112,8 +112,5 @@ impl Device for AnyDevice {
     }
     async fn restart(&self) -> Result<()> {
         each!(self, d => d.restart().await)
-    }
-    async fn stress(&self, load: u32, seconds: u64) -> Result<()> {
-        each!(self, d => d.stress(load, seconds).await)
     }
 }

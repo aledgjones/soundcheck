@@ -85,8 +85,8 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
     let errors = driver.device.errors().await.unwrap();
     assert!(errors.iter().any(|e| e.contains("boom")), "{errors:?}");
 
-    driver.tap_burst(&m("Tap"), 5, 50).await.unwrap();
-    driver.wait(&m("Taps 5"), 3000).await.unwrap();
+    driver.double_tap(&m("Tap"), false).await.unwrap();
+    driver.wait(&m("Taps 2"), 3000).await.unwrap();
 
     driver.device.press("ArrowRight").await.unwrap();
     driver.wait(&m("Key ArrowRight"), 3000).await.unwrap();

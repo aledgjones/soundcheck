@@ -11,10 +11,7 @@ use tokio::time::{Instant, sleep};
 pub const WAIT_MAX_MS: u64 = 120_000;
 pub const TAP_WAIT_MS: u64 = 5_000;
 pub const GESTURE_MAX_MS: u64 = 10_000;
-pub const BURST_MAX: u32 = 50;
-pub const BURST_INTERVAL_MS: (u64, u64) = (10, 5_000);
 pub const NETWORK_DROP_MAX_S: u64 = 300;
-pub const STRESS_MAX_S: u64 = 600;
 const POLL_MS: u64 = 250;
 const FILL_TRIES: u32 = 3;
 
@@ -187,41 +184,16 @@ impl<D: Device> Driver<D> {
         )))
     }
 
-    pub async fn tap_burst(
-        &self,
-        target: &Matcher,
-        count: u32,
-        interval_ms: u64,
-    ) -> Result<Element> {
-        within(
-            "tap-burst's count",
-            count.into(),
-            1,
-            BURST_MAX.into(),
-            "a count",
-        )?;
-        within(
-            "tap-burst's interval",
-            interval_ms,
-            BURST_INTERVAL_MS.0,
-            BURST_INTERVAL_MS.1,
-            "milliseconds",
-        )?;
-        let e = self.target(target, false).await?;
+    pub async fn double_tap(&self, target: &Matcher, last: bool) -> Result<Element> {
+        let e = self.target(target, last).await?;
         let (x, y) = e.tap_point();
-        self.device.tap_burst(x, y, count, interval_ms).await?;
+        self.device.double_tap(x, y).await?;
         Ok(e)
     }
 
     pub async fn network_drop(&self, seconds: u64) -> Result<()> {
         within("network-drop", seconds, 1, NETWORK_DROP_MAX_S, "seconds")?;
         self.device.network_drop(seconds).await
-    }
-
-    pub async fn stress(&self, load: u32, seconds: u64) -> Result<()> {
-        within("stress's load", load.into(), 1, 100, "a percentage")?;
-        within("stress", seconds, 1, STRESS_MAX_S, "seconds")?;
-        self.device.stress(load, seconds).await
     }
 
     /// Places with a held touch from `from` (to `to` for a line or stroke), screenshots the preview while held,

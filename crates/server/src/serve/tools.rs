@@ -1086,39 +1086,29 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: tap an element `count` times, `interval_ms` apart, timed on the device: for races."
+        description = "Tester: double-tap an element, timed on the device at a person's double-tap speed (one tap call at a time is too slow to count as one)."
     )]
-    async fn tap_burst(
+    async fn double_tap(
         &self,
-        Parameters(p): Parameters<BurstParams>,
+        Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            Ok(line(
-                &d.tap_burst(&matcher(&p.target)?, p.count, p.interval_ms)
-                    .await?,
-            ))
+            Ok(line(&d.double_tap(&matcher(&p.target)?, p.last).await?))
         })
         .await
     }
 
-    #[tool(description = "Tester: cut the device's network for `seconds`, then restore it.")]
+    #[tool(
+        description = "Tester: cut the device's network for `seconds`. Returns once it's down; it comes back on its own after `seconds`, so `sleep` to wait it out."
+    )]
     async fn network_drop(
         &self,
         Parameters(p): Parameters<SecondsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            d.network_drop(p.seconds).await.map(|()| "restored")
-        })
-        .await
-    }
-
-    #[tool(description = "Tester: load the device's CPU for `seconds`.")]
-    async fn stress(
-        &self,
-        Parameters(p): Parameters<StressParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
-            d.stress(p.load, p.seconds).await.map(|()| "done")
+            d.network_drop(p.seconds)
+                .await
+                .map(|()| format!("network down for {} s; it comes back on its own", p.seconds))
         })
         .await
     }

@@ -3,7 +3,7 @@
 //! Points everywhere but screenshots, which are in pixels.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Health, Result};
+use crate::device::{Device, DriverError, Health, Result, double_tap_script};
 use crate::element::{Element, Rect};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -802,12 +802,8 @@ impl Device for Ios {
         Ok(())
     }
 
-    async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
-        let script = (0..count)
-            .map(|_| format!("d {x:.0} {y:.0};w 80;u {x:.0} {y:.0}"))
-            .collect::<Vec<_>>()
-            .join(&format!(";w {interval_ms};"));
-        self.hid(&script).await
+    async fn double_tap(&self, x: f64, y: f64) -> Result<()> {
+        self.hid(&double_tap_script(x, y)).await
     }
 }
 

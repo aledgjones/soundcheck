@@ -70,6 +70,20 @@ fn property(node: &AxNode, name: AxPropertyName) -> Option<String> {
         })
 }
 
+async fn set_page_offline(page: &Page, offline: bool) -> Result<()> {
+    let all = NetworkConditions::new("", 0.0, -1.0, -1.0);
+    page.execute(EmulateNetworkConditionsByRuleParams::new(
+        offline,
+        vec![all],
+    ))
+    .await
+    .map_err(|e| device(format!("emulateNetworkConditionsByRule: {e}")))?;
+    page.execute(OverrideNetworkStateParams::new(offline, 0.0, -1.0, -1.0))
+        .await
+        .map_err(|e| device(format!("overrideNetworkState: {e}")))?;
+    Ok(())
+}
+
 impl Web {
     /// Starts Chrome with a fresh, temporary profile and opens `base_url`: headless, or in a window to watch with
     /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
@@ -203,19 +217,7 @@ impl Web {
 
     /// Requests fail while offline, and the page's navigator.onLine agrees.
     async fn set_offline(&self, offline: bool) -> Result<()> {
-        let all = NetworkConditions::new("", 0.0, -1.0, -1.0);
-        self.page
-            .execute(EmulateNetworkConditionsByRuleParams::new(
-                offline,
-                vec![all],
-            ))
-            .await
-            .map_err(|e| device(format!("emulateNetworkConditionsByRule: {e}")))?;
-        self.page
-            .execute(OverrideNetworkStateParams::new(offline, 0.0, -1.0, -1.0))
-            .await
-            .map_err(|e| device(format!("overrideNetworkState: {e}")))?;
-        Ok(())
+        set_page_offline(&self.page, offline).await
     }
 
     async fn key(&self, key: &str, code: i64) -> Result<()> {
@@ -518,7 +520,12 @@ impl Device for Web {
             .await
             .map_err(device)?;
         self.set_offline(true).await?;
-        sleep(Duration::from_secs(seconds)).await;
-        self.set_offline(false).await
+        // Restore on a timer, as on Android: the call returns once the network is down.
+        let page = self.page.clone();
+        tokio::spawn(async move {
+            sleep(Duration::from_secs(seconds)).await;
+            let _ = set_page_offline(&page, false).await;
+        });
+        Ok(())
     }
 }

@@ -203,23 +203,14 @@ async fn absurd_values_are_refused_before_touching_the_device() {
         .unwrap_err()
         .to_string();
     assert!(err.contains("wait takes milliseconds"), "{err}");
-    assert!(driver.tap_burst(&m("Back"), 500, 100).await.is_err());
-    assert!(driver.tap_burst(&m("Back"), 5, 1).await.is_err());
     assert!(driver.network_drop(0).await.is_err());
     assert!(driver.device.actions.lock().unwrap().is_empty());
 }
 
 #[tokio::test(start_paused = true)]
-async fn tap_burst_taps_count_times() {
-    let driver = Driver::new(Fake::new(vec![vec![el("Back", 0.0)]]));
-    driver.tap_burst(&m("Back"), 5, 100).await.unwrap();
-    assert_eq!(driver.device.actions.lock().unwrap().len(), 5);
-}
-
-#[tokio::test(start_paused = true)]
-async fn tap_burst_takes_a_point() {
+async fn double_tap_takes_a_point() {
     let driver = Driver::new(Fake::new(vec![]));
-    driver.tap_burst(&m("at:516,700"), 2, 80).await.unwrap();
+    driver.double_tap(&m("at:516,700"), false).await.unwrap();
     assert_eq!(
         *driver.device.actions.lock().unwrap(),
         ["tap 516,700", "tap 516,700"]

@@ -223,7 +223,7 @@ fn a_harness_rerun_tells_the_next_attempt_and_files_nothing_when_it_passes() {
     let call = Call::Harness {
         rerun: Some("Tap the page with at:516,700.".into()),
     };
-    run.review(3, DRAW, Android, call, "tap-burst took no point")
+    run.review(3, DRAW, Android, call, "double-tap took no point")
         .unwrap();
     assert_eq!(
         run.row(DRAW, Android).unwrap().rerun_note.as_deref(),

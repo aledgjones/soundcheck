@@ -1,7 +1,7 @@
 //! The Android driver: an emulator over adb, read through a long-lived reader on the device.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Health, Result};
+use crate::device::{Device, DriverError, Health, Result, double_tap_script};
 use crate::element::{Element, Rect};
 use regex::Regex;
 use std::os::unix::process::CommandExt;
@@ -130,11 +130,6 @@ impl Proxies {
         for conn in self.live.lock().unwrap_or_else(|e| e.into_inner()).iter() {
             conn.store(true, Ordering::SeqCst);
         }
-    }
-
-    fn restore_network(&self) {
-        self.dropped
-            .store(false, std::sync::atomic::Ordering::SeqCst);
     }
 }
 
@@ -795,12 +790,9 @@ impl Device for Android {
             .map_or(1.0, |dpi| dpi / 160.0)
     }
 
-    async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
+    async fn double_tap(&self, x: f64, y: f64) -> Result<()> {
         // One script, so the device keeps the timing.
-        let tap = format!("d {x:.0} {y:.0};w 40;u {x:.0} {y:.0}");
-        let taps: Vec<String> = (0..count).map(|_| tap.clone()).collect();
-        self.input(&taps.join(&format!(";w {};", interval_ms.saturating_sub(40))))
-            .await
+        self.input(&double_tap_script(x, y)).await
     }
 
     async fn intercept_network(&self, on: bool) -> Result<()> {
@@ -851,10 +843,13 @@ impl Device for Android {
                 )
             })?;
             p.drop_network();
-        }
-        sleep(Duration::from_secs(seconds)).await;
-        if let Some(p) = self.proxies.lock().await.as_ref() {
-            p.restore_network();
+            // Restore on a timer rather than at the end of the call: a 90 s call outlasts a tester's tool timeout,
+            // and a cancelled call must never leave the app offline.
+            let dropped = p.dropped.clone();
+            tokio::spawn(async move {
+                sleep(Duration::from_secs(seconds)).await;
+                dropped.store(false, std::sync::atomic::Ordering::SeqCst);
+            });
         }
         Ok(())
     }
@@ -990,17 +985,6 @@ impl Device for Android {
             ])
             .await?;
         }
-        Ok(())
-    }
-
-    async fn stress(&self, load: u32, seconds: u64) -> Result<()> {
-        let cores: u32 = self.shell("nproc").await?.trim().parse().unwrap_or(4);
-        let loops = (f64::from(cores) * f64::from(load) / 100.0).ceil().max(1.0) as u32;
-        let busy: Vec<String> = (0..loops)
-            .map(|_| format!("(timeout {seconds} sh -c 'while :; do :; done' &)"))
-            .collect();
-        self.shell(&busy.join("; ")).await?;
-        sleep(Duration::from_secs(seconds)).await;
         Ok(())
     }
 }

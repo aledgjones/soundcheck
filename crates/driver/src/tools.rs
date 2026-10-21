@@ -85,9 +85,9 @@ pub const TOOLS: &[Tool] = &[
     ),
     basic("viewport", &[Platform::Web], "resize the browser viewport"),
     mechanic(
-        "tap-burst",
+        "double-tap",
         ALL,
-        "tap an element N times, M ms apart, for races",
+        "double-tap an element, at a person's double-tap speed",
     ),
     mechanic(
         "preview-compare",
@@ -98,11 +98,6 @@ pub const TOOLS: &[Tool] = &[
         "network-drop",
         &[Platform::Android, Platform::Web],
         "freeze the network for N seconds (nothing passes, nothing closes), then let new connections through",
-    ),
-    mechanic(
-        "stress",
-        &[Platform::Android],
-        "load the device's CPU for N seconds",
     ),
 ];
 

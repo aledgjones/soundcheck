@@ -207,10 +207,9 @@ Nothing in a run may wait for a human:
 - **`batch`:** a sequence of steps that stops at its first failure.
 - **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots. Two more are for the harness itself: `parity` (4.3) and `keyboard hardware|software` (iOS).
 - **Tools for mechanics an agent can't do one call at a time:**
-  - `tap-burst <target> <count> <interval-ms>` for races;
+  - `double-tap <target>`, which one tap call at a time is too slow to make: two taps 150 ms apart, a person's double-tap. A quick gesture gets its own named tool like this one, never a burst with a count or an interval a spec could set faster than a finger;
   - `network-drop <seconds>`, with the app in the background;
     on Android, a spec listing `network-drop` launches with its `adb reverse` forwards through a proxy that freezes them: nothing passes and nothing closes, as when a phone loses the network in the background. Connections open during the drop stay frozen; new ones get through after it;
-  - `stress <load> <seconds>`;
   - timed `drag`, `hold` and `swipe`.
 - **Units:** milliseconds everywhere, and absurd values are rejected (an agent once passed ms to a seconds argument and waited 16 hours).
 
@@ -236,9 +235,9 @@ Nothing in a run may wait for a human:
   - after a device reboot, the forwards are restored.
 - **Long-lived at both ends.** The readers keep one accessibility connection open on the device, and the server keeps one connection to each reader, so a step never starts a process. Today's speed-up came from exactly this for reads: each `ui.mjs` call still started Node, ran the guard and set up adb.
 - **Input goes through the readers too.** Today every action starts a process: an Android tap is `adb shell input tap` (0.7–0.8 s, and `fill` 2.0 s, measured 2026-10-20), and each iOS touch is a new `axe` process. The readers take input over the same connection instead:
-  - **Android (done 2026-10-21):** `UiAutomation.injectInputEvent` inside the reader (`/input` scripts in the iOS reader's step format, `/type` through the device's key map), so taps, drags and holds cost milliseconds, and `tap-burst` intervals are timed on the device rather than across adb round trips. No `adb shell input` fallback; an older reader on the device is replaced;
+  - **Android (done 2026-10-21):** `UiAutomation.injectInputEvent` inside the reader (`/input` scripts in the iOS reader's step format, `/type` through the device's key map), so taps, drags and holds cost milliseconds, and a `double-tap`'s gap is timed on the device rather than across adb round trips. No `adb shell input` fallback; an older reader on the device is replaced;
   - **iOS (done 2026-10-21):** the reader keeps the HID connection open for touches and typing, as it does for reads: a tap fell from about 1.3 s through `axe` to 0.1 s, and a `fill` from 15–58 s to 3–5 s. There's no `axe` fallback for input: a gap is a bug to fix.
-  - **Still owed:** prove that injected input reproduces timing races the way raw taps did: rerun a race check that has caught a real bug, on that bug's build. Maestro's settling once hid exactly such a race.
+  - **Taps keep a person's timing, and sub-frame races are out of scope** (Aled, 2026-10-21, SA-673). On the SA-437 bug build (a back tap blanking the app when press-in and release land in one frame), raw `adb input tap`s and injected taps held 0 or 10 ms broke it within three rounds, while taps held 20 ms or more (the reader's `tap` holds 80) passed 100 rounds; on the fixed build, 0 ms taps passed 60. So injected input reproduces such a race only with an unnaturally short touch. A regression suite isn't expected to catch a bug that edge, so taps stay natural rather than chasing it, and `tap-burst` became `double-tap` with a fixed 150 ms rhythm, since an 80 ms double Undo once left a state no finger could reach.
 - **Parity tests:** every reader against the platform's own tool (`uiautomator`, `axe`, Chrome's snapshot), on a fixed screen set that includes overlays, sheets, dialogs, menus and screens with the keyboard up. A reader change ships only after it passes.
   - `soundcheck drive <platform> parity` compares the current screen, both the full tree and the screen reader's (`uiautomator dump` and `--compressed`; `axe describe-ui`): elements pair by label and nearest frame, then frame (within 2 units), value and states must agree. On Android, what only uiautomator lists under the keyboard is set aside (above).
   - **The screen set** (Solo Scores, 2026-10-21): a collection's home, the app drawer, a header menu, a settings sheet, the same sheet with the keyboard up on a field, a destructive confirmation dialog, and markup mode with a text box open and the keyboard up. Both platforms had parity on every screen.
@@ -248,10 +247,11 @@ Nothing in a run may wait for a human:
 ### 4.4 Ruled out
 
 - **Appium:** temperamental, and it would replace the evidence layer for little gain. Our Android reader is the same idea Appium uses underneath, without WebDriver.
-- **Maestro:** it waits for the UI to settle, which hid a real race. That race passed 20 of 20 under Maestro on the bug build, while raw taps broke it.
+- **Maestro:** it waits for the UI to settle, which hid a real race (SA-437 passed 20 of 20 under Maestro on the bug build, while raw taps broke it). That race turned out to need a near-instant touch, which soundcheck doesn't chase either (4.3), but settling still hides ordinary timing a person produces.
 - **Detox:** it needs test hooks compiled into the app, so it can't test the shipped build.
 - **`idb_companion`:** breaks with new Xcode releases; AXe already worked.
 - **Playwright for web:** mature, but a Node sidecar, and its auto-waiting is the settling behaviour that hid the race above.
+- **A `stress` tool for device load** (removed 2026-10-21): a hammered device makes any app sluggish, and a test can only confirm that, with no bug behind it to guard. Busy loops on an emulator aren't a slow phone either (memory, GPU, storage, heat). If a load-dependent bug ever turns up: start the loops with `setsid nohup timeout <s> sh -c 'while :; do :; done' &` (plain `&` dies with the adb shell, which is why the first version never loaded anything), return at once so the spec acts under the load, and end leftovers before the health sample so they don't read as a degraded device.
 
 ---
 
@@ -312,7 +312,7 @@ seed: viewer
 starts-on: ["Annotate"] # checked after the seed; a failure is a reset error, not a result
 platforms: [android, ios, web]
 model: sonnet # optional; ask for a stronger model for visual judgement
-tools: [tap-burst] # driver tools beyond the basics, if any
+tools: [double-tap] # driver tools beyond the basics, if any
 past-bugs: [SA-611]
 proven-failing-on: []
 ---

@@ -30,9 +30,8 @@ tools:
   - mcp__plugin_soundcheck_soundcheck__goto
   - mcp__plugin_soundcheck_soundcheck__viewport
   - mcp__plugin_soundcheck_soundcheck__preview_compare
-  - mcp__plugin_soundcheck_soundcheck__tap_burst
+  - mcp__plugin_soundcheck_soundcheck__double_tap
   - mcp__plugin_soundcheck_soundcheck__network_drop
-  - mcp__plugin_soundcheck_soundcheck__stress
 ---
 
 You test one spec on one device, as a careful user would, and report what you saw. Your brief has everything: the goal, the outcomes to judge, how to get there, your spec token and how to post. Follow it.

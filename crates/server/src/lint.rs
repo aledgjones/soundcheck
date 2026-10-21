@@ -127,7 +127,8 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 push(format!("title: {rule}"));
             }
         }
-        if mechanics().any(|t| title.contains(t.name)) {
+        // A double-tap is something the user does, so it may name their goal.
+        if mechanics().any(|t| t.name != "double-tap" && title.contains(t.name)) {
             push("title: no tool names".into());
         }
 

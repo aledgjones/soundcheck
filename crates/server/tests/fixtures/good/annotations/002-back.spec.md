@@ -3,13 +3,13 @@ title: Go back from a score after annotating
 seed: viewer
 starts-on: [Annotate]
 platforms: [android]
-tools: [tap-burst]
+tools: [double-tap]
 model: opus
 ---
 
 ## Goal
 
-Annotate, then go back to the collection quickly several times.
+Annotate, then double-tap back.
 
 ## Outcomes
 
@@ -17,4 +17,4 @@ Annotate, then go back to the collection quickly several times.
 
 ## Pinned
 
-Use `tap-burst back 5 100` after the stroke.
+Use `double-tap back` after the stroke.

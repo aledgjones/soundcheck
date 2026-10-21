@@ -20,6 +20,18 @@ pub enum DriverError {
 
 pub type Result<T> = std::result::Result<T, DriverError>;
 
+/// From one tap's start to the next in a double-tap: a person's rhythm, inside Android's 300 ms window. Nothing
+/// taps faster, since an 80 ms double Undo once left a state no finger could reach (SA-673).
+pub const DOUBLE_TAP_MS: u64 = 150;
+/// How long each touch of a double-tap is held.
+pub const DOUBLE_TAP_HOLD_MS: u64 = 40;
+
+/// A reader input script for a double-tap at one point, in the readers' shared step format.
+pub fn double_tap_script(x: f64, y: f64) -> String {
+    let tap = format!("d {x:.0} {y:.0};w {DOUBLE_TAP_HOLD_MS};u {x:.0} {y:.0}");
+    format!("{tap};w {};{tap}", DOUBLE_TAP_MS - DOUBLE_TAP_HOLD_MS)
+}
+
 /// How the device was doing, sampled after a result: part of the evidence. A slowly degrading emulator once produced
 /// one-off failures that looked like app bugs.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -113,15 +125,12 @@ pub trait Device {
     async fn viewport(&self, _width: u32, _height: u32) -> Result<()> {
         Err(self.unsupported("viewport"))
     }
-    /// Taps timed on the device; the default loop can't hold short intervals across round trips, so readers override it.
-    async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
-        for i in 0..count {
-            if i > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(interval_ms)).await;
-            }
-            self.tap_at(x, y).await?;
-        }
-        Ok(())
+    /// Two taps a person's double-tap apart, timed on the device; the default loop can't hold the gap across round
+    /// trips, so readers override it.
+    async fn double_tap(&self, x: f64, y: f64) -> Result<()> {
+        self.tap_at(x, y).await?;
+        tokio::time::sleep(std::time::Duration::from_millis(DOUBLE_TAP_MS)).await;
+        self.tap_at(x, y).await
     }
     /// Puts (or takes) the device's connections through a proxy `network_drop` can freeze. Called before the app
     /// launches, so its connections go through it; a platform that doesn't need it accepts and does nothing.
@@ -135,9 +144,6 @@ pub trait Device {
     }
     async fn network_drop(&self, _seconds: u64) -> Result<()> {
         Err(self.unsupported("network-drop"))
-    }
-    async fn stress(&self, _load: u32, _seconds: u64) -> Result<()> {
-        Err(self.unsupported("stress"))
     }
 
     /// Samples the device's health, and repairs what it safely can on the spot (lost port forwards).
