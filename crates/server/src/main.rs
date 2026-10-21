@@ -82,6 +82,10 @@ struct RunArgs {
     /// Tester silence between tool calls before its spec counts as stalled.
     #[arg(long, default_value_t = 120)]
     stall_seconds: u64,
+    /// Show web's Chrome in a window to watch the run, rather than headless. Look only: a click or resize in it can
+    /// steer a test.
+    #[arg(long)]
+    headed: bool,
 }
 
 fn main() -> ExitCode {
@@ -142,6 +146,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         label,
         no_open,
         stall_seconds,
+        headed,
     } = args;
     let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
     let suite = suite::load(root);
@@ -247,7 +252,10 @@ fn run_command(args: RunArgs) -> Result<()> {
             }
             _ => None,
         };
-        let hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
+        let mut hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
+        if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
+            only.headed = headed;
+        }
         for problem in hub.read_builds(&platforms).await {
             eprintln!("soundcheck: build identity unknown for {problem}");
         }

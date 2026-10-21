@@ -225,7 +225,7 @@ Nothing in a run may wait for a human:
 
 - **Android:** a persistent reader, an instrumentation APK that holds one `UiAutomation` connection and serves the tree over `adb forward`, plus adb for input. `uiautomator dump` is the fallback. Reads take 10–140 ms against about 3.5 s for `uiautomator dump`.
 - **iOS:** a persistent Swift reader built on AXe's code, which keeps one simulator accessibility session open, plus AXe for touches and typing. `axe describe-ui` is the fallback. About 0.25 s per read, which is the simulator's own floor.
-- **Web:** `chromiumoxide` over the Chrome DevTools protocol, with Chrome's accessibility tree as the element model. It's chosen to keep one binary; we write our own waiting and snapshot code.
+- **Web:** `chromiumoxide` over the Chrome DevTools protocol, with Chrome's accessibility tree as the element model. It's chosen to keep one binary; we write our own waiting and snapshot code. Chrome runs headless; `soundcheck run --headed` shows it in a window to watch (look only: a click or resize can steer a test).
 - **Readers** are built by the soundcheck build (their `build.sh` scripts) and embedded in the binary. The server installs, starts and supervises them:
   - a timeout on every call;
   - a wedged reader is restarted;

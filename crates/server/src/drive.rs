@@ -85,7 +85,7 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
         .config
         .as_ref()
         .and_then(|c| c.platforms.get(&platform));
-    let driver = Driver::new(connect(platform, config).await?);
+    let driver = Driver::new(connect(platform, config, false).await?);
     let d = &driver;
     let matcher = |t: &str| Matcher::parse(t).map_err(|e| anyhow::anyhow!("{t}: {e}"));
     let as_step = |s: Step| async move { Ok::<_, anyhow::Error>(step(d, &s).await?) };

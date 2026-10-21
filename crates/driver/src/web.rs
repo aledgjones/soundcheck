@@ -71,8 +71,10 @@ fn property(node: &AxNode, name: AxPropertyName) -> Option<String> {
 }
 
 impl Web {
-    /// Starts a headless Chrome with a fresh, temporary profile and opens `base_url`.
-    pub async fn launch(base_url: &str, width: u32, height: u32) -> Result<Web> {
+    /// Starts Chrome with a fresh, temporary profile and opens `base_url`: headless, or in a window to watch with
+    /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
+    /// a test, so a watched window is for looking only.
+    pub async fn launch(base_url: &str, width: u32, height: u32, headed: bool) -> Result<Web> {
         let profile = std::env::temp_dir().join(format!(
             "soundcheck-chrome-{}-{}",
             std::process::id(),
@@ -80,11 +82,13 @@ impl Web {
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         ));
-        let config = BrowserConfig::builder()
+        let mut builder = BrowserConfig::builder()
             .user_data_dir(profile)
-            .window_size(width, height)
-            .build()
-            .map_err(device)?;
+            .window_size(width, height);
+        if headed {
+            builder = builder.with_head();
+        }
+        let config = builder.build().map_err(device)?;
         let (browser, mut handler) = Browser::launch(config).await.map_err(device)?;
         let mut tasks = vec![tokio::spawn(async move {
             while handler.next().await.is_some() {}

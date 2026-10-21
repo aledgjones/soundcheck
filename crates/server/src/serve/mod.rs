@@ -53,14 +53,19 @@ fn reader(platform: &str, built: &str) -> Option<PathBuf> {
 }
 
 /// Connects a platform's device the way a run does: web launches its own Chrome against the suite's base-url; Android
-/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id.
-pub async fn connect(platform: Platform, config: Option<&PlatformConfig>) -> Result<AnyDevice> {
+/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id. `headed` shows web's
+/// Chrome in a window to watch.
+pub async fn connect(
+    platform: Platform,
+    config: Option<&PlatformConfig>,
+    headed: bool,
+) -> Result<AnyDevice> {
     Ok(match platform {
         Platform::Web => {
             let base_url = config
                 .and_then(|p| p.base_url.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-            AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800).await?))
+            AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800, headed).await?))
         }
         Platform::Android => {
             let app = config
@@ -96,6 +101,8 @@ pub struct Hub {
     /// A driver per platform, connected on its first device call.
     pub devices: tokio::sync::Mutex<std::collections::HashMap<Platform, Driver<AnyDevice>>>,
     pub stall_ms: u64,
+    /// Web's Chrome in a window to watch, rather than headless.
+    pub headed: bool,
     /// Devices found degraded after a spec, to restart before the next: platform → (spec, reason).
     restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
     /// When each platform's device was last restarted, so a device that stays degraded isn't rebooted in a loop.
@@ -117,6 +124,7 @@ impl Hub {
             devices: tokio::sync::Mutex::new(std::collections::HashMap::new()),
             without_devices: Vec::new(),
             stall_ms,
+            headed: false,
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
         })
@@ -182,7 +190,7 @@ impl Hub {
                 .config
                 .as_ref()
                 .and_then(|c| c.platforms.get(&platform));
-            let device = connect(platform, config).await?;
+            let device = connect(platform, config, self.headed).await?;
             slot.insert(Driver::new(device));
         }
         Ok(op(&devices[&platform]).await?)

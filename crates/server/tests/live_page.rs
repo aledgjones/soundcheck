@@ -73,7 +73,7 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
     .unwrap();
     let url = format!("http://{}", server.addr);
 
-    let web = match Web::launch(&format!("{url}/"), 1200, 900).await {
+    let web = match Web::launch(&format!("{url}/"), 1200, 900, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");

@@ -41,7 +41,7 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
     std::fs::write(&file, PAGE).unwrap();
     let url = format!("file://{}", file.display());
 
-    let web = match Web::launch(&url, 1024, 768).await {
+    let web = match Web::launch(&url, 1024, 768, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -138,7 +138,7 @@ async fn preview_compare_catches_a_save_that_moves() {
     for (offset, should_pass) in [(0, true), (10, false)] {
         let file = dir.join(format!("draw-{offset}.html"));
         std::fs::write(&file, drawing(offset)).unwrap();
-        let web = match Web::launch(&format!("file://{}", file.display()), 800, 600).await {
+        let web = match Web::launch(&format!("file://{}", file.display()), 800, 600, false).await {
             Ok(web) => web,
             Err(e) => {
                 eprintln!("skipping: Chrome didn't start ({e})");
@@ -174,4 +174,32 @@ async fn preview_compare_catches_a_save_that_moves() {
         }
         driver.device.close().await;
     }
+}
+
+/// Opens a visible Chrome window for a moment: run by hand with `--ignored`.
+#[tokio::test]
+#[ignore]
+async fn headed_chrome_runs_without_headless() {
+    let web = Web::launch("about:blank", 800, 600, true).await.unwrap();
+    let ps = std::process::Command::new("ps")
+        .args(["-ax", "-o", "args"])
+        .output()
+        .unwrap();
+    let ours: Vec<String> = String::from_utf8_lossy(&ps.stdout)
+        .lines()
+        .filter(|l| {
+            l.contains("Chrome")
+                && l.contains("--user-data-dir=")
+                && l.contains("soundcheck-chrome-")
+        })
+        .filter(|l| !l.contains(" -c "))
+        .map(str::to_string)
+        .collect();
+    assert!(!ours.is_empty(), "no Chrome with soundcheck's profile");
+    assert!(
+        ours.iter().all(|l| !l.contains("--headless")),
+        "{} of our Chrome processes run headless",
+        ours.iter().filter(|l| l.contains("--headless")).count()
+    );
+    drop(web);
 }
