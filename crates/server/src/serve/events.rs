@@ -49,6 +49,15 @@ pub fn summary(entry: &Entry) -> String {
             Some(title) => format!("side find {id} is a finding: {title}"),
             None => format!("side find {id} isn't a problem"),
         },
+        Event::EvidenceCaptured {
+            spec,
+            platform,
+            files,
+            ..
+        } => format!(
+            "evidence saved for {spec} on {platform}: {}",
+            files.join(", ")
+        ),
         Event::Stalled { token, reason } => format!("{token} stalled: {reason}; queued again"),
         Event::ResetFailed {
             spec,

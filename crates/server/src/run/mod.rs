@@ -75,6 +75,8 @@ pub struct RowRecord {
     pub verifying: bool,
     /// The coordinator's call on the latest attempt, with its reason.
     pub review: Option<(Call, String)>,
+    /// Evidence the server saved for the latest attempt.
+    pub captured: Vec<String>,
 }
 
 /// A side find waiting for the coordinator.
@@ -402,6 +404,33 @@ impl Run {
                 id,
                 title,
                 reason: reason.into(),
+            },
+        )
+    }
+
+    /// Records the evidence the server saved for an attempt's non-pass.
+    pub fn evidence_captured(
+        &mut self,
+        now: u64,
+        spec: &str,
+        platform: Platform,
+        attempt: u32,
+        files: Vec<String>,
+    ) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let record = self.record(spec, platform)?;
+        if record.attempts != attempt {
+            bail!("{spec} on {platform} has moved on from attempt {attempt}");
+        }
+        self.commit(
+            now,
+            Event::EvidenceCaptured {
+                spec: spec.into(),
+                platform,
+                attempt,
+                files,
             },
         )
     }
@@ -743,6 +772,7 @@ impl State {
                         posted: None,
                         verifying: false,
                         review: None,
+                        captured: Vec::new(),
                     },
                 );
             }
@@ -794,6 +824,7 @@ impl State {
                     r.posted = None;
                     r.verifying = verify.is_some();
                     r.review = None;
+                    r.captured.clear();
                     r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
@@ -1090,6 +1121,18 @@ impl State {
                     platform: *platform,
                     text: format!("rerun on {}: {}", build.label(), rerun.reason),
                 }));
+            }
+            Event::EvidenceCaptured {
+                spec,
+                platform,
+                attempt,
+                files,
+            } => {
+                if let Some(r) = self.rows.get_mut(&(spec.clone(), *platform))
+                    && r.attempts == *attempt
+                {
+                    r.captured.extend(files.iter().cloned());
+                }
             }
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,

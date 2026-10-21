@@ -591,7 +591,7 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
             }
         );
         out.push_str(&outcomes(spec, posted, r, in_block));
-        out.push_str(&evidence(page, posted));
+        out.push_str(&evidence(page, posted, &r.captured));
     }
     out
 }
@@ -659,13 +659,15 @@ fn image(page: &Page, name: &str) -> Option<String> {
     }
 }
 
-fn evidence(page: &Page, posted: &Posted) -> String {
-    let shots: Vec<&String> = posted
+fn evidence(page: &Page, posted: &Posted, captured: &[String]) -> String {
+    let mut shots: Vec<&String> = posted
         .judgments
         .iter()
         .flat_map(|j| j.evidence.iter())
         .collect();
-    if shots.is_empty() && posted.notes.is_none() {
+    shots.extend(captured.iter().filter(|f| f.ends_with(".png")));
+    let texts: Vec<&String> = captured.iter().filter(|f| f.ends_with(".txt")).collect();
+    if shots.is_empty() && texts.is_empty() && posted.notes.is_none() {
         return String::new();
     }
     let mut out =
@@ -687,6 +689,36 @@ fn evidence(page: &Page, posted: &Posted) -> String {
             }
         }
         out.push_str("</div>");
+    }
+    for t in texts {
+        let label = if t.ends_with("-tree.txt") {
+            "Element tree"
+        } else if t.ends_with("-errors.txt") {
+            "Errors"
+        } else {
+            t.as_str()
+        };
+        match (page.export.is_some(), page.run_dir) {
+            // An export carries the text itself, so it stays one self-contained file.
+            (true, Some(dir)) if safe_name(t) => {
+                let text =
+                    std::fs::read_to_string(dir.join(EVIDENCE_DIR).join(t)).unwrap_or_default();
+                let text: String = text.chars().take(20_000).collect();
+                let _ = write!(
+                    out,
+                    "<details class=\"fold\"><summary>{label}</summary><pre class=\"evidence-text\">{}</pre></details>",
+                    esc(&text)
+                );
+            }
+            (false, Some(_)) if safe_name(t) => {
+                let _ = write!(
+                    out,
+                    "<p><a href=\"files/{EVIDENCE_DIR}/{}\" target=\"_blank\" rel=\"noopener\">{label}</a></p>",
+                    esc(t)
+                );
+            }
+            _ => {}
+        }
     }
     if let Some(notes) = &posted.notes {
         let _ = write!(out, "<p>{}</p>", esc(notes));

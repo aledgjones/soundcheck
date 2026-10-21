@@ -1,6 +1,6 @@
 use super::{Hub, prompt};
 use crate::report;
-use crate::run::model::{Build, Call, Decision, Judgment, Posted, Rerun, SideFind};
+use crate::run::model::{Build, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -248,10 +248,26 @@ impl Tools {
             side_finds: p.side_finds,
             notes: p.notes,
         };
-        reply(self.hub.with_run(|run, now| {
+        let posted = self.hub.with_run(|run, now| {
+            let (spec, platform) = run.running(&p.token)?;
+            let attempt = run.row(&spec, platform).map_or(0, |r| r.attempts);
             let claim = run.post(now, &p.token, posted)?;
-            Ok(json!({ "claim": claim, "next": "you're done: stop here" }))
-        }))
+            Ok((claim, spec, platform, attempt))
+        });
+        let (claim, spec, platform, attempt) = match posted {
+            Ok(posted) => posted,
+            Err(e) => return reply(Err(e)),
+        };
+        // Save the evidence now: the next spec's seed wipes the device, and review comes later.
+        if claim != Claim::Pass {
+            let files = self.hub.capture(&spec, platform, attempt).await;
+            let _ = self
+                .hub
+                .with_run(|run, now| run.evidence_captured(now, &spec, platform, attempt, files));
+        }
+        reply(Ok(
+            json!({ "claim": claim, "next": "you're done: stop here" }),
+        ))
     }
 
     #[tool(

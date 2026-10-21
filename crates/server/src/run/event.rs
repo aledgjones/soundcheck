@@ -34,6 +34,13 @@ pub enum Event {
         title: Option<String>,
         reason: String,
     },
+    /// What the server saved itself when a non-pass was posted, before the next seed could wipe it.
+    EvidenceCaptured {
+        spec: String,
+        platform: Platform,
+        attempt: u32,
+        files: Vec<String>,
+    },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.
     Stalled {
         token: String,

@@ -164,6 +164,55 @@ impl Hub {
         Err(last)
     }
 
+    /// Saves what the device shows now for an attempt's non-pass: a screenshot, the element tree and the errors.
+    /// Returns the file names it managed; a platform without a driver yet saves nothing.
+    pub async fn capture(&self, spec: &str, platform: Platform, attempt: u32) -> Vec<String> {
+        if platform != Platform::Web {
+            return Vec::new();
+        }
+        let dir = self.run_dir.join(report::EVIDENCE_DIR);
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        let base = format!("{}-{attempt}-{platform}", spec.replace('/', "-"));
+        let names = [
+            format!("{base}-screen.png"),
+            format!("{base}-tree.txt"),
+            format!("{base}-errors.txt"),
+        ];
+        let saved = self
+            .on_device(platform, async |d| {
+                let mut saved = Vec::new();
+                if d.device.screenshot(&dir.join(&names[0])).await.is_ok() {
+                    saved.push(names[0].clone());
+                }
+                if let Ok(tree) = d.see(None, true).await {
+                    let lines: Vec<String> = tree
+                        .iter()
+                        .map(|e| {
+                            let (x, y) = e.tap_point();
+                            format!("{x:.0},{y:.0}\t{}", e.line())
+                        })
+                        .collect();
+                    if std::fs::write(dir.join(&names[1]), lines.join("\n")).is_ok() {
+                        saved.push(names[1].clone());
+                    }
+                }
+                let errors = d.device.errors().await.unwrap_or_default();
+                let text = if errors.is_empty() {
+                    "No errors since launch.".to_string()
+                } else {
+                    errors.join("\n")
+                };
+                if std::fs::write(dir.join(&names[2]), text).is_ok() {
+                    saved.push(names[2].clone());
+                }
+                Ok(saved)
+            })
+            .await;
+        saved.unwrap_or_default()
+    }
+
     /// Writes the self-contained copy of the report into the run's folder and returns its path.
     pub fn export(&self, run: &Run, now: u64) -> Result<PathBuf> {
         let finished = run.state().finished;

@@ -278,11 +278,29 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         "post_result",
         json!({ "token": token, "judgments": [
             { "outcome": 0, "answer": "held", "observed": "Saved showed.", "evidence": ["saved.png"] },
-            { "outcome": 1, "answer": "held", "observed": "Fine." }
+            { "outcome": 1, "answer": "failed", "observed": "Redo stayed greyed out." }
         ]}),
     )
     .await;
-    assert_eq!(posted["claim"], "PASS");
+    assert_eq!(posted["claim"], "FAIL");
+    // The server saved its own evidence at once, before any review or reseed.
+    let evidence = run_dir.join("evidence");
+    assert!(
+        evidence
+            .join("annotations-001-draw-1-web-screen.png")
+            .exists()
+    );
+    let tree =
+        std::fs::read_to_string(evidence.join("annotations-001-draw-1-web-tree.txt")).unwrap();
+    assert!(
+        tree.contains("Annotate") && tree.contains("Saved"),
+        "{tree}"
+    );
+    assert!(
+        evidence
+            .join("annotations-001-draw-1-web-errors.txt")
+            .exists()
+    );
     let html = reqwest::get(format!("{url}/"))
         .await
         .unwrap()
@@ -292,6 +310,10 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     assert!(
         html.contains("src=\"files/evidence/saved.png\""),
         "the page shows the screenshot"
+    );
+    assert!(
+        html.contains("files/evidence/annotations-001-draw-1-web-tree.txt"),
+        "and links the tree"
     );
 
     // Android's driver isn't in soundcheck yet: it says so rather than pretending.
