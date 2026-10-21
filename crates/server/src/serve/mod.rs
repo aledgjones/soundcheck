@@ -4,6 +4,7 @@ pub mod events;
 pub mod prompt;
 pub mod tools;
 
+use crate::report;
 use crate::run::Run;
 use crate::run::journal::Entry;
 use crate::suite::Suite;
@@ -32,16 +33,19 @@ pub fn now_ms() -> u64 {
 
 pub struct Hub {
     pub suite: Suite,
+    /// The release under test, shown as the page's title.
+    pub label: String,
     run: Mutex<Run>,
     events: broadcast::Sender<Entry>,
     pub stall_ms: u64,
 }
 
 impl Hub {
-    pub fn new(suite: Suite, run: Run, stall_ms: u64) -> Arc<Hub> {
+    pub fn new(suite: Suite, run: Run, label: String, stall_ms: u64) -> Arc<Hub> {
         let (events, _) = broadcast::channel(1024);
         Arc::new(Hub {
             suite,
+            label,
             run: Mutex::new(run),
             events,
             stall_ms,
@@ -96,6 +100,8 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     let app = axum::Router::new()
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
+        .route("/", get(page))
+        .route("/fragment", get(fragment))
         .layer(middleware::from_fn_with_state(addr.port(), local_only))
         .with_state(hub.clone());
 
@@ -149,6 +155,34 @@ fn is_local(port: u16, headers: &axum::http::HeaderMap) -> bool {
     let origin_ok = header(header::ORIGIN)
         .is_none_or(|origin| ours.iter().any(|o| origin == format!("http://{o}")));
     host_ok && origin_ok
+}
+
+async fn page(State(hub): State<Arc<Hub>>) -> Response {
+    let html = hub
+        .with_run(|run, _| {
+            Ok(report::document(&report::Page {
+                suite: &hub.suite,
+                run,
+                label: &hub.label,
+                live: true,
+            }))
+        })
+        .unwrap_or_default();
+    axum::response::Html(html).into_response()
+}
+
+async fn fragment(State(hub): State<Arc<Hub>>) -> Response {
+    let html = hub
+        .with_run(|run, _| {
+            Ok(report::content(&report::Page {
+                suite: &hub.suite,
+                run,
+                label: &hub.label,
+                live: true,
+            }))
+        })
+        .unwrap_or_default();
+    axum::response::Html(html).into_response()
 }
 
 #[derive(Deserialize)]

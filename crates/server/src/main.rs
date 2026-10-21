@@ -32,6 +32,12 @@ enum Command {
         resume: Option<PathBuf>,
         #[arg(long, default_value_t = 7357)]
         port: u16,
+        /// The release under test, shown as the page's title, e.g. "v2.16.2 · candidate".
+        #[arg(long)]
+        label: Option<String>,
+        /// Don't open the live page in the browser when the run starts.
+        #[arg(long)]
+        no_open: bool,
         /// Tester silence between tool calls before its spec counts as stalled.
         #[arg(long, default_value_t = 120)]
         stall_seconds: u64,
@@ -54,8 +60,18 @@ fn main() -> ExitCode {
             platforms,
             resume,
             port,
+            label,
+            no_open,
             stall_seconds,
-        } => run_command(&suite, platforms, resume, port, stall_seconds),
+        } => run_command(
+            &suite,
+            platforms,
+            resume,
+            port,
+            label,
+            !no_open,
+            stall_seconds,
+        ),
         Command::Events { run, after } => events_command(&run, after),
     };
     match result {
@@ -91,6 +107,8 @@ fn run_command(
     platforms: Vec<Platform>,
     resume: Option<PathBuf>,
     port: u16,
+    label: Option<String>,
+    open_page: bool,
     stall_seconds: u64,
 ) -> Result<()> {
     let suite = suite::load(root);
@@ -149,9 +167,13 @@ fn run_command(
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms())?;
     let stall_ms = stall_seconds * 1000;
 
+    let label = label.unwrap_or_else(|| {
+        root.file_name()
+            .map_or_else(|| "regression".into(), |n| n.to_string_lossy().into_owned())
+    });
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let hub = serve::Hub::new(suite, run, stall_ms);
+        let hub = serve::Hub::new(suite, run, label, stall_ms);
         let server = serve::start(hub, port).await?;
         let url = format!("http://{}", server.addr);
         let info = serde_json::json!({
@@ -164,7 +186,12 @@ fn run_command(
             serde_json::to_string_pretty(&info)?,
         )?;
         println!("soundcheck {VERSION}: run in {}", run_dir.display());
-        println!("MCP at {url}/mcp");
+        println!("MCP at {url}/mcp; the live page is at {url}/");
+        if open_page {
+            let _ = std::process::Command::new("open")
+                .arg(format!("{url}/"))
+                .spawn();
+        }
         tokio::signal::ctrl_c().await?;
         server.shutdown.cancel();
         let _ = server.handle.await;

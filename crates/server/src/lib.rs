@@ -1,4 +1,5 @@
 pub mod lint;
+pub mod report;
 pub mod run;
 pub mod serve;
 pub mod suite;

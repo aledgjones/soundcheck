@@ -67,6 +67,14 @@ pub struct RowRecord {
     pub sightings: u32,
     /// The build the latest attempt ran on. Internal tracking: the report's notes show it, rows don't.
     pub build: Option<Build>,
+    /// When the latest attempt was dispatched.
+    pub dispatched_at: Option<u64>,
+    /// What the latest attempt posted, kept after filing so the page can show what each outcome rested on.
+    pub posted: Option<Posted>,
+    /// Whether the latest attempt was a verification.
+    pub verifying: bool,
+    /// The coordinator's call on the latest attempt, with its reason.
+    pub review: Option<(Call, String)>,
 }
 
 /// A side find waiting for the coordinator.
@@ -723,6 +731,10 @@ impl State {
                         budget: 0,
                         sightings: 0,
                         build: None,
+                        dispatched_at: None,
+                        posted: None,
+                        verifying: false,
+                        review: None,
                     },
                 );
             }
@@ -770,6 +782,10 @@ impl State {
                 if let Some(r) = self.rows.get_mut(&(spec.clone(), *platform)) {
                     r.attempts = *attempt;
                     r.budget += 1;
+                    r.dispatched_at = Some(entry.at);
+                    r.posted = None;
+                    r.verifying = verify.is_some();
+                    r.review = None;
                     r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
@@ -798,6 +814,9 @@ impl State {
                         attempt,
                         find: find.clone(),
                     });
+                }
+                if let Some(r) = self.rows.get_mut(&key) {
+                    r.posted = Some(posted.clone());
                 }
                 let claim = posted.claim();
                 if claim == Claim::Pass {
@@ -960,7 +979,9 @@ impl State {
                         status: Status::Open,
                     });
                 }
-                self.rows.get_mut(&key).unwrap().row = row;
+                let r = self.rows.get_mut(&key).unwrap();
+                r.row = row;
+                r.review = Some((call.clone(), reason.clone()));
             }
             Event::FindReviewed { id, title, reason } => {
                 let Some(pos) = self.pending_finds.iter().position(|f| f.id == *id) else {

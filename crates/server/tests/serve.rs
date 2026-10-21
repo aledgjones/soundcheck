@@ -32,7 +32,7 @@ async fn server() -> (serve::Server, String) {
     let dir = std::env::temp_dir().join(format!("soundcheck-serve-{}-{nanos}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(Hub::new(suite, run, 120_000), 0)
+    let server = serve::start(Hub::new(suite, run, "v0.0.0 · test".into(), 120_000), 0)
         .await
         .unwrap();
     let url = format!("http://{}", server.addr);
