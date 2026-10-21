@@ -1,6 +1,9 @@
+use crate::compare::{Comparison, Image, PixelBox, changed_box, colour_box};
 use crate::device::{Device, DriverError, Result};
 use crate::element::Element;
+use crate::element::Rect;
 use crate::matcher::Matcher;
+use std::path::Path;
 use std::time::Duration;
 use tokio::time::{Instant, sleep};
 
@@ -22,6 +25,18 @@ fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> 
         )));
     }
     Ok(())
+}
+
+/// What [`Driver::preview_compare`] places and how it compares.
+#[derive(Debug, Clone)]
+pub struct CompareRequest {
+    pub from: (f64, f64),
+    pub to: Option<(f64, f64)>,
+    pub commit: Option<Matcher>,
+    pub colour: Option<[u8; 3]>,
+    pub region: Option<Rect>,
+    /// Screenshot pixels an edge may differ by: antialiasing moves a pixel, a real offset more.
+    pub tolerance: i64,
 }
 
 /// One assertion's outcome from [`Driver::check`].
@@ -182,6 +197,87 @@ impl<D: Device> Driver<D> {
         within("stress's load", load.into(), 1, 100, "a percentage")?;
         within("stress", seconds, 1, STRESS_MAX_S, "seconds")?;
         self.device.stress(load, seconds).await
+    }
+
+    /// Places with a held touch from `from` (to `to` for a line or stroke), screenshots the preview while held,
+    /// releases, screenshots what was saved, and compares the two inside a region around the touch, so a magnifier
+    /// above it stays out. With `commit`, nothing is held: the preview is what's on screen now, and tapping `commit`
+    /// saves it (a text box's Done); `region` then bounds the comparison. With `colour`, only pixels near that colour
+    /// count, for text on a tinted box. Screenshots are written to `dir` as `<name>-before|preview|saved.png`.
+    pub async fn preview_compare(
+        &self,
+        req: &CompareRequest,
+        dir: &Path,
+        name: &str,
+    ) -> Result<Comparison> {
+        let file = |stage: &str| dir.join(format!("{name}-{stage}.png"));
+        std::fs::create_dir_all(dir).map_err(|e| DriverError::Device(e.to_string()))?;
+        self.device.screenshot(&file("before")).await?;
+        let before = Image::load(&file("before"))?;
+        let (units_w, _) = self.device.screen_size().await?;
+        let scale = before.width as f64 / units_w;
+        let pad = 40.0 * self.device.density().await;
+        let to = req.to.unwrap_or(req.from);
+        let region_units = match (&req.commit, req.region) {
+            (_, Some(r)) => r,
+            (None, None) => Rect {
+                x: req.from.0.min(to.0) - pad,
+                y: req.from.1.min(to.1) - pad,
+                width: (req.from.0 - to.0).abs() + 2.0 * pad,
+                height: (req.from.1 - to.1).abs() + 2.0 * pad,
+            },
+            (Some(_), None) => Rect {
+                x: 0.0,
+                y: 0.0,
+                width: units_w,
+                height: before.height as f64 / scale,
+            },
+        };
+        match &req.commit {
+            None => {
+                self.device.touch_down(req.from.0, req.from.1).await?;
+                sleep(Duration::from_millis(300)).await;
+                let steps = (((to.0 - req.from.0).hypot(to.1 - req.from.1)) / 20.0)
+                    .ceil()
+                    .max(1.0) as u32;
+                for i in 1..=steps {
+                    let t = f64::from(i) / f64::from(steps);
+                    self.device
+                        .touch_move(
+                            req.from.0 + (to.0 - req.from.0) * t,
+                            req.from.1 + (to.1 - req.from.1) * t,
+                        )
+                        .await?;
+                }
+                sleep(Duration::from_millis(600)).await;
+                self.device.screenshot(&file("preview")).await?;
+                self.device.touch_up(to.0, to.1).await?;
+            }
+            Some(commit) => {
+                self.device.screenshot(&file("preview")).await?;
+                self.tap(commit, false).await?;
+            }
+        }
+        sleep(Duration::from_millis(1500)).await;
+        self.device.screenshot(&file("saved")).await?;
+        let (preview, saved) = (Image::load(&file("preview"))?, Image::load(&file("saved"))?);
+        let region = PixelBox {
+            x: (region_units.x * scale).round() as i64,
+            y: (region_units.y * scale).round() as i64,
+            w: (region_units.width * scale).round() as i64,
+            h: (region_units.height * scale).round() as i64,
+        };
+        let (p, s) = match req.colour {
+            Some(c) => (
+                colour_box(&preview, region, c),
+                colour_box(&saved, region, c),
+            ),
+            None => (
+                changed_box(&before, &preview, region),
+                changed_box(&before, &saved, region),
+            ),
+        };
+        Ok(Comparison::new(p, s, req.tolerance))
     }
 
     async fn find(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {

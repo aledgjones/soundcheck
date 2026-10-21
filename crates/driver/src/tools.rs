@@ -90,6 +90,11 @@ pub const TOOLS: &[Tool] = &[
         "tap an element N times, M ms apart, for races",
     ),
     mechanic(
+        "preview-compare",
+        ALL,
+        "place with a held touch, screenshot the preview, release, and compare where it was saved",
+    ),
+    mechanic(
         "network-drop",
         &[Platform::Android, Platform::Web],
         "cut the network for N seconds, then restore it",

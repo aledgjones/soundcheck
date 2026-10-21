@@ -445,6 +445,34 @@ impl Device for Web {
         self.key(key, code).await
     }
 
+    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
+            .await?;
+        self.mouse(DispatchMouseEventType::MousePressed, x, y, true)
+            .await
+    }
+
+    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseMoved, x, y, true)
+            .await
+    }
+
+    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseReleased, x, y, false)
+            .await
+    }
+
+    async fn screen_size(&self) -> Result<(f64, f64)> {
+        let size: Vec<f64> = self
+            .page
+            .evaluate("[innerWidth, innerHeight]")
+            .await
+            .map_err(device)?
+            .into_value()
+            .map_err(device)?;
+        Ok((size[0], size[1]))
+    }
+
     async fn hover_at(&self, x: f64, y: f64) -> Result<()> {
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)

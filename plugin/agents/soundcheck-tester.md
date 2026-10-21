@@ -29,6 +29,7 @@ tools:
   - mcp__plugin_soundcheck_soundcheck__hover
   - mcp__plugin_soundcheck_soundcheck__goto
   - mcp__plugin_soundcheck_soundcheck__viewport
+  - mcp__plugin_soundcheck_soundcheck__preview_compare
   - mcp__plugin_soundcheck_soundcheck__tap_burst
   - mcp__plugin_soundcheck_soundcheck__network_drop
   - mcp__plugin_soundcheck_soundcheck__stress

@@ -109,3 +109,69 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
 
     driver.device.close().await;
 }
+
+/// A drawing page: dragging shows a red preview line on an overlay; releasing saves it, `offset` pixels lower.
+fn drawing(offset: u32) -> String {
+    format!(
+        r#"<!doctype html><body style="margin:0;background:#fff">
+<canvas id="page" width="600" height="400" style="position:absolute;left:0;top:0"></canvas>
+<canvas id="preview" width="600" height="400" style="position:absolute;left:0;top:0"></canvas>
+<script>
+  const page = document.getElementById('page').getContext('2d');
+  const preview = document.getElementById('preview').getContext('2d');
+  let start = null, end = null;
+  const line = (ctx, a, b, dy) => {{ ctx.strokeStyle = '#000'; ctx.lineWidth = 4; ctx.beginPath();
+    ctx.moveTo(a[0], a[1] + dy); ctx.lineTo(b[0], b[1] + dy); ctx.stroke(); }};
+  addEventListener('mousedown', (e) => {{ start = end = [e.clientX, e.clientY]; }});
+  addEventListener('mousemove', (e) => {{ if (!start) return; end = [e.clientX, e.clientY];
+    preview.clearRect(0, 0, 600, 400); line(preview, start, end, 0); }});
+  addEventListener('mouseup', () => {{ preview.clearRect(0, 0, 600, 400); line(page, start, end, {offset}); start = null; }});
+</script></body>"#
+    )
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn preview_compare_catches_a_save_that_moves() {
+    use soundcheck_driver::ops::CompareRequest;
+    let dir = std::env::temp_dir().join(format!("soundcheck-compare-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    for (offset, should_pass) in [(0, true), (10, false)] {
+        let file = dir.join(format!("draw-{offset}.html"));
+        std::fs::write(&file, drawing(offset)).unwrap();
+        let web = match Web::launch(&format!("file://{}", file.display()), 800, 600).await {
+            Ok(web) => web,
+            Err(e) => {
+                eprintln!("skipping: Chrome didn't start ({e})");
+                return;
+            }
+        };
+        let driver = Driver::new(web);
+        let request = CompareRequest {
+            from: (100.0, 200.0),
+            to: Some((300.0, 200.0)),
+            commit: None,
+            colour: None,
+            region: None,
+            tolerance: 2,
+        };
+        let result = driver
+            .preview_compare(&request, &dir, &format!("line-{offset}"))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.passed,
+            should_pass,
+            "offset {offset}: {}",
+            result.summary()
+        );
+        if !should_pass {
+            assert_eq!(
+                result.offsets.map(|o| o[1]),
+                Some(10),
+                "{}",
+                result.summary()
+            );
+        }
+        driver.device.close().await;
+    }
+}

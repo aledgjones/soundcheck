@@ -227,6 +227,23 @@ pub struct CheckDataParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct PreviewCompareParams {
+    pub token: String,
+    /// A name for this placement; its screenshots are saved as evidence under it.
+    pub name: String,
+    /// Where the touch starts (a symbol or a dot), in screen coordinates.
+    pub from: Option<[f64; 2]>,
+    /// Where a line or stroke ends; keep it level with `from` so the magnifier stays out.
+    pub to: Option<[f64; 2]>,
+    /// Instead of a held touch: the control that saves what's on screen (a text box's `Done`).
+    pub commit: Option<String>,
+    /// Only pixels near this colour count, e.g. `#FF3B30` for red text on a tinted box.
+    pub colour: Option<String>,
+    /// The area to compare, `[x, y, width, height]` in screen coordinates (needed with `commit`).
+    pub region: Option<[f64; 4]>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BatchParams {
     pub token: String,
     /// Steps in order; the batch stops at the first that fails.
@@ -976,6 +993,56 @@ impl Tools {
                 }
             }
             Ok(done)
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: is a placement saved where its preview showed it? Holds a touch from `from` (to `to`), screenshots the preview, releases, screenshots the saved result and compares them; or, with `commit`, saves what's on screen by tapping it. Returns PASSED or FAILED with each edge's offset, and the screenshot names to attach as evidence."
+    )]
+    async fn preview_compare(
+        &self,
+        Parameters(p): Parameters<PreviewCompareParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        self.device(&p.token, async |d| {
+            if !report::safe_name(&p.name) {
+                return Err(DriverError::Invalid(
+                    "name: letters, digits, - and _ only".into(),
+                ));
+            }
+            let from = match (p.from, &p.commit) {
+                (Some([x, y]), _) => (x, y),
+                (None, Some(_)) => (0.0, 0.0),
+                (None, None) => {
+                    return Err(DriverError::Invalid(
+                        "give `from`, or `commit` with a `region`".into(),
+                    ));
+                }
+            };
+            let request = soundcheck_driver::ops::CompareRequest {
+                from,
+                to: p.to.map(|[x, y]| (x, y)),
+                commit: p.commit.as_deref().map(matcher).transpose()?,
+                colour: p
+                    .colour
+                    .as_deref()
+                    .map(soundcheck_driver::compare::parse_colour)
+                    .transpose()?,
+                region: p.region.map(|[x, y, w, h]| soundcheck_driver::Rect {
+                    x,
+                    y,
+                    width: w,
+                    height: h,
+                }),
+                tolerance: 2,
+            };
+            let result = d.preview_compare(&request, &dir, &p.name).await?;
+            Ok(json!({
+                "result": result.summary(),
+                "passed": result.passed,
+                "evidence": [format!("{}-preview.png", p.name), format!("{}-saved.png", p.name)],
+            }))
         })
         .await
     }

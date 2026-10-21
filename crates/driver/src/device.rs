@@ -46,6 +46,25 @@ pub trait Device {
         Err(self.unsupported("push"))
     }
 
+    /// A touch that stays down until `touch_up`, for gestures that must be watched mid-way.
+    async fn touch_down(&self, _x: f64, _y: f64) -> Result<()> {
+        Err(self.unsupported("preview-compare"))
+    }
+    async fn touch_move(&self, _x: f64, _y: f64) -> Result<()> {
+        Err(self.unsupported("preview-compare"))
+    }
+    async fn touch_up(&self, _x: f64, _y: f64) -> Result<()> {
+        Err(self.unsupported("preview-compare"))
+    }
+    /// The screen's size in the units coordinates use, so a screenshot's pixels can be mapped to them.
+    async fn screen_size(&self) -> Result<(f64, f64)> {
+        Err(self.unsupported("preview-compare"))
+    }
+    /// Coordinate units per density-independent point: Android's input is in pixels, iOS and web in points.
+    async fn density(&self) -> f64 {
+        1.0
+    }
+
     /// Presses a hardware key by its web name (`ArrowRight`, `Enter`, `Escape`, `Home`…), as a keyboard or pedal would.
     async fn press(&self, _key: &str) -> Result<()> {
         Err(self.unsupported("press"))
