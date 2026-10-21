@@ -186,7 +186,10 @@ impl Hub {
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if platform != Platform::Ios && !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
+                    let intercept = spec.front.tools.iter().any(|t| t == "network-drop");
                     self.on_device(platform, async |d| {
+                        // Before the launch, so the app's connections go through the proxy that can freeze them.
+                        d.device.intercept_network(intercept).await?;
                         Device::launch(&d.device).await?;
                         for label in &starts_on {
                             let m = Matcher::parse(label)

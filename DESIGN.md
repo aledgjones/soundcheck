@@ -201,6 +201,7 @@ Nothing in a run may wait for a human:
 - **Tools for mechanics an agent can't do one call at a time:**
   - `tap-burst <target> <count> <interval-ms>` for races;
   - `network-drop <seconds>`, with the app in the background;
+    on Android, a spec listing `network-drop` launches with its `adb reverse` forwards through a proxy that freezes them: nothing passes and nothing closes, as when a phone loses the network in the background. Connections open during the drop stay frozen; new ones get through after it;
   - `stress <load> <seconds>`;
   - timed `drag`, `hold` and `swipe`.
 - **Units:** milliseconds everywhere, and absurd values are rejected (an agent once passed ms to a seconds argument and waited 16 hours).

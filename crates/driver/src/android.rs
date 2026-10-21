@@ -25,6 +25,111 @@ pub struct Android {
     serial: String,
     package: String,
     reader_apk: Option<PathBuf>,
+    /// The freezing proxies in the `adb reverse` path while a spec may drop the network.
+    proxies: tokio::sync::Mutex<Option<Proxies>>,
+}
+
+/// A proxy listens on the forwarded host port plus this, so a forward left pointing at one can always be restored.
+const PROXY_OFFSET: u16 = 20_000;
+
+/// TCP proxies for `adb reverse` forwards that can freeze the network the way a phone loses it in the background:
+/// no bytes pass and nothing closes, so the app never learns the connection is dead. Frozen sockets stay frozen.
+struct Proxies {
+    /// (device port, host port)
+    forwards: Vec<(u16, u16)>,
+    dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    live: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<std::sync::atomic::AtomicBool>>>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
+}
+
+/// Copies one direction of a proxied connection until it closes, passing nothing while frozen.
+async fn pipe(
+    mut from: tokio::net::tcp::OwnedReadHalf,
+    mut to: tokio::net::tcp::OwnedWriteHalf,
+    frozen: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        match from.read(&mut buf).await {
+            Ok(0) | Err(_) => {
+                // A frozen connection never closes, so the far side doesn't learn either.
+                if frozen.load(Ordering::SeqCst) {
+                    std::future::pending::<()>().await;
+                }
+                let _ = to.shutdown().await;
+                return;
+            }
+            Ok(n) => {
+                if !frozen.load(Ordering::SeqCst) && to.write_all(&buf[..n]).await.is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+impl Proxies {
+    async fn start(forwards: Vec<(u16, u16)>) -> std::io::Result<Proxies> {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let dropped = Arc::new(AtomicBool::new(false));
+        let live: Arc<std::sync::Mutex<Vec<Arc<AtomicBool>>>> = Arc::default();
+        let mut tasks = Vec::new();
+        for &(_, host) in &forwards {
+            let listener =
+                tokio::net::TcpListener::bind(("127.0.0.1", host + PROXY_OFFSET)).await?;
+            let (dropped, live) = (dropped.clone(), live.clone());
+            tasks.push(tokio::spawn(async move {
+                while let Ok((client, _)) = listener.accept().await {
+                    let frozen = Arc::new(AtomicBool::new(dropped.load(Ordering::SeqCst)));
+                    live.lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(frozen.clone());
+                    tokio::spawn(async move {
+                        let Ok(upstream) =
+                            tokio::net::TcpStream::connect(("127.0.0.1", host)).await
+                        else {
+                            return;
+                        };
+                        let (cr, cw) = client.into_split();
+                        let (ur, uw) = upstream.into_split();
+                        let up = pipe(cr, uw, frozen.clone());
+                        let down = pipe(ur, cw, frozen);
+                        tokio::join!(up, down);
+                    });
+                }
+            }));
+        }
+        Ok(Proxies {
+            forwards,
+            dropped,
+            live,
+            tasks,
+        })
+    }
+
+    fn drop_network(&self) {
+        use std::sync::atomic::Ordering;
+        self.dropped.store(true, Ordering::SeqCst);
+        for conn in self.live.lock().unwrap_or_else(|e| e.into_inner()).iter() {
+            conn.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn restore_network(&self) {
+        self.dropped
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Drop for Proxies {
+    fn drop(&mut self) {
+        for t in &self.tasks {
+            t.abort();
+        }
+    }
 }
 
 fn device(e: impl std::fmt::Display) -> DriverError {
@@ -164,12 +269,16 @@ impl Android {
                 "{serial} isn't an emulator; soundcheck drives emulators only"
             )));
         }
-        Ok(Android {
+        let android = Android {
             adb,
             serial,
             package: package.into(),
             reader_apk,
-        })
+            proxies: tokio::sync::Mutex::new(None),
+        };
+        // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
+        android.restore_forwards().await?;
+        Ok(android)
     }
 
     async fn adb(&self, args: &[&str]) -> Result<String> {
@@ -180,6 +289,35 @@ impl Android {
 
     async fn shell(&self, command: &str) -> Result<String> {
         self.adb(&["shell", command]).await
+    }
+
+    /// `adb reverse` forwards as (device port, host port).
+    async fn forwards(&self) -> Result<Vec<(u16, u16)>> {
+        let list = self.adb(&["reverse", "--list"]).await?;
+        Ok(list
+            .lines()
+            .filter_map(|l| {
+                let mut parts = l.split_whitespace().skip(1);
+                let device = parts.next()?.strip_prefix("tcp:")?.parse().ok()?;
+                let host = parts.next()?.strip_prefix("tcp:")?.parse().ok()?;
+                Some((device, host))
+            })
+            .collect())
+    }
+
+    /// Points any forward still aimed at a proxy back at its own host port.
+    async fn restore_forwards(&self) -> Result<()> {
+        for (device, host) in self.forwards().await? {
+            if host >= PROXY_OFFSET && host - PROXY_OFFSET == device {
+                self.adb(&[
+                    "reverse",
+                    &format!("tcp:{device}"),
+                    &format!("tcp:{device}"),
+                ])
+                .await?;
+            }
+        }
+        Ok(())
     }
 
     async fn reader_get(&self, path: &str) -> Result<String> {
@@ -524,6 +662,62 @@ impl Device for Android {
         self.shell(&taps.join(&format!("; sleep {}; ", interval_ms as f64 / 1000.0)))
             .await
             .map(|_| ())
+    }
+
+    async fn intercept_network(&self, on: bool) -> Result<()> {
+        let mut proxies = self.proxies.lock().await;
+        if !on {
+            if let Some(p) = proxies.take() {
+                for (device, host) in &p.forwards {
+                    self.adb(&["reverse", &format!("tcp:{device}"), &format!("tcp:{host}")])
+                        .await?;
+                }
+            }
+            return Ok(());
+        }
+        if proxies.is_some() {
+            return Ok(());
+        }
+        let forwards: Vec<(u16, u16)> = self
+            .forwards()
+            .await?
+            .into_iter()
+            .filter(|&(_, host)| host < PROXY_OFFSET)
+            .collect();
+        if forwards.is_empty() {
+            return Err(device(
+                "no adb reverse forwards to put a proxy in (the app reaches nothing local)",
+            ));
+        }
+        let started = Proxies::start(forwards.clone()).await.map_err(device)?;
+        for (device_port, host) in &forwards {
+            self.adb(&[
+                "reverse",
+                &format!("tcp:{device_port}"),
+                &format!("tcp:{}", host + PROXY_OFFSET),
+            ])
+            .await?;
+        }
+        *proxies = Some(started);
+        Ok(())
+    }
+
+    async fn network_drop(&self, seconds: u64) -> Result<()> {
+        {
+            let proxies = self.proxies.lock().await;
+            let p = proxies.as_ref().ok_or_else(|| {
+                DriverError::Invalid(
+                    "network-drop needs the network intercepted before the app launched: list network-drop in the spec's tools"
+                        .into(),
+                )
+            })?;
+            p.drop_network();
+        }
+        sleep(Duration::from_secs(seconds)).await;
+        if let Some(p) = self.proxies.lock().await.as_ref() {
+            p.restore_network();
+        }
+        Ok(())
     }
 
     async fn stress(&self, load: u32, seconds: u64) -> Result<()> {

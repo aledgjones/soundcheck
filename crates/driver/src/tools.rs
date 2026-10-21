@@ -97,7 +97,7 @@ pub const TOOLS: &[Tool] = &[
     mechanic(
         "network-drop",
         &[Platform::Android, Platform::Web],
-        "cut the network for N seconds, then restore it",
+        "freeze the network for N seconds (nothing passes, nothing closes), then let new connections through",
     ),
     mechanic(
         "stress",

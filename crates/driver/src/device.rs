@@ -92,6 +92,11 @@ pub trait Device {
         }
         Ok(())
     }
+    /// Puts (or takes) the device's connections through a proxy `network_drop` can freeze. Called before the app
+    /// launches, so its connections go through it; a platform that doesn't need it accepts and does nothing.
+    async fn intercept_network(&self, _on: bool) -> Result<()> {
+        Ok(())
+    }
     async fn network_drop(&self, _seconds: u64) -> Result<()> {
         Err(self.unsupported("network-drop"))
     }

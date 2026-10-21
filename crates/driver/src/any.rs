@@ -94,6 +94,9 @@ impl Device for AnyDevice {
     async fn tap_burst(&self, x: f64, y: f64, count: u32, interval_ms: u64) -> Result<()> {
         each!(self, d => d.tap_burst(x, y, count, interval_ms).await)
     }
+    async fn intercept_network(&self, on: bool) -> Result<()> {
+        each!(self, d => d.intercept_network(on).await)
+    }
     async fn network_drop(&self, seconds: u64) -> Result<()> {
         each!(self, d => d.network_drop(seconds).await)
     }
