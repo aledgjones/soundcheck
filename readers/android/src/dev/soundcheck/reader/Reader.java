@@ -134,14 +134,41 @@ public class Reader extends Instrumentation {
     if (action == MotionEvent.ACTION_DOWN) {
       downTime = now;
     }
+    // A finger, as `adb shell input` sends: the short obtain() leaves the tool type unknown, and the system file
+    // picker routes gestures by tool type, so it showed a ripple but never selected.
+    MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
+    props[0].id = 0;
+    props[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
+    MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
+    coords[0].x = Float.parseFloat(p[1]);
+    coords[0].y = Float.parseFloat(p[2]);
+    coords[0].pressure = 1;
+    coords[0].size = 1;
     MotionEvent e =
-        MotionEvent.obtain(downTime, now, action, Float.parseFloat(p[1]), Float.parseFloat(p[2]), 0);
-    e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+        MotionEvent.obtain(downTime, now, action, 1, props, coords, 0, 0, 1, 1, touchscreen(), 0,
+            InputDevice.SOURCE_TOUCHSCREEN, 0);
     automation.injectInputEvent(e, true);
     e.recycle();
     if (action == MotionEvent.ACTION_UP) {
       downTime = 0;
     }
+  }
+
+  private int touchscreenId = -1;
+
+  // The device id of a real touchscreen, so views that ask which device a touch came from get an answer.
+  private int touchscreen() {
+    if (touchscreenId < 0) {
+      touchscreenId = 0;
+      for (int id : InputDevice.getDeviceIds()) {
+        InputDevice d = InputDevice.getDevice(id);
+        if (d != null && d.supportsSource(InputDevice.SOURCE_TOUCHSCREEN)) {
+          touchscreenId = id;
+          break;
+        }
+      }
+    }
+    return touchscreenId;
   }
 
   private void key(int action, int code) {

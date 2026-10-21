@@ -230,6 +230,12 @@ fn anr_app(line: &str) -> Option<String> {
 }
 
 /// `input text` takes one word: spaces become %s, and the shell's own characters are escaped.
+fn current_size(dumpsys: &str) -> Option<(f64, f64)> {
+    static CUR: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bcur=(\d+)x(\d+)").unwrap());
+    let c = CUR.captures(dumpsys)?;
+    Some((c[1].parse().ok()?, c[2].parse().ok()?))
+}
+
 /// Text for a reader query string, as `URLDecoder` reads it back.
 fn url_encode(text: &str) -> String {
     let mut out = String::new();
@@ -713,21 +719,10 @@ impl Device for Android {
     }
 
     async fn screen_size(&self) -> Result<(f64, f64)> {
-        let out = self.shell("wm size").await?;
-        // An override (Override size) wins over the physical size.
-        let line = out
-            .lines()
-            .rev()
-            .find(|l| l.contains("size:"))
-            .ok_or_else(|| device(format!("wm size: {out}")))?;
-        let size = line.rsplit(':').next().unwrap_or("").trim();
-        let (w, h) = size
-            .split_once('x')
-            .ok_or_else(|| device(format!("wm size: {size}")))?;
-        Ok((
-            w.trim().parse().map_err(device)?,
-            h.trim().parse().map_err(device)?,
-        ))
+        // `wm size` is the panel's natural size, landscape on a tablet even while it shows portrait; the display's
+        // `cur=` size is what's on screen now, with rotation and any override applied.
+        let out = self.shell("dumpsys window displays").await?;
+        current_size(&out).ok_or_else(|| device("dumpsys window displays has no cur= size"))
     }
 
     async fn density(&self) -> f64 {
@@ -996,6 +991,12 @@ mod tests {
     fn typed_text_survives_the_query_string() {
         assert_eq!(url_encode("E2E Seed Renamed"), "E2E%20Seed%20Renamed");
         assert_eq!(url_encode("Bach's (1)+é"), "Bach%27s%20%281%29%2B%C3%A9");
+    }
+
+    #[test]
+    fn the_screen_size_follows_rotation() {
+        let out = "  mDisplayId=0\n    init=2560x1600 320dpi base=2560x1600 320dpi cur=1600x2560 app=1600x2464 rng=1600x1504-2560x2464";
+        assert_eq!(current_size(out), Some((1600.0, 2560.0)));
     }
 
     #[test]
