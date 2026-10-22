@@ -12,6 +12,7 @@ rm -rf build && mkdir -p build/classes build/dex
 "$BT/aapt2" link -o build/unsigned.apk --manifest AndroidManifest.xml -I "$JAR"
 (cd build/dex && zip -q ../unsigned.apk classes.dex)
 "$BT/zipalign" -f 4 build/unsigned.apk build/aligned.apk
-"$BT/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android \
+# A test-only key, committed so every machine's build (and a prebuilt one) installs over the last.
+"$BT/apksigner" sign --ks reader.keystore --ks-pass pass:android --key-pass pass:android \
   --out build/reader.apk build/aligned.apk
 echo "built $(pwd)/build/reader.apk"

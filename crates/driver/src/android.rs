@@ -266,6 +266,19 @@ impl Android {
         run(&self.adb, &full, Duration::from_secs(60)).await
     }
 
+    /// A reader signed with another key (a build from before the committed keystore) refuses an update, so it's
+    /// uninstalled first.
+    async fn install_reader(&self, apk: &Path) -> Result<()> {
+        let apk = apk.display().to_string();
+        match self.adb(&["install", "-r", &apk]).await {
+            Err(e) if e.to_string().contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE") => {
+                self.adb(&["uninstall", READER_PACKAGE]).await?;
+                self.adb(&["install", &apk]).await.map(|_| ())
+            }
+            other => other.map(|_| ()),
+        }
+    }
+
     async fn shell(&self, command: &str) -> Result<String> {
         self.adb(&["shell", command]).await
     }
@@ -362,8 +375,7 @@ impl Android {
         // A reader installed from an older build has no input endpoints: install this one and start it afresh.
         let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
         if let Some(apk) = &self.reader_apk {
-            self.adb(&["install", "-r", &apk.display().to_string()])
-                .await?;
+            self.install_reader(apk).await?;
         }
         self.ensure_reader().await?;
         self.reader_get(path).await.map(|_| ())
@@ -393,8 +405,7 @@ impl Android {
             return Ok(());
         }
         let _ = self.shell(&format!("am force-stop {READER_PACKAGE}")).await;
-        self.adb(&["install", "-r", &apk_path]).await?;
-        Ok(())
+        self.install_reader(apk).await
     }
 
     /// Starts the reader if it isn't answering. Only one UI automation client can connect at a time.
@@ -415,8 +426,7 @@ impl Android {
             .shell(&format!("pm list packages {READER_PACKAGE}"))
             .await?;
         if !installed.contains(READER_PACKAGE) {
-            self.adb(&["install", "-r", &apk.display().to_string()])
-                .await?;
+            self.install_reader(apk).await?;
         }
         // `-w` keeps `am` alive, and the automation connection lives in it; setsid detaches it from this shell.
         self.shell(&format!(
