@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds a prebuilt soundcheck for Apple Silicon Macs: the server, both readers and the Claude Code plugin in one
-# tarball under target/package/. `--publish` also uploads it as the GitHub release v<version>; without it, nothing
-# leaves this Mac.
+# Builds a prebuilt soundcheck for Apple Silicon Macs: the server and both readers in one tarball under
+# target/package/, which the plugin's bin/soundcheck downloads for its own version. `--publish` also uploads it as
+# the GitHub release v<version>; without it, nothing leaves this Mac.
 set -e
 cd "$(dirname "$0")/.."
 PUBLISH=
@@ -36,14 +36,12 @@ readers/android/build.sh
 NAME="soundcheck-$VERSION-macos-arm64"
 OUT="target/package/$NAME"
 rm -rf "$OUT" "$OUT.tar.gz"
-mkdir -p "$OUT/bin" "$OUT/readers/ios" "$OUT/readers/android" "$OUT/.claude-plugin"
+mkdir -p "$OUT/bin" "$OUT/readers/ios" "$OUT/readers/android"
 cp target/release/soundcheck "$OUT/bin/"
 cp readers/ios/build/reader "$OUT/readers/ios/"
 cp -R readers/ios/build/Frameworks "$OUT/readers/ios/"
 rm -f "$OUT/readers/ios/Frameworks/.idb-ref"
 cp readers/android/build/reader.apk "$OUT/readers/android/"
-cp -R plugin "$OUT/"
-cp .claude-plugin/marketplace.json "$OUT/.claude-plugin/"
 cp README.md LICENSE "$OUT/"
 echo "$VERSION $(git rev-parse HEAD)$(git diff --quiet HEAD || echo ' (uncommitted changes)')" >"$OUT/BUILD"
 tar -czf "$OUT.tar.gz" -C "$OUT" .
@@ -51,5 +49,5 @@ echo "packaged $(pwd)/$OUT.tar.gz ($(du -h "$OUT.tar.gz" | cut -f1))"
 
 if [ -n "$PUBLISH" ]; then
   gh release create "v$VERSION" "$OUT.tar.gz" --title "soundcheck $VERSION" \
-    --notes "Unpack into ~/soundcheck and put ~/soundcheck/bin on PATH; see README.md."
+    --notes "The soundcheck plugin downloads this on first use; see README.md."
 fi

@@ -1,0 +1,37 @@
+#!/bin/sh
+# Runs the soundcheck release that matches this plugin's version, downloaded on first use into ~/.soundcheck/<version>.
+# SOUNDCHECK_DEV=1 runs the next `soundcheck` on PATH instead: a source build, for working on soundcheck itself.
+# Only ever writes to stderr: stdout is the MCP connection when Claude starts the tools.
+set -e
+here=$(cd "$(dirname "$0")" && pwd)
+if [ -n "$SOUNDCHECK_DEV" ]; then
+  PATH=$(printf %s "$PATH" | tr ':' '\n' | grep -vxF "$here" | paste -sd: -)
+  exec soundcheck "$@"
+fi
+version=$(sed -n 's/^ *"version": "\(.*\)",*$/\1/p' "$here/../.claude-plugin/plugin.json")
+root="${SOUNDCHECK_HOME:-$HOME/.soundcheck}"
+home="$root/$version"
+if [ ! -x "$home/bin/soundcheck" ]; then
+  [ "$(uname -sm)" = "Darwin arm64" ] || {
+    echo "soundcheck: releases are built for Apple Silicon Macs; build it from source (see README.md)" >&2
+    exit 1
+  }
+  url="https://github.com/aledgjones/soundcheck/releases/download/v$version/soundcheck-$version-macos-arm64.tar.gz"
+  echo "soundcheck: downloading $version, once…" >&2
+  mkdir -p "$root"
+  tmp=$(mktemp -d "$root/.download.XXXXXX")
+  if ! curl -fsSL -o "$tmp/release.tar.gz" "$url" || ! tar -xzf "$tmp/release.tar.gz" -C "$tmp" ||
+    [ ! -x "$tmp/bin/soundcheck" ]; then
+    rm -rf "$tmp"
+    echo "soundcheck: couldn't download $url (is v$version published?)" >&2
+    exit 1
+  fi
+  rm "$tmp/release.tar.gz"
+  # Two first uses at once (the tools starting while a skill runs a command) both download; the first one stays.
+  if [ -e "$home" ]; then
+    rm -rf "$tmp"
+  else
+    mv "$tmp" "$home"
+  fi
+fi
+exec "$home/bin/soundcheck" "$@"

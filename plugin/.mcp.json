@@ -1,6 +1,6 @@
 {
   "soundcheck": {
-    "command": "soundcheck",
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/soundcheck",
     "args": ["mcp"]
   }
 }

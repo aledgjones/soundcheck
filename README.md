@@ -15,21 +15,20 @@ The design, and the reasons behind it, are in [DESIGN.md](DESIGN.md).
 
 ## Install
 
-You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator) for Android, Xcode for iOS.
+You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator) for Android, Xcode for iOS. Then, in Claude Code:
 
-### Prebuilt (Apple Silicon Macs)
-
-```sh
-gh release download --repo aledgjones/soundcheck --pattern '*.tar.gz'
-mkdir -p ~/soundcheck && tar -xzf soundcheck-*-macos-arm64.tar.gz -C ~/soundcheck
-echo 'export PATH="$HOME/soundcheck/bin:$PATH"' >> ~/.zshrc   # then open a new terminal
+```
+/plugin marketplace add aledgjones/soundcheck
+/plugin install soundcheck@soundcheck
 ```
 
-A tarball downloaded through a browser is quarantined: `xattr -dr com.apple.quarantine ~/soundcheck` first.
+That's all on an Apple Silicon Mac. The plugin's `soundcheck` command downloads the release matching the plugin's version on first use (about 14 MB, into `~/.soundcheck/<version>`), and runs that from then on. A project can name the marketplace and enable the plugin in its committed `.claude/settings.json` (`extraKnownMarketplaces`, `enabledPlugins`), so teammates are offered it when they trust the folder; each still runs the install once.
+
+The server finds the readers beside its binary, in a checkout's `readers/<platform>/build/`, or where `SOUNDCHECK_ANDROID_READER` and `SOUNDCHECK_IOS_READER` point. It drives the one running emulator (`ANDROID_SERIAL` picks one) and the one booted simulator (`SOUNDCHECK_IOS_UDID` picks one).
 
 ### From source
 
-Also needs a Rust toolchain, JDK 17+ and Android build-tools 35 for the Android reader, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) for the iOS reader, whose build compiles idb's simulator frameworks from source (about a minute, once).
+For working on soundcheck itself. Also needs a Rust toolchain, JDK 17+ and Android build-tools 35 for the Android reader, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) for the iOS reader, whose build compiles idb's simulator frameworks from source (about a minute, once).
 
 ```sh
 cargo install --path crates/server     # puts `soundcheck` on your PATH
@@ -37,18 +36,11 @@ readers/android/build.sh               # the Android reader APK
 readers/ios/build.sh                   # the iOS reader
 ```
 
-`scripts/release.sh` packages all of it into `target/package/`, and `scripts/release.sh --publish` uploads that as the GitHub release for the version in `Cargo.toml`.
+Add the checkout as the marketplace (`/plugin marketplace add /path/to/soundcheck`) and set `SOUNDCHECK_DEV=1` (e.g. under `env` in `.claude/settings.json`), so the plugin runs this build instead of downloading a release.
 
-### Then
+### Releasing
 
-The server finds the readers beside a prebuilt `bin/soundcheck`, in a checkout's `readers/<platform>/build/`, or where `SOUNDCHECK_ANDROID_READER` and `SOUNDCHECK_IOS_READER` point. It drives the one running emulator (`ANDROID_SERIAL` picks one) and the one booted simulator (`SOUNDCHECK_IOS_UDID` picks one).
-
-In Claude Code, with the folder you unpacked or cloned:
-
-```
-/plugin marketplace add ~/soundcheck
-/plugin install soundcheck@soundcheck
-```
+Bump the version in `Cargo.toml` and `plugin/.claude-plugin/plugin.json` together, commit and push, then `scripts/release.sh --publish`: it builds the tarball in `target/package/` and uploads it as the GitHub release `v<version>`, which the plugin at that version downloads. Without `--publish`, nothing leaves the Mac.
 
 ## Use
 
