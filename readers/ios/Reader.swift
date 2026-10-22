@@ -93,9 +93,13 @@ final class Reader {
     }
     if hid == nil {
       // Built directly: `connectToHID()`'s session goes dead without an error after any `xcodebuild` that loads a
-      // workspace (taps land nowhere, reads still work), while one built here survives builds. Indigo, the other
-      // transport, takes no input at all on Xcode 27.
-      hid = try FBSimulatorHID(for: simulator, transport: .dtuhid)
+      // workspace (taps land nowhere, reads still work), while one built here survives builds. Indigo takes no
+      // input at all on Xcode 27, but before Xcode 27 there's no dtuhidd to connect to, so it's the fallback.
+      if let dtuhid = try? FBSimulatorHID(for: simulator, transport: .dtuhid) {
+        hid = dtuhid
+      } else {
+        hid = try FBSimulatorHID(for: simulator, transport: .indigo)
+      }
     }
     guard let hid else { return }
     var events: [FBSimulatorHIDEvent] = []
