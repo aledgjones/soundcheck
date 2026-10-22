@@ -87,8 +87,7 @@ pub enum Action {
     },
     /// Freeze the network for N seconds (nothing passes, nothing closes), then let new connections through.
     NetworkDrop { seconds: u64 },
-    /// Compare the reader's view of this screen with the platform's own tool (uiautomator, axe), both the full tree
-    /// and the screen reader's.
+    /// Compare Android's reader with uiautomator on this screen, both the full tree and the screen reader's.
     Parity,
 }
 
@@ -190,12 +189,7 @@ async fn parity(device: &AnyDevice) -> Result<String> {
             a.read_uiautomator(true).await?,
             a.keyboard_region().await?,
         ),
-        AnyDevice::Ios(i) => (
-            "axe",
-            i.read_axe(true).await?,
-            i.read_axe(false).await?,
-            None,
-        ),
+        AnyDevice::Ios(_) => bail!("iOS has no second tool to compare: the reader is the only one"),
         AnyDevice::Web(_) => bail!("web parity runs in a run, against Chrome's snapshot"),
     };
     let mut full = compare(&full, &full_tool);

@@ -15,7 +15,7 @@ The design, and the reasons behind it, are in [DESIGN.md](DESIGN.md).
 
 ## Install
 
-You need a Rust toolchain, plus what each platform drives: Chrome for web; the Android SDK (adb, build tools) for Android; Xcode and [AXe](https://github.com/cameroncooke/AXe) (`brew install cameroncooke/axe/axe`) for iOS.
+You need a Rust toolchain, plus what each platform drives: Chrome for web; the Android SDK (adb, build tools) for Android; Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) for iOS, whose reader build compiles idb's simulator frameworks from source (about a minute, once).
 
 ```sh
 cargo install --path crates/server     # puts `soundcheck` on your PATH

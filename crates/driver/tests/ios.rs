@@ -1,4 +1,4 @@
-//! Drives the booted iOS simulator with its own Settings app. Skips where no simulator is booted or AXe is missing.
+//! Drives the booted iOS simulator with its own Settings app. Skips where no simulator is booted or the reader isn't built.
 
 use soundcheck_driver::ios::Ios;
 use soundcheck_driver::{Device, Driver, Matcher};
@@ -11,8 +11,12 @@ fn m(target: &str) -> Matcher {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_ios_driver_reads_and_drives_settings() {
-    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/axe-reader");
-    let ios = match Ios::connect("com.apple.Preferences", reader.exists().then_some(reader)).await {
+    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/reader");
+    if !reader.exists() {
+        eprintln!("skipping: no iOS reader built (readers/ios/build.sh)");
+        return;
+    }
+    let ios = match Ios::connect("com.apple.Preferences", Some(reader)).await {
         Ok(i) => i,
         Err(e) => {
             eprintln!("skipping: {e}");
@@ -23,7 +27,6 @@ async fn the_ios_driver_reads_and_drives_settings() {
     driver.device.launch().await.unwrap();
     driver.wait(&m("General"), 15_000).await.unwrap();
 
-    // The reader against `axe describe-ui` on the same screen: every element axe lists, the reader lists too.
     let reader: BTreeSet<String> = driver
         .see(None, true)
         .await
@@ -31,16 +34,6 @@ async fn the_ios_driver_reads_and_drives_settings() {
         .into_iter()
         .map(|e| e.label)
         .collect();
-    let axe: BTreeSet<String> = driver
-        .device
-        .read_axe(true)
-        .await
-        .unwrap()
-        .into_iter()
-        .map(|e| e.label)
-        .collect();
-    let missing: Vec<_> = axe.difference(&reader).collect();
-    assert!(missing.is_empty(), "the reader misses {missing:?}");
     let voiceover: BTreeSet<String> = driver
         .see(None, false)
         .await
@@ -76,7 +69,7 @@ async fn the_ios_driver_reads_and_drives_settings() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn restart_reboots_the_simulator_and_reads_again() {
-    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/axe-reader");
+    let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/reader");
     let ios = Ios::connect("com.apple.Preferences", reader.exists().then_some(reader))
         .await
         .unwrap();

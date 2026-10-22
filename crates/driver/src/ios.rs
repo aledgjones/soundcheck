@@ -1,5 +1,5 @@
 //! The iOS simulator: reads through the reader (`readers/ios`, one long-lived accessibility session serving
-//! `axe describe-ui` JSON), with `axe describe-ui` as the fallback; input through the reader's held HID session.
+//! `axe describe-ui` JSON) and input through its held HID session. There's no fallback: a reader gap is a bug to fix.
 //! Points everywhere but screenshots, which are in pixels.
 
 use crate::Platform;
@@ -129,7 +129,7 @@ fn has_content(json: &str) -> bool {
     parse(json, true).is_ok_and(|e| !e.is_empty())
 }
 
-/// HID keyboard usage codes, which `axe key` takes.
+/// HID keyboard usage codes, which the reader's `k` step takes.
 fn keycode(key: &str) -> Option<u32> {
     Some(match key {
         "ArrowRight" => 79,
@@ -197,7 +197,7 @@ fn key_centre(keys: &[Element], label: &str) -> Option<(f64, f64)> {
 
 impl Ios {
     /// Sends a script of input events through the reader's held HID session: about 0.1 s a tap, where starting
-    /// `axe` for each took about 1.3 s. The script's steps are the reader's (`d`, `u`, `w`, `k`, `kd`, `ku`).
+    /// a process for each took about 1.3 s. The script's steps are the reader's (`d`, `u`, `w`, `k`, `kd`, `ku`).
     async fn hid(&self, script: &str) -> Result<()> {
         self.ensure_reader().await?;
         let path = format!("/hid?{}", script.replace(' ', "%20"));
@@ -310,7 +310,7 @@ impl Ios {
         Ok(ios)
     }
 
-    /// With AXe's keyboard attached, iOS counts a hardware keyboard and keeps the on-screen one out of sight; most
+    /// With the reader's keyboard attached, iOS counts a hardware keyboard and keeps the on-screen one out of sight; most
     /// users have none. The setting applies at boot, so changing it means a reboot.
     async fn no_hardware_keyboard(&self) -> Result<()> {
         let prefs = home().join("Library/Preferences/com.apple.iphonesimulator.plist");
@@ -333,12 +333,6 @@ impl Ios {
         let _ = run("killall", &["cfprefsd"]).await;
         let _ = run("xcrun", &["simctl", "shutdown", &self.udid]).await;
         Ok(())
-    }
-
-    async fn axe(&self, args: &[&str]) -> Result<String> {
-        let mut full = args.to_vec();
-        full.extend(["--udid", self.udid.as_str()]);
-        run("axe", &full).await
     }
 
     async fn reader_get(&self, path: &str) -> Result<String> {
@@ -427,37 +421,25 @@ impl Ios {
     }
 
     async fn screen_json(&self, all: bool) -> Result<String> {
-        if std::env::var("SOUNDCHECK_READER").as_deref() != Ok("off") && self.reader.is_some() {
-            if self.ensure_reader().await.is_ok() {
-                for _ in 0..3 {
-                    match self
-                        .reader_get(if all { "/describe" } else { "/describe?lean" })
-                        .await
-                    {
-                        Ok(json) if has_content(&json) => return Ok(json),
-                        Ok(_) => sleep(Duration::from_millis(300)).await,
-                        Err(_) => break,
-                    }
-                }
-            }
-            // A reader from before a simulator reboot answers pings but can't read; the next read starts a fresh one.
-            self.stop_reader();
-        }
+        self.ensure_reader().await?;
         let mut last = device("not read");
-        for _ in 0..5 {
-            match self.axe(&["describe-ui"]).await {
+        for _ in 0..3 {
+            match self
+                .reader_get(if all { "/describe" } else { "/describe?lean" })
+                .await
+            {
                 Ok(json) if has_content(&json) => return Ok(json),
                 Ok(json) => last = device(format!("an empty screen: {}", json.trim())),
-                Err(e) => last = e,
+                Err(e) => {
+                    last = e;
+                    break;
+                }
             }
-            sleep(Duration::from_millis(500)).await;
+            sleep(Duration::from_millis(300)).await;
         }
+        // A reader from before a simulator reboot answers pings but can't read; the next read starts a fresh one.
+        self.stop_reader();
         Err(last)
-    }
-
-    /// The screen as `axe describe-ui` reads it, for parity checks against the reader.
-    pub async fn read_axe(&self, all: bool) -> Result<Vec<Element>> {
-        parse(&self.axe(&["describe-ui"]).await?, all)
     }
 
     /// "On My iPad" in Files: the LocalStorage app group's `File Provider Storage`, whose folder differs per simulator.
@@ -515,7 +497,7 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
 }
 
-/// Under heavy load AXe's session can stall for minutes, so every call has a limit.
+/// Under heavy load a simulator tool can stall for minutes, so every call has a limit.
 async fn run(program: &str, args: &[&str]) -> Result<String> {
     let child = tokio::process::Command::new(program)
         .args(args)

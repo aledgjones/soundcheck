@@ -1,8 +1,8 @@
-// Keeps one FBSimulatorControl session open and serves `axe describe-ui` JSON for the booted simulator on
-// 127.0.0.1:9009 (GET /describe, GET /ping), so each read skips axe's start-up (~0.6 s, under Rosetta).
-// The fetch and serialisation follow AXe 1.8.0's AccessibilityFetcher (MIT, github.com/cameroncooke/AXe) and link
-// the FB frameworks Homebrew's axe ships, so the output matches `axe describe-ui` exactly. Test tool, simulator only.
-//   axe-reader --udid <udid> [--port 9009]
+// Keeps one FBSimulatorControl session open and serves the booted simulator's accessibility tree as JSON on
+// 127.0.0.1:9009 (GET /describe, GET /ping), and input through one held HID session (GET /hid).
+// The fetch and serialisation follow AXe 1.8.0's AccessibilityFetcher (MIT, github.com/cameroncooke/AXe), so the
+// JSON is `axe describe-ui`'s schema; build.sh builds idb's frameworks from source. Test tool, simulator only.
+//   reader --udid <udid> [--port 9009]
 import FBControlCore
 import FBSimulatorControl
 import Foundation
@@ -43,7 +43,7 @@ final class Reader {
       FBSimulatorControlConfiguration(deviceSetPath: nil, logger: logger, reporter: NoEvents())
     )
     guard let simulator = control.set.allSimulators.first(where: { $0.udid == udid }) else {
-      throw NSError(domain: "axe-reader", code: 1, userInfo: [NSLocalizedDescriptionKey: "No simulator \(udid)"])
+      throw NSError(domain: "reader", code: 1, userInfo: [NSLocalizedDescriptionKey: "No simulator \(udid)"])
     }
     self.simulator = simulator
   }
@@ -51,7 +51,7 @@ final class Reader {
   // The frontmost app's tree; like AXe, retry briefly while it has no children (just after boot or a launch).
   func describe(lean: Bool = false) async throws -> Data {
     guard let simulator else {
-      throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+      throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
     var latest = Data()
     for attempt in 0..<5 {
@@ -73,12 +73,12 @@ final class Reader {
     return latest
   }
 
-  // Sends a script of input events through one held HID session, rather than starting `axe` per touch (~1.2 s each).
+  // Sends a script of input events through one held HID session, rather than a process per touch (~1.2 s each).
   // Steps are separated by `;`: `d x y` touch down (or move, while down), `u x y` touch up, `w ms` wait, `k code`
   // key press, `kd code` / `ku code` key down and up.
   func sendHID(_ script: String) async throws {
     guard let simulator else {
-      throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+      throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
     if hid == nil {
       // Built directly: `connectToHID()`'s session goes dead without an error after any `xcodebuild` that loads a
@@ -100,7 +100,7 @@ final class Reader {
       case ("ku", 1): events.append(.keyboard(direction: .up, keyCode: UInt32(n[0])))
       case ("b", 0) where parts.count == 2 && parts[1] == "home": events.append(.shortButtonPress(.homeButton))
       default:
-        throw NSError(domain: "axe-reader", code: 5, userInfo: [NSLocalizedDescriptionKey: "Bad step: \(step)"])
+        throw NSError(domain: "reader", code: 5, userInfo: [NSLocalizedDescriptionKey: "Bad step: \(step)"])
       }
     }
     do {
@@ -112,22 +112,22 @@ final class Reader {
     }
   }
 
-  // What Xcode's Device Manager toggles: with it off, the on-screen keyboard shows and iOS ignores AXe's typing, which
+  // What Xcode's Device Manager toggles: with it off, the on-screen keyboard shows and iOS ignores the reader's typing, which
   // arrives as a hardware keyboard. CoreSimulator's SimDevice method is private, so it's called through the runtime.
   func setHardwareKeyboard(_ enabled: Bool) throws {
     guard let device = simulator?.value(forKey: "device") as? NSObject else {
-      throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+      throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
     let selector = NSSelectorFromString("setHardwareKeyboardEnabled:keyboardType:error:")
     guard device.responds(to: selector) else {
-      throw NSError(domain: "axe-reader", code: 3, userInfo: [NSLocalizedDescriptionKey: "No hardware keyboard switch"])
+      throw NSError(domain: "reader", code: 3, userInfo: [NSLocalizedDescriptionKey: "No hardware keyboard switch"])
     }
     typealias Set = @convention(c) (NSObject, Selector, Bool, UInt32, AutoreleasingUnsafeMutablePointer<NSError?>?)
       -> Bool
     let set = unsafeBitCast(device.method(for: selector), to: Set.self)
     var error: NSError?
     if !set(device, selector, enabled, 0, &error) {
-      throw error ?? NSError(domain: "axe-reader", code: 4, userInfo: [NSLocalizedDescriptionKey: "Switch refused"])
+      throw error ?? NSError(domain: "reader", code: 4, userInfo: [NSLocalizedDescriptionKey: "Switch refused"])
     }
   }
 
@@ -164,15 +164,15 @@ struct Main {
       args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
     }
     guard let udid = option("--udid") else {
-      FileHandle.standardError.write("usage: axe-reader --udid <udid> [--port 9009]\n".data(using: .utf8)!)
+      FileHandle.standardError.write("usage: reader --udid <udid> [--port 9009]\n".data(using: .utf8)!)
       exit(2)
     }
     let port = NWEndpoint.Port(rawValue: UInt16(option("--port") ?? "9009") ?? 9009)!
-    let reader = await Reader(udid: udid)
+    let reader = Reader(udid: udid)
     do {
-      try await reader.setUp()
+      try reader.setUp()
     } catch {
-      FileHandle.standardError.write("axe-reader: \(error)\n".data(using: .utf8)!)
+      FileHandle.standardError.write("reader: \(error)\n".data(using: .utf8)!)
       exit(1)
     }
     let parameters = NWParameters.tcp
@@ -182,7 +182,7 @@ struct Main {
     do {
       listener = try NWListener(using: parameters)
     } catch {
-      FileHandle.standardError.write("axe-reader: \(error)\n".data(using: .utf8)!)
+      FileHandle.standardError.write("reader: \(error)\n".data(using: .utf8)!)
       exit(1)
     }
     listener.newConnectionHandler = { connection in
@@ -232,7 +232,7 @@ struct Main {
     }
     listener.stateUpdateHandler = { state in
       if case .failed(let error) = state {
-        FileHandle.standardError.write("axe-reader: \(error)\n".data(using: .utf8)!)
+        FileHandle.standardError.write("reader: \(error)\n".data(using: .utf8)!)
         exit(1)
       }
     }

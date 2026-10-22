@@ -1,37 +1,44 @@
 #!/bin/sh
-# Builds axe-reader against the FB frameworks that Homebrew's axe ships (brew install cameroncooke/axe/axe).
-# Their Swift interfaces import Apple's private simulator modules, whose headers come from the idb fork AXe pins.
+# Builds the reader against FBControlCore and FBSimulatorControl, built here from the idb fork AXe pins
+# (needs XcodeGen: brew install xcodegen). The frameworks build once per IDB_REF, in about a minute.
 set -e
 cd "$(dirname "$0")"
-FW="$(brew --prefix axe)/libexec/Frameworks"
-# AXe 1.8.0's pinned idb (scripts/build.sh DEFAULT_IDB_GIT_REF); bump together with axe.
+command -v xcodegen >/dev/null || {
+  echo "XcodeGen is needed to build idb's frameworks: brew install xcodegen" >&2
+  exit 1
+}
+# AXe 1.8.0's pinned idb (scripts/build.sh DEFAULT_IDB_GIT_REF), which carries its fixes for new Xcodes.
 IDB_REF=604c51013438f0c3603b720a05a44b7c5b8f286d
 IDB=build/idb
+FW=build/Frameworks
 mkdir -p build
-if [ ! -d "$IDB/PrivateHeaders" ]; then
+if [ ! -d "$IDB/PrivateHeaders" ] || [ "$(git -C "$IDB" rev-parse HEAD)" != "$IDB_REF" ]; then
   rm -rf "$IDB" && mkdir -p "$IDB"
   (cd "$IDB" && git init -q && git remote add origin https://github.com/cameroncooke/idb.git &&
     git fetch -q --depth 1 origin "$IDB_REF" && git checkout -q FETCH_HEAD)
 fi
-H="$IDB/PrivateHeaders"
-# Homebrew's frameworks were built by an older Swift, so the compiler reads their .swiftinterface, which writes every
-# type as `FBSimulatorControl.X`; that resolves to the class FBSimulatorControl, not the module (a known Swift issue).
-# Compile against a shadow copy with the module prefixes stripped; link and run against the real frameworks.
-SHADOW=build/fw
-rm -rf "$SHADOW" && mkdir -p "$SHADOW"
-for f in "$FW"/*.framework; do
-  name=$(basename "$f" .framework)
-  cp -R "$f" "$SHADOW/"
-  for i in "$SHADOW/$name.framework/Modules/$name.swiftmodule"/*.swiftinterface; do
-    [ -f "$i" ] && sed -i '' -E "s/(^|[^A-Za-z_])$name\.([A-Z][A-Za-z0-9_]*)/\1\2/g" "$i" &&
-      perl -pi -e 's/\b([A-Z]\w+)\.\1\b/$1/g' "$i"
+if [ "$(cat "$FW/.idb-ref" 2>/dev/null)" != "$IDB_REF" ]; then
+  (cd "$IDB" && xcodegen generate --quiet)
+  for scheme in FBControlCore XCTestBootstrap FBSimulatorControl; do
+    echo "building $scheme"
+    # idb's own warnings are many and not ours to fix, so the log is shown only on failure.
+    xcodebuild -quiet -project "$IDB/FBSimulatorControl.xcodeproj" -scheme "$scheme" -configuration Release \
+      -destination generic/platform=macOS -derivedDataPath build/derived build \
+      ARCHS=arm64 ONLY_ACTIVE_ARCH=NO GCC_TREAT_WARNINGS_AS_ERRORS=NO SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+      >build/xcodebuild.log 2>&1 || {
+      tail -40 build/xcodebuild.log >&2
+      exit 1
+    }
   done
-  rm -f "$SHADOW/$name.framework/Modules/$name.swiftmodule"/*.swiftmodule
-done
+  rm -rf "$FW" && mkdir -p "$FW"
+  cp -R build/derived/Build/Products/Release/*.framework "$FW/"
+  echo "$IDB_REF" >"$FW/.idb-ref"
+fi
+H="$IDB/PrivateHeaders"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14 \
-  -F "$SHADOW" -framework FBControlCore -framework FBSimulatorControl \
+  -F "$FW" -framework FBControlCore -framework FBSimulatorControl \
   -I "$H" -I "$H/AccessibilityPlatformTranslation" -I "$H/AXRuntime" -I "$H/CoreSimDeviceIO" \
   -I "$H/CoreSimulator" -I "$H/CoreSimulatorUtilities" -I "$H/SimulatorKit" \
-  -Xlinker -rpath -Xlinker "$FW" \
-  Reader.swift -o build/axe-reader
-echo "built $(pwd)/build/axe-reader"
+  -Xlinker -rpath -Xlinker @executable_path/Frameworks \
+  Reader.swift -o build/reader
+echo "built $(pwd)/build/reader"

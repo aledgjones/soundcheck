@@ -82,7 +82,7 @@ pub async fn connect(
                 .and_then(|p| p.app_id.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
             AnyDevice::Ios(
-                Ios::connect(&app, reader("ios", "axe-reader"))
+                Ios::connect(&app, reader("ios", "reader"))
                     .await?
                     .headed(headed),
             )

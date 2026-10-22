@@ -18,7 +18,7 @@ async fn main() {
     let readers = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers");
     let device = if flag("--ios") {
         AnyDevice::Ios(
-            Ios::connect(app, Some(readers.join("ios/build/axe-reader")))
+            Ios::connect(app, Some(readers.join("ios/build/reader")))
                 .await
                 .expect("connect"),
         )
