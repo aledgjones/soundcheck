@@ -28,6 +28,8 @@ final class Reader {
   let udid: String
   var simulator: FBSimulator?
   var hid: FBSimulatorHID?
+  // Whether the last script left a touch down, so the next one must keep its session.
+  var touching = false
 
   init(udid: String) {
     self.udid = udid
@@ -80,17 +82,28 @@ final class Reader {
     guard let simulator else {
       throw NSError(domain: "axe-reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
+    // Any `xcodebuild` that loads a workspace leaves an open session dead without an error: taps land nowhere while
+    // reads still work. So each script gets a fresh session (~10 ms), except while a touch is held across scripts.
+    if !touching {
+      hid?.disconnect()
+      hid = nil
+    }
     if hid == nil {
       hid = try await simulator.connectToHID()
     }
     guard let hid else { return }
     var events: [FBSimulatorHIDEvent] = []
+    var touchingAfter = touching
     for step in script.split(separator: ";") {
       let parts = step.split(separator: " ")
       let n = parts.dropFirst().compactMap { Double($0) }
       switch (parts.first, n.count) {
-      case ("d", 2): events.append(.touch(direction: .down, x: n[0], y: n[1]))
-      case ("u", 2): events.append(.touch(direction: .up, x: n[0], y: n[1]))
+      case ("d", 2):
+        events.append(.touch(direction: .down, x: n[0], y: n[1]))
+        touchingAfter = true
+      case ("u", 2):
+        events.append(.touch(direction: .up, x: n[0], y: n[1]))
+        touchingAfter = false
       case ("w", 1): events.append(.delay(n[0] / 1000))
       case ("k", 1): events.append(.shortKeyPress(UInt32(n[0])))
       case ("kd", 1): events.append(.keyboard(direction: .down, keyCode: UInt32(n[0])))
@@ -102,9 +115,11 @@ final class Reader {
     }
     do {
       try await FBSimulatorHIDEvent.composite(events).sendAsync(on: hid)
+      touching = touchingAfter
     } catch {
-      // A session from before a simulator reboot is dead; the next script opens a fresh one.
+      hid.disconnect()
       self.hid = nil
+      touching = false
       throw error
     }
   }
