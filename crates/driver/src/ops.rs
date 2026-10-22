@@ -172,6 +172,17 @@ impl<D: Device> Driver<D> {
             self.device
                 .clear(held.max(text.chars().count()) + 5)
                 .await?;
+            // Under load the deletes are still landing when typing starts, and the last few eat the first letters
+            // typed: wait until the field holds still.
+            let mut last = None;
+            for _ in 0..10 {
+                let now = self.find(target, false).await?.and_then(|e| e.value);
+                if last.as_ref() == Some(&now) {
+                    break;
+                }
+                last = Some(now);
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
             self.device.type_text(text).await?;
             let landed = self
                 .device

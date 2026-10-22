@@ -107,6 +107,24 @@ fn frame(node: &Value) -> Rect {
 }
 
 /// Whether a tree has anything in it: just after boot or a launch the app answers with no children.
+/// Seconds since the newest process matching `pattern` started, from `ps`'s `[[dd-]hh:]mm:ss`.
+async fn started_seconds_ago(pattern: &str) -> Option<u64> {
+    let pid = run("pgrep", &["-n", "-f", pattern]).await.ok()?;
+    let elapsed = run("ps", &["-o", "etime=", "-p", pid.trim()]).await.ok()?;
+    parse_etime(elapsed.trim())
+}
+
+fn parse_etime(etime: &str) -> Option<u64> {
+    let (days, clock) = match etime.split_once('-') {
+        Some((d, rest)) => (d.parse::<u64>().ok()?, rest),
+        None => (0, etime),
+    };
+    let seconds = clock.split(':').try_fold(0u64, |total, part| {
+        Some(total * 60 + part.parse::<u64>().ok()?)
+    })?;
+    Some(days * 86_400 + seconds)
+}
+
 fn has_content(json: &str) -> bool {
     parse(json, true).is_ok_and(|e| !e.is_empty())
 }
@@ -142,6 +160,10 @@ pub struct Ios {
     hardware_keyboard: std::sync::atomic::AtomicBool,
     /// Whether Simulator.app shows the device; the simulator itself runs either way.
     headed: bool,
+    /// When the reader was last checked against the simulator's boot, so the check costs a `ps` every few seconds.
+    boot_checked: std::sync::Mutex<Option<std::time::Instant>>,
+    /// Set when a reader older than the simulator's boot was restarted, until health reports it.
+    reader_restarted: std::sync::atomic::AtomicBool,
 }
 
 /// Health limits for the Mac that runs the simulator, and the app's launch.
@@ -280,6 +302,8 @@ impl Ios {
             last_launch_ms: std::sync::Mutex::new(None),
             hardware_keyboard: std::sync::atomic::AtomicBool::new(false),
             headed: false,
+            boot_checked: std::sync::Mutex::new(None),
+            reader_restarted: std::sync::atomic::AtomicBool::new(false),
         };
         ios.no_hardware_keyboard().await?;
         run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
@@ -355,10 +379,32 @@ impl Ios {
         }
     }
 
+    /// Whether the running reader started before the simulator's current boot. Its input session then answers but
+    /// lands nowhere, so taps silently do nothing while reads still work.
+    async fn reader_predates_boot(&self) -> bool {
+        {
+            let mut checked = self.boot_checked.lock().unwrap_or_else(|e| e.into_inner());
+            if checked.is_some_and(|at| at.elapsed() < Duration::from_secs(5)) {
+                return false;
+            }
+            *checked = Some(std::time::Instant::now());
+        }
+        let Some(binary) = &self.reader else {
+            return false;
+        };
+        let reader = started_seconds_ago(&binary.display().to_string()).await;
+        let boot = started_seconds_ago(&format!("launchd_sim .*{}", self.udid)).await;
+        matches!((reader, boot), (Some(r), Some(b)) if r > b)
+    }
+
     /// Starts the reader if it isn't answering for this simulator; one attached to another simulator is no use.
     async fn ensure_reader(&self) -> Result<()> {
         if self.reader_alive().await {
-            return Ok(());
+            if !self.reader_predates_boot().await {
+                return Ok(());
+            }
+            self.reader_restarted
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let Some(binary) = &self.reader else {
             return Err(device("no iOS reader built (readers/ios/build.sh)"));
@@ -731,6 +777,9 @@ impl Device for Ios {
     }
 
     async fn press(&self, key: &str) -> Result<()> {
+        if key == "Home" {
+            return self.hid("b home").await;
+        }
         let on_screen = match key {
             "Enter" | "Return" => Some("return"),
             "Backspace" => Some("delete"),
@@ -813,6 +862,14 @@ impl Device for Ios {
                 ms > MAX_LAUNCH_MS,
             );
         }
+        if self
+            .reader_restarted
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            health
+                .facts
+                .push("restarted the reader: the simulator had rebooted under it".into());
+        }
         Ok(health)
     }
 
@@ -836,6 +893,14 @@ impl Device for Ios {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ps_elapsed_times_parse_to_seconds() {
+        assert_eq!(parse_etime("42:08"), Some(2528));
+        assert_eq!(parse_etime("01:02:03"), Some(3723));
+        assert_eq!(parse_etime("2-00:00:05"), Some(172_805));
+        assert_eq!(parse_etime("soon"), None);
+    }
 
     #[test]
     fn each_character_maps_to_its_on_screen_key() {

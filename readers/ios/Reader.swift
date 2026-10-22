@@ -95,6 +95,7 @@ final class Reader {
       case ("k", 1): events.append(.shortKeyPress(UInt32(n[0])))
       case ("kd", 1): events.append(.keyboard(direction: .down, keyCode: UInt32(n[0])))
       case ("ku", 1): events.append(.keyboard(direction: .up, keyCode: UInt32(n[0])))
+      case ("b", 0) where parts.count == 2 && parts[1] == "home": events.append(.shortButtonPress(.homeButton))
       default:
         throw NSError(domain: "axe-reader", code: 5, userInfo: [NSLocalizedDescriptionKey: "Bad step: \(step)"])
       }

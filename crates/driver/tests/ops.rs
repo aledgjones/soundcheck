@@ -230,3 +230,28 @@ async fn a_platform_without_a_tool_refuses_it_clearly() {
         .to_string();
     assert_eq!(err, "goto isn't available on android");
 }
+
+#[tokio::test(start_paused = true)]
+async fn fill_waits_for_the_clear_to_land_before_typing() {
+    let field = |value: &str| {
+        let mut f = el("Title", 0.0);
+        f.role = Some("field".into());
+        f.value = Some(value.into());
+        vec![f]
+    };
+    // The deletes are still landing: the field empties over a few reads before it holds still.
+    let driver = Driver::new(Fake::new(vec![
+        field("Old title"),
+        field("Old ti"),
+        field("O"),
+        field(""),
+        field(""),
+    ]));
+    driver.fill(&m("Title"), "Opener").await.unwrap();
+    let actions = driver.device.actions.lock().unwrap();
+    assert_eq!(
+        actions.iter().filter(|a| a.starts_with("type")).count(),
+        1,
+        "typed before the field held still, so it had to retry: {actions:?}"
+    );
+}

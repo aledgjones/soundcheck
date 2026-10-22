@@ -1003,7 +1003,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: press a hardware key by its web name (ArrowRight, Enter, Escape, Home…), as a keyboard or page-turn pedal would."
+        description = "Tester: press a hardware key by its web name (ArrowRight, Enter, Escape…), as a keyboard or page-turn pedal would. `Home` goes to the device's home screen, putting the app in the background."
     )]
     async fn press(
         &self,
