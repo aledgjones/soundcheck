@@ -38,18 +38,30 @@ use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_util::sync::CancellationToken;
 
-/// A platform's reader: `SOUNDCHECK_<PLATFORM>_READER`, or the one built in this checkout.
+/// A platform's reader: `SOUNDCHECK_<PLATFORM>_READER`, the one beside a prebuilt `bin/soundcheck`
+/// (`readers/<platform>/<built>`), or the one built in this checkout.
 fn reader(platform: &str, built: &str) -> Option<PathBuf> {
-    std::env::var_os(format!("SOUNDCHECK_{}_READER", platform.to_uppercase()))
-        .map(PathBuf::from)
-        .or_else(|| {
-            let built = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../readers")
-                .join(platform)
-                .join("build")
-                .join(built);
-            built.exists().then_some(built)
-        })
+    if let Some(path) = std::env::var_os(format!("SOUNDCHECK_{}_READER", platform.to_uppercase())) {
+        return Some(PathBuf::from(path));
+    }
+    let prebuilt = std::env::current_exe()
+        .and_then(|exe| exe.canonicalize())
+        .ok()
+        .and_then(|exe| {
+            Some(
+                exe.parent()?
+                    .parent()?
+                    .join("readers")
+                    .join(platform)
+                    .join(built),
+            )
+        });
+    let checkout = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../readers")
+        .join(platform)
+        .join("build")
+        .join(built);
+    prebuilt.into_iter().chain([checkout]).find(|p| p.exists())
 }
 
 /// Connects a platform's device the way a run does: web launches its own Chrome against the suite's base-url; Android

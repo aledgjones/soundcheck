@@ -15,7 +15,21 @@ The design, and the reasons behind it, are in [DESIGN.md](DESIGN.md).
 
 ## Install
 
-You need a Rust toolchain, plus what each platform drives: Chrome for web; the Android SDK (adb, build tools) for Android; Xcode and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) for iOS, whose reader build compiles idb's simulator frameworks from source (about a minute, once).
+You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator) for Android, Xcode for iOS.
+
+### Prebuilt (Apple Silicon Macs)
+
+```sh
+gh release download --repo aledgjones/soundcheck --pattern '*.tar.gz'
+mkdir -p ~/soundcheck && tar -xzf soundcheck-*-macos-arm64.tar.gz -C ~/soundcheck
+echo 'export PATH="$HOME/soundcheck/bin:$PATH"' >> ~/.zshrc   # then open a new terminal
+```
+
+A tarball downloaded through a browser is quarantined: `xattr -dr com.apple.quarantine ~/soundcheck` first.
+
+### From source
+
+Also needs a Rust toolchain, JDK 17+ and Android build-tools 35 for the Android reader, and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`) for the iOS reader, whose build compiles idb's simulator frameworks from source (about a minute, once).
 
 ```sh
 cargo install --path crates/server     # puts `soundcheck` on your PATH
@@ -23,12 +37,16 @@ readers/android/build.sh               # the Android reader APK
 readers/ios/build.sh                   # the iOS reader
 ```
 
-The server finds the readers in `readers/<platform>/build/`, or where `SOUNDCHECK_ANDROID_READER` and `SOUNDCHECK_IOS_READER` point. It drives the one running emulator (`ANDROID_SERIAL` picks one) and the one booted simulator (`SOUNDCHECK_IOS_UDID` picks one).
+`scripts/release.sh` packages all of it into `target/package/`, and `scripts/release.sh --publish` uploads that as the GitHub release for the version in `Cargo.toml`.
 
-Then, in Claude Code:
+### Then
+
+The server finds the readers beside a prebuilt `bin/soundcheck`, in a checkout's `readers/<platform>/build/`, or where `SOUNDCHECK_ANDROID_READER` and `SOUNDCHECK_IOS_READER` point. It drives the one running emulator (`ANDROID_SERIAL` picks one) and the one booted simulator (`SOUNDCHECK_IOS_UDID` picks one).
+
+In Claude Code, with the folder you unpacked or cloned:
 
 ```
-/plugin marketplace add /path/to/soundcheck
+/plugin marketplace add ~/soundcheck
 /plugin install soundcheck@soundcheck
 ```
 
