@@ -47,11 +47,21 @@ pub struct CheckLine {
 /// The operations every platform shares, built on a [`Device`]'s raw reads and inputs.
 pub struct Driver<D: Device> {
     pub device: D,
+    /// The proxy the app reaches its services through, when the suite configures one; otherwise the network
+    /// tools fall to the device's own switch (web).
+    pub network: Option<crate::proxy::Network>,
 }
 
 impl<D: Device> Driver<D> {
     pub fn new(device: D) -> Self {
-        Driver { device }
+        Driver {
+            device,
+            network: None,
+        }
+    }
+
+    pub fn with_network(self, network: Option<crate::proxy::Network>) -> Self {
+        Driver { network, ..self }
     }
 
     pub async fn see(&self, filter: Option<&Matcher>, all: bool) -> Result<Vec<Element>> {
@@ -193,7 +203,18 @@ impl<D: Device> Driver<D> {
 
     pub async fn network_drop(&self, seconds: u64) -> Result<()> {
         within("network-drop", seconds, 1, NETWORK_DROP_MAX_S, "seconds")?;
-        self.device.network_drop(seconds).await
+        match &self.network {
+            Some(n) => n.drop_for(seconds).await,
+            None => self.device.network_drop(seconds).await,
+        }
+    }
+
+    /// Takes the app offline (connections refused, as in airplane mode) until called with `false`.
+    pub async fn offline(&self, on: bool) -> Result<()> {
+        match &self.network {
+            Some(n) => n.offline(on).await,
+            None => self.device.offline(on).await,
+        }
     }
 
     /// Places with a held touch from `from` (to `to` for a line or stroke), screenshots the preview while held,

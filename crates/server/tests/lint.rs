@@ -38,7 +38,7 @@ fn a_broken_suite_reports_every_rule() {
         "annotations/004-tools.spec.md: seed: viewer isn't in suite.yaml's seeds",
         "annotations/004-tools.spec.md: platforms: ios isn't configured in suite.yaml",
         "annotations/004-tools.spec.md: tools: tap is a basic tool",
-        "annotations/004-tools.spec.md: tools: network-drop doesn't run on ios",
+        "annotations/004-tools.spec.md: tools: network-drop on a device needs suite.yaml's network section",
         "annotations/003-empty.spec.md: needs a `## Goal` with text",
         "annotations/003-empty.spec.md: needs a `## Outcomes` list",
         "annotations/_feature.md: every feature needs a _feature.md",
@@ -111,4 +111,20 @@ fn specs_can_live_in_their_own_folder() {
     // The missing _feature.md is reported where it belongs.
     let paths: Vec<_> = lint(&suite, "0.1.0").into_iter().map(|p| p.path).collect();
     assert_eq!(paths, [Path::new("suite/annotations/_feature.md")]);
+}
+
+#[test]
+fn a_network_section_is_checked() {
+    let report: Vec<String> = problems("network")
+        .iter()
+        .map(|p| format!("{}: {}", p.path.display(), p.message))
+        .collect();
+    assert_eq!(
+        report,
+        [
+            "suite.yaml: network.proxy.echo: listen and upstream must differ",
+            "suite.yaml: network.proxy.echo: port 23000 listed twice",
+            "suite.yaml: network: one proxy serves every platform, so platforms can't run in parallel",
+        ]
+    );
 }

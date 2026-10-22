@@ -49,7 +49,7 @@ Erase across two strokes at once; change the eraser width first.
 | `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem |
 | `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                              |
 | `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                         |
-| `tools`             | Optional driver tools beyond the basics: `double-tap` (a quick double tap), `network-drop` (offline and reconnect)                                       |
+| `tools`             | Optional driver tools beyond the basics: `double-tap` (a quick double tap), `network-drop` (the network dies quietly, then comes back), `offline` (airplane mode until brought back) |
 | `keyboard`          | `software` when an outcome is about the on-screen keyboard; otherwise a hardware keyboard is connected (iOS), so typing is fast            |
 | `past-bugs`         | Tickets this spec guards                                                                                                                   |
 | `proven-failing-on` | Builds where this spec caught a real bug. Only record what actually happened; never fill it in to look trustworthy                         |
@@ -83,6 +83,10 @@ Most specs start this way.
 3. Add the ticket to `past-bugs`.
 4. If the trigger is mechanical (a double-tap, which one tap call at a time is too slow to make, or a dropped network), name the driver tool in `tools` and say how to use it ("double-tap the page with `double-tap`"). Taps keep a person's timing; a race that needs a faster or shorter touch is outside what a regression suite catches. Another quick gesture gets its own named tool, never a burst with a count. The tool's output is evidence; the tester's judgement of the whole spec is the result.
 5. Record `proven-failing-on` only after the spec has failed on the bug build.
+
+## Offline and network specs
+
+`offline` and `network-drop` cut the app's own services through the suite's network proxy (`network` in `suite.yaml`); lint refuses them on a device without it. They don't cut what the device reaches on the internet itself, such as a store: a spec about the store being unreachable needs the device's own airplane mode, which only Android has, so it's Android-only. In the spec, say when to go offline and when to come back; the run brings the network back after the spec anyway. Pick `offline` for "no connection" (the app should say so at once) and `network-drop` for a connection that dies quietly in the background.
 
 ## Rewording a spec flagged "spec unclear"
 

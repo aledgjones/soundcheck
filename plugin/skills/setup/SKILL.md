@@ -24,8 +24,9 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
 6. **Build identity:** how to tell which build is installed: commit, native fingerprint (if the platform has one), version.
 7. **Installing a build** on each device, if soundcheck should do it.
 8. **Data checks** testers may need, e.g. "what's in the database for this account".
-9. **Tickets:** the tracker and its link format, for triage.
-10. **Where things live:** the suite folder (usually the project skill's own folder, with the specs in `suite/`) and where runs are written.
+9. **Network:** will specs take the app offline or drop its network? On a device that goes through soundcheck's proxy, so list each local service the app reaches (API, sync, file storage…) with its real port, and pick a port for the proxy to listen on. The project's test builds must point the app at the listen ports, including any URL the backend hands out (signed file URLs). The device's store or other internet services stay outside it. Skip it for a suite with no offline specs.
+10. **Tickets:** the tracker and its link format, for triage.
+11. **Where things live:** the suite folder (usually the project skill's own folder, with the specs in `suite/`) and where runs are written.
 
 ## 2. Write the suite
 
@@ -64,6 +65,9 @@ specs: suite
 reports: ../../../reports # relative to suite.yaml; runs are written here
 tickets:
   url: https://example.atlassian.net/browse/{id}
+network: # only for offline specs: the test build reaches `listen`, `upstream` really serves it
+  proxy:
+    - { name: api, listen: 23000, upstream: 3000 }
 ```
 
 ### Hooks

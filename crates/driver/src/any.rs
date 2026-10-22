@@ -98,8 +98,8 @@ impl Device for AnyDevice {
     async fn double_tap(&self, x: f64, y: f64) -> Result<()> {
         each!(self, d => d.double_tap(x, y).await)
     }
-    async fn intercept_network(&self, on: bool) -> Result<()> {
-        each!(self, d => d.intercept_network(on).await)
+    async fn offline(&self, on: bool) -> Result<()> {
+        each!(self, d => d.offline(on).await)
     }
     async fn hardware_keyboard(&self, on: bool) -> Result<()> {
         each!(self, d => d.hardware_keyboard(on).await)

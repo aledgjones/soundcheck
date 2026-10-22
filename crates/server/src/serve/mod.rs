@@ -90,6 +90,35 @@ pub async fn connect(
     })
 }
 
+/// A platform's driver as a run uses it: its device and, on Android and iOS, the suite's network proxy (started if
+/// it isn't up), with Android's ports forwarded to it.
+pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<Driver<AnyDevice>> {
+    let config = suite.config.as_ref();
+    let device = connect(
+        platform,
+        config.and_then(|c| c.platforms.get(&platform)),
+        headed,
+    )
+    .await?;
+    let routes = config.and_then(crate::network::routes);
+    let (device, network) = match (device, routes) {
+        (device @ AnyDevice::Web(_), _) | (device, None) => (device, None),
+        (AnyDevice::Android(android), Some(routes)) => {
+            let network = crate::network::ensure(&suite.root, &routes).await?;
+            let ports: Vec<u16> = routes.iter().map(|r| r.listen).collect();
+            (
+                AnyDevice::Android(android.forward(&ports).await?),
+                Some(network),
+            )
+        }
+        (device, Some(routes)) => (
+            device,
+            Some(crate::network::ensure(&suite.root, &routes).await?),
+        ),
+    };
+    Ok(Driver::new(device).with_network(network))
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -304,13 +333,7 @@ impl Hub {
         }
         let mut devices = self.devices.lock().await;
         if let std::collections::hash_map::Entry::Vacant(slot) = devices.entry(platform) {
-            let suite = self.suite();
-            let config = suite
-                .config
-                .as_ref()
-                .and_then(|c| c.platforms.get(&platform));
-            let device = connect(platform, config, self.headed).await?;
-            slot.insert(Driver::new(device));
+            slot.insert(driver(platform, &self.suite(), self.headed).await?);
         }
         Ok(op(&devices[&platform]).await?)
     }
@@ -327,6 +350,15 @@ impl Hub {
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
             let attempt = async {
+                // Every spec starts online, whatever the last one left; first, since the seed may go through it.
+                if let Some(routes) = crate::network::routes(config).filter(|_| {
+                    platform != Platform::Web && !self.without_devices.contains(&platform)
+                }) {
+                    crate::network::ensure(root, &routes)
+                        .await?
+                        .offline(false)
+                        .await?;
+                }
                 hooks::run(root, &config.hooks.guard, hooks::GUARD_TIMEOUT)
                     .await
                     .context("the guard refused")?;
@@ -334,11 +366,8 @@ impl Hub {
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
-                    let intercept = spec.front.tools.iter().any(|t| t == "network-drop");
                     let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
                     self.on_device(platform, async |d| {
-                        // Before the launch, so the app's connections go through the proxy that can freeze them.
-                        d.device.intercept_network(intercept).await?;
                         d.device.hardware_keyboard(hardware).await?;
                         Device::launch(&d.device).await?;
                         for label in &starts_on {
@@ -476,7 +505,13 @@ impl Hub {
             return;
         }
         let Ok(health) = self
-            .on_device(platform, async |d| d.device.health().await)
+            .on_device(platform, async |d| {
+                // An attempt that ended offline mustn't leave the app cut off between specs.
+                if let Some(network) = &d.network {
+                    network.offline(false).await?;
+                }
+                d.device.health().await
+            })
             .await
         else {
             return;

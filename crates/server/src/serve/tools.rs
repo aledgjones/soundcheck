@@ -225,6 +225,13 @@ pub struct SecondsParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct OfflineParams {
+    pub token: String,
+    /// true takes the app offline; false brings it back online.
+    pub on: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct PushParams {
     pub token: String,
     /// A file in the suite's fixtures.
@@ -1254,6 +1261,21 @@ impl Tools {
             d.network_drop(p.seconds)
                 .await
                 .map(|()| format!("network down for {} s; it comes back on its own", p.seconds))
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: take the app offline (`on: true`: connections refused, as in airplane mode) or bring it back (`on: false`). It stays offline until you bring it back; the run brings it back after your spec."
+    )]
+    async fn offline(
+        &self,
+        Parameters(p): Parameters<OfflineParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.offline(p.on)
+                .await
+                .map(|()| if p.on { "offline" } else { "online" }.to_string())
         })
         .await
     }

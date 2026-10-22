@@ -212,8 +212,9 @@ Nothing in a run may wait for a human:
 - **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots. Two more are for the harness itself: `parity` (4.3) and `keyboard hardware|software` (iOS).
 - **Tools for mechanics an agent can't do one call at a time:**
   - `double-tap <target>`, which one tap call at a time is too slow to make: two taps 150 ms apart, a person's double-tap. A quick gesture gets its own named tool like this one, never a burst with a count or an interval a spec could set faster than a finger;
-  - `network-drop <seconds>`, with the app in the background;
-    on Android, a spec listing `network-drop` launches with its `adb reverse` forwards through a proxy that freezes them: nothing passes and nothing closes, as when a phone loses the network in the background. Connections open during the drop stay frozen; new ones get through after it;
+  - `network-drop <seconds>`, with the app in the background: nothing passes and nothing closes, as when a phone loses the network in the background. Connections open during the drop stay frozen; new ones get through after it;
+  - `offline` on and off: connections are refused and open ones closed, as in airplane mode, until the tester brings the network back. The run brings it back before every spec and after every attempt;
+  - on Android and iOS both go through the suite's network proxy (5.2 `network`); web uses Chrome's own offline switch. A suite without a `network` section can't use them on a device, and lint says so (Aled, 2026-10-22: iOS had no way offline, and Android's airplane mode never cut the local stack, since `adb reverse` goes around it);
   - timed `drag`, `hold` and `swipe`.
 - **Units:** milliseconds everywhere, and absurd values are rejected (an agent once passed ms to a seconds argument and waited 16 hours).
 
@@ -293,6 +294,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `models`: the default tester model (Sonnet).
 - `parallel`: false by default.
 - `tickets`: how to link a ticket ID.
+- `network`: optional. `proxy` lists routes, each `{ name, listen, upstream }`: the app's test build reaches `listen`, and `upstream` really serves it. Soundcheck knows ports only; which services exist and why is the project's business. `soundcheck proxy serve` runs the proxies (a run or `soundcheck drive` starts it, detached, when it isn't up, and it keeps running between runs so the test build always reaches its services); `status` and `stop` manage it. Android forwards each `listen` port with `adb reverse` to the same port; the iOS simulator shares the Mac's ports. One proxy serves every platform, so a suite with `network` can't run platforms in parallel.
 
 ### 5.3 Hooks
 

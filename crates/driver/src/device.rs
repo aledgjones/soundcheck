@@ -132,18 +132,17 @@ pub trait Device {
         tokio::time::sleep(std::time::Duration::from_millis(DOUBLE_TAP_MS)).await;
         self.tap_at(x, y).await
     }
-    /// Puts (or takes) the device's connections through a proxy `network_drop` can freeze. Called before the app
-    /// launches, so its connections go through it; a platform that doesn't need it accepts and does nothing.
-    async fn intercept_network(&self, _on: bool) -> Result<()> {
-        Ok(())
-    }
     /// Connects or disconnects the device's hardware keyboard: connected, typing is fast; disconnected, the on-screen
     /// keyboard shows. Called before the app launches; a platform without one accepts and does nothing.
     async fn hardware_keyboard(&self, _on: bool) -> Result<()> {
         Ok(())
     }
+    /// The device's own network switch, where it has one (web); Android and iOS go through the network proxy.
     async fn network_drop(&self, _seconds: u64) -> Result<()> {
         Err(self.unsupported("network-drop"))
+    }
+    async fn offline(&self, _on: bool) -> Result<()> {
+        Err(self.unsupported("offline"))
     }
 
     /// Samples the device's health, and repairs what it safely can on the spot (lost port forwards).

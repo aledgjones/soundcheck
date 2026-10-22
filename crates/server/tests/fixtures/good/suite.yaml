@@ -17,3 +17,6 @@ hooks:
 seeds: [viewer, empty]
 tickets:
   url: https://example.atlassian.net/browse/{id}
+network:
+  proxy:
+    - { name: api, listen: 23000, upstream: 3000 }

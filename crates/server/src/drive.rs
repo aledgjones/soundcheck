@@ -2,14 +2,13 @@
 //! setting up screenshots. The readers stay up on the device between calls, so each call costs a connect, not a
 //! reader start.
 
-use crate::serve::connect;
 use crate::serve::tools::{Step, line, step};
 use crate::suite::config::Platform;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::parity::compare;
-use soundcheck_driver::{Device, Driver, Matcher};
+use soundcheck_driver::{Device, Matcher};
 use std::path::{Path, PathBuf};
 
 #[derive(Subcommand)]
@@ -81,6 +80,13 @@ pub enum Action {
         #[arg(value_parser = ["hardware", "software"])]
         kind: String,
     },
+    /// Take the app offline (connections refused, as in airplane mode), or bring it back, through the suite's proxy.
+    Network {
+        #[arg(value_parser = ["offline", "online"])]
+        state: String,
+    },
+    /// Freeze the network for N seconds (nothing passes, nothing closes), then let new connections through.
+    NetworkDrop { seconds: u64 },
     /// Compare the reader's view of this screen with the platform's own tool (uiautomator, axe), both the full tree
     /// and the screen reader's.
     Parity,
@@ -91,11 +97,7 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
         bail!("web has no browser outside a run to drive: each call would start a fresh one");
     }
     let loaded = crate::suite::load(suite);
-    let config = loaded
-        .config
-        .as_ref()
-        .and_then(|c| c.platforms.get(&platform));
-    let driver = Driver::new(connect(platform, config, false).await?);
+    let driver = crate::serve::driver(platform, &loaded, false).await?;
     let d = &driver;
     let matcher = |t: &str| Matcher::parse(t).map_err(|e| anyhow::anyhow!("{t}: {e}"));
     let as_step = |s: Step| async move { Ok::<_, anyhow::Error>(step(d, &s).await?) };
@@ -164,6 +166,14 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
         Action::Keyboard { kind } => {
             d.device.hardware_keyboard(kind == "hardware").await?;
             format!("{kind} keyboard")
+        }
+        Action::Network { state } => {
+            d.offline(state == "offline").await?;
+            state
+        }
+        Action::NetworkDrop { seconds } => {
+            d.network_drop(seconds).await?;
+            format!("network down for {seconds} s; it comes back on its own")
         }
         Action::Parity => parity(&d.device).await?,
     })

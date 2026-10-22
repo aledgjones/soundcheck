@@ -22,6 +22,7 @@ fn driver_platform(platform: Platform) -> soundcheck_driver::Platform {
 
 pub const MODELS: &[&str] = &["haiku", "sonnet", "opus", "fable"];
 const TITLE_MAX: usize = 80;
+const NETWORK_TOOLS: &[&str] = &["network-drop", "offline"];
 
 /// A title is the user's goal in plain words: no tap paths, IDs or commands.
 static TITLE_NOISE: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {
@@ -75,6 +76,42 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 need("start", &p.start);
             }
             _ => need("app-id", &p.app_id),
+        }
+    }
+    if let Some(network) = &config.network {
+        if network.proxy.is_empty() {
+            push(
+                CONFIG_FILE.into(),
+                "network.proxy: list at least one route".into(),
+            );
+        }
+        let mut listens = BTreeSet::new();
+        for route in &network.proxy {
+            if route.listen == route.upstream {
+                push(
+                    CONFIG_FILE.into(),
+                    format!(
+                        "network.proxy.{}: listen and upstream must differ",
+                        route.name
+                    ),
+                );
+            }
+            if !listens.insert(route.listen) {
+                push(
+                    CONFIG_FILE.into(),
+                    format!(
+                        "network.proxy.{}: port {} listed twice",
+                        route.name, route.listen
+                    ),
+                );
+            }
+        }
+        if config.parallel {
+            push(
+                CONFIG_FILE.into(),
+                "network: one proxy serves every platform, so platforms can't run in parallel"
+                    .into(),
+            );
         }
     }
     if !config.hooks.seed.contains("{scenario}") {
@@ -176,6 +213,15 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                         if !t.platforms.contains(&driver_platform(*platform)) {
                             push(format!("tools: {name} doesn't run on {platform}"));
                         }
+                    }
+                    // Web has the browser's own switch; a device's network goes through the suite's proxy.
+                    if NETWORK_TOOLS.contains(&name.as_str())
+                        && config.network.is_none()
+                        && f.platforms.iter().any(|p| *p != Platform::Web)
+                    {
+                        push(format!(
+                            "tools: {name} on a device needs suite.yaml's network section (the proxy it goes through)"
+                        ));
                     }
                 }
             }

@@ -101,8 +101,13 @@ pub const TOOLS: &[Tool] = &[
     ),
     mechanic(
         "network-drop",
-        &[Platform::Android, Platform::Web],
+        ALL,
         "freeze the network for N seconds (nothing passes, nothing closes), then let new connections through",
+    ),
+    mechanic(
+        "offline",
+        ALL,
+        "take the app offline (connections refused, as in airplane mode) until it is brought back online",
     ),
 ];
 

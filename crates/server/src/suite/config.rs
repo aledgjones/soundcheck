@@ -58,6 +58,23 @@ pub struct SuiteConfig {
     #[serde(default)]
     pub parallel: bool,
     pub tickets: Option<Tickets>,
+    /// How the app reaches its services on this machine, so `offline` and `network-drop` can cut them.
+    pub network: Option<Network>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Network {
+    pub proxy: Vec<ProxyRoute>,
+}
+
+/// The app's test build reaches `listen`; `upstream` really serves it.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProxyRoute {
+    pub name: String,
+    pub listen: u16,
+    pub upstream: u16,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

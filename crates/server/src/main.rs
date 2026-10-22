@@ -61,6 +61,14 @@ enum Command {
         #[arg(long, default_value_t = 7357)]
         port: u16,
     },
+    /// The suite's network proxy (suite.yaml `network`): runs and drive commands start it when it isn't up.
+    Proxy {
+        #[arg(value_parser = ["serve", "status", "stop"])]
+        action: String,
+        /// The suite folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        suite: PathBuf,
+    },
 }
 
 #[derive(clap::Args)]
@@ -105,6 +113,10 @@ fn main() -> ExitCode {
         Command::Lint { suite } => return lint_command(&suite),
         Command::Run(args) => run_command(args),
         Command::Events { run, after, once } => events_command(&run, after, once),
+        Command::Proxy { action, suite } => tokio::runtime::Runtime::new()
+            .map_err(anyhow::Error::from)
+            .and_then(|rt| rt.block_on(proxy_command(&action, &suite)))
+            .map(|out| println!("{out}")),
         Command::Mcp { port } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(soundcheck::bridge::bridge(port))),
@@ -528,4 +540,28 @@ fn run_name() -> String {
 fn pass(checks: &mut Vec<String>, check: String) {
     println!("✓ {check}");
     checks.push(check);
+}
+
+async fn proxy_command(action: &str, root: &Path) -> Result<String> {
+    use soundcheck_driver::proxy;
+    let loaded = suite::load(root);
+    let config = loaded.config.as_ref().context("no suite.yaml")?;
+    let routes =
+        soundcheck::network::routes(config).context("suite.yaml has no network section")?;
+    let socket = proxy::socket_path(&routes);
+    match action {
+        "serve" => {
+            if proxy::command(&socket, "status").await.is_ok() {
+                bail!("the proxy is already running ({})", socket.display());
+            }
+            proxy::serve(&routes, &socket).await?;
+            Ok("stopped".into())
+        }
+        "status" => Ok(proxy::command(&socket, "status")
+            .await
+            .unwrap_or_else(|_| "not running".into())),
+        _ => Ok(proxy::command(&socket, "stop")
+            .await
+            .unwrap_or_else(|_| "not running".into())),
+    }
 }

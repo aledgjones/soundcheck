@@ -1,6 +1,7 @@
 //! Drives the running Android emulator with Android's own Settings app. Skips where no emulator is running.
 
 use soundcheck_driver::android::Android;
+use soundcheck_driver::proxy::{self, Route};
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -104,7 +105,7 @@ fn echo_from_device() -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn network_drop_freezes_the_device_connections_then_lets_new_ones_through() {
+async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline() {
     let _turn = EMULATOR.lock().await;
     let android = match Android::connect("com.android.settings", None).await {
         Ok(a) => a,
@@ -113,7 +114,7 @@ async fn network_drop_freezes_the_device_connections_then_lets_new_ones_through(
             return;
         }
     };
-    let echo = tokio::net::TcpListener::bind(("127.0.0.1", 18999))
+    let echo = tokio::net::TcpListener::bind(("127.0.0.1", 18997))
         .await
         .unwrap();
     tokio::spawn(async move {
@@ -124,27 +125,27 @@ async fn network_drop_freezes_the_device_connections_then_lets_new_ones_through(
             });
         }
     });
-    adb(&["reverse", "tcp:18999", "tcp:18999"]);
-
-    android.intercept_network(true).await.unwrap();
-    assert!(adb(&["reverse", "--list"]).contains("tcp:18999 tcp:38999"));
+    let routes = [Route {
+        name: "echo".into(),
+        listen: 18999,
+        upstream: 18997,
+    }];
+    let socket = proxy::socket_path(&routes);
+    tokio::spawn({
+        let socket = socket.clone();
+        async move { proxy::serve(&routes, &socket).await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let _android = android.forward(&[18999]).await.unwrap();
+    assert!(adb(&["reverse", "--list"]).contains("tcp:18999 tcp:18999"));
     assert_eq!(echo_from_device(), "ping");
 
-    let dropping = android.network_drop(5);
-    let during = async {
-        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-        tokio::task::spawn_blocking(echo_from_device).await.unwrap()
-    };
-    let ((), during) = tokio::join!(async { dropping.await.unwrap() }, during);
-    assert_eq!(during, "", "a connection made while dropped got through");
-    assert_eq!(
-        echo_from_device(),
-        "ping",
-        "new connections didn't come back"
-    );
+    assert_eq!(proxy::command(&socket, "offline").await.unwrap(), "offline");
+    assert_eq!(echo_from_device(), "", "an offline device got through");
+    assert_eq!(proxy::command(&socket, "online").await.unwrap(), "online");
+    assert_eq!(echo_from_device(), "ping", "it didn't come back online");
 
-    android.intercept_network(false).await.unwrap();
-    assert!(adb(&["reverse", "--list"]).contains("tcp:18999 tcp:18999"));
+    proxy::command(&socket, "stop").await.unwrap();
     adb(&["reverse", "--remove", "tcp:18999"]);
 }
 

@@ -9,6 +9,7 @@ pub mod ios;
 pub mod matcher;
 pub mod ops;
 pub mod parity;
+pub mod proxy;
 pub mod tools;
 pub mod web;
 

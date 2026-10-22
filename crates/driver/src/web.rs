@@ -514,6 +514,14 @@ impl Device for Web {
         Ok(())
     }
 
+    async fn offline(&self, on: bool) -> Result<()> {
+        self.page
+            .execute(NetworkEnable::default())
+            .await
+            .map_err(device)?;
+        self.set_offline(on).await
+    }
+
     async fn network_drop(&self, seconds: u64) -> Result<()> {
         self.page
             .execute(NetworkEnable::default())
