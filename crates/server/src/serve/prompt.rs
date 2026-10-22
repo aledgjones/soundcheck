@@ -37,7 +37,7 @@ pub fn render(
     if let Some(seeded) = seeded.map(str::trim).filter(|s| !s.is_empty()) {
         let _ = writeln!(
             out,
-            "## Starting state\n\nThe app was reset to the `{}` seed:\n\n{seeded}\n",
+            "## Starting state\n\nThe spec starts from the `{}` seed:\n\n{seeded}\n",
             spec.front.seed
         );
     }

@@ -53,8 +53,23 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
 #[test]
 fn the_mcp_config_runs_the_stdio_bridge() {
     let config: serde_json::Value = serde_json::from_str(&plugin_file(".mcp.json")).unwrap();
-    assert_eq!(config["soundcheck"]["command"], "soundcheck");
+    assert_eq!(
+        config["soundcheck"]["command"],
+        "${CLAUDE_PLUGIN_ROOT}/bin/soundcheck"
+    );
     assert_eq!(config["soundcheck"]["args"], serde_json::json!(["mcp"]));
+}
+
+#[test]
+fn the_plugin_bin_runs_the_release_for_its_version() {
+    let shim = plugin_file("bin/soundcheck");
+    assert!(shim.contains(".claude-plugin/plugin.json"));
+    assert!(shim.contains("releases/download/v$version/soundcheck-$version-macos-arm64.tar.gz"));
+    let release = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts/release.sh"),
+    )
+    .unwrap();
+    assert!(release.contains(r#"NAME="soundcheck-$VERSION-macos-arm64""#));
 }
 
 #[test]

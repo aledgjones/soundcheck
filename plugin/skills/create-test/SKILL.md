@@ -69,6 +69,7 @@ Erase across two strokes at once; change the eraser width first.
 
 - A spec never relies on state another spec left behind, and never mentions another spec. A flow that builds on itself (create, rename, delete) is one spec.
 - If no seed scenario gives the starting state, add one: extend the project's seed hook, add the name to `suite.yaml`'s `seeds`, and pick `starts-on` labels unique to it. Boundaries (storage exactly full, one byte over) are seed scenarios too.
+- A seed can only reset what the project lets it: backend data, device state or both. Where it can't reset the data, the spec leaves the data as it found it: it only reads, or it undoes what it changed, and its outcomes say so.
 
 ## Controls without a label
 
@@ -99,3 +100,5 @@ Give the spec its new path; the path is its ID, so a renamed spec starts a fresh
 ## Finish
 
 Run `soundcheck lint <suite folder>` and fix every problem it reports. Lint checks the config, file names, frontmatter, sections, seeds, platforms, tools, and title rules. A run refuses to start on a suite that doesn't lint clean.
+
+Change only the suite (and the seed hook, for a new scenario). That lint is soundcheck's, not the project's: never run the project's linters or formatters across the repo, and if the project formats files, format only the ones you wrote.
