@@ -7,6 +7,7 @@ use crate::suite::config::Platform;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use soundcheck_driver::any::AnyDevice;
+use soundcheck_driver::ios::Ios;
 use soundcheck_driver::parity::compare;
 use soundcheck_driver::{Device, Matcher};
 use std::path::{Path, PathBuf};
@@ -64,6 +65,15 @@ pub enum Action {
         y2: f64,
         #[arg(default_value_t = 700)]
         hold_ms: u64,
+        /// Stay down at the end, kept alive, until `release`, other input, or 30 s. iOS only.
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Lift the touch `drag --keep` left down. iOS only.
+    Release {
+        /// Move back to where the drag began first, so nothing is dropped.
+        #[arg(long)]
+        back: bool,
     },
     /// Press a hardware key (ArrowRight, Enter, Escape…).
     Press { key: String },
@@ -132,9 +142,26 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             x2,
             y2,
             hold_ms,
+            keep,
         } => {
-            d.drag((x1, y1), (x2, y2), hold_ms).await?;
-            "dragged".into()
+            if keep {
+                ios(&d.device)?
+                    .drag_keep((x1, y1), (x2, y2), hold_ms)
+                    .await?;
+                "dragged; the touch stays down until `release`".into()
+            } else {
+                d.drag((x1, y1), (x2, y2), hold_ms).await?;
+                "dragged".into()
+            }
+        }
+        Action::Release { back } => {
+            ios(&d.device)?.release(back).await?;
+            if back {
+                "moved back and released"
+            } else {
+                "released"
+            }
+            .into()
         }
         Action::Press { key } => as_step(Step::Press { key }).await?,
         Action::Launch => {
@@ -176,6 +203,13 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
         }
         Action::Parity => parity(&d.device).await?,
     })
+}
+
+fn ios(device: &AnyDevice) -> Result<&Ios> {
+    match device {
+        AnyDevice::Ios(i) => Ok(i),
+        _ => bail!("a held touch is iOS only"),
+    }
 }
 
 async fn parity(device: &AnyDevice) -> Result<String> {

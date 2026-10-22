@@ -211,6 +211,25 @@ impl Ios {
         self.reader_get(&path).await.map(|_| ())
     }
 
+    /// Drags as `drag` does but stays down at `to`, kept alive by the reader until `release`, other input, or 30 s.
+    pub async fn drag_keep(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
+        let mut points = vec![from];
+        points.extend(path(from, to));
+        let script = touch_script(&points, hold_ms, 30);
+        let down = script
+            .rsplit_once(";u ")
+            .map_or(script.as_str(), |(s, _)| s);
+        self.hid(&format!("{down};h")).await
+    }
+
+    /// Lifts the touch `drag_keep` left down: where it is, or `back` along the line to where it began.
+    pub async fn release(&self, back: bool) -> Result<()> {
+        self.ensure_reader().await?;
+        self.reader_get(if back { "/release?back" } else { "/release" })
+            .await
+            .map(|_| ())
+    }
+
     /// The screen's elements when the on-screen keyboard is up (its `space` and `shift` keys show), else none.
     async fn on_screen_keyboard(&self) -> Result<Option<Vec<Element>>> {
         if self
@@ -352,8 +371,9 @@ impl Ios {
         let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
         if !head.starts_with("HTTP/1.0 200") {
             return Err(device(format!(
-                "reader: {}",
-                head.lines().next().unwrap_or("")
+                "reader: {} {}",
+                head.lines().next().unwrap_or(""),
+                body.trim()
             )));
         }
         Ok(body.to_string())
