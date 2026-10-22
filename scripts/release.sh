@@ -13,6 +13,11 @@ fi
   exit 1
 }
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+PLUGIN_VERSION=$(sed -n 's/^ *"version": "\(.*\)",*$/\1/p' plugin/.claude-plugin/plugin.json)
+[ "$PLUGIN_VERSION" = "$VERSION" ] || {
+  echo "plugin.json is $PLUGIN_VERSION but Cargo.toml is $VERSION: bump both" >&2
+  exit 1
+}
 if [ -n "$PUBLISH" ]; then
   [ -z "$(git status --porcelain)" ] || {
     echo "commit first: a release is built from a clean tree" >&2
