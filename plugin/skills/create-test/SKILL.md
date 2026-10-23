@@ -62,7 +62,7 @@ Erase across two strokes at once; change the eraser width first.
   - concrete enough that two testers would agree ("Undo brings the erased part back", not "Undo works properly");
   - exact copy only for destructive or blocking messages (delete confirmations, storage full);
   - no layout details a design tweak would break: header text, dividers, button order.
-- **`## Probe around it`** (optional): variations to try near the goal. Agents find new bugs next to old ones, so every past bug gets one.
+- **`## Probe around it`** (optional): variations to try near the goal. Agents find new bugs next to old ones, so every past bug gets one. Each must be something a person could realistically do: "tap it while the drawer is closing" asks for a tap no finger lands, and only produces findings that aren't bugs.
 - **`## Pinned`** (optional): exact steps, only where they guard a past bug or reach a control an agent can't discover.
 
 ## Isolation

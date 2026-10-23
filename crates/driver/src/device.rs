@@ -32,6 +32,84 @@ pub fn double_tap_script(x: f64, y: f64) -> String {
     format!("{tap};w {};{tap}", DOUBLE_TAP_MS - DOUBLE_TAP_HOLD_MS)
 }
 
+/// Where a touch passes on its path, and how long it rests there.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Stop {
+    pub x: f64,
+    pub y: f64,
+    pub pause_ms: u64,
+}
+
+/// How far a moving touch goes between input events, in the platform's units.
+const TOUCH_STEP: f64 = 10.0;
+/// The rest before a moved touch lifts, so its end isn't read as a fling.
+pub const SETTLE_MS: u64 = 300;
+
+/// The points a touch moves through from `from` to `to`, at most [`TOUCH_STEP`] apart, ending at `to`.
+pub fn touch_path(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
+    let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / TOUCH_STEP)
+        .ceil()
+        .max(1.0) as u32;
+    (1..=steps)
+        .map(|i| {
+            let t = f64::from(i) / f64::from(steps);
+            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
+        })
+        .collect()
+}
+
+/// A reader input script for one finger through `stops`: down at the first, moving a step every `step_ms` and resting
+/// at each stop for its pause, then settling and lifting at the last. With `keep` it ends with `h` instead, and the
+/// reader holds the touch there until `release`.
+pub fn touch_script(stops: &[Stop], step_ms: u64, keep: bool) -> String {
+    let mut steps = Vec::new();
+    let mut at: Option<(f64, f64)> = None;
+    for stop in stops {
+        let to = (stop.x, stop.y);
+        match at {
+            None => steps.push(format!("d {:.0} {:.0}", to.0, to.1)),
+            Some(from) => {
+                for (x, y) in touch_path(from, to) {
+                    steps.push(format!("d {x:.0} {y:.0}"));
+                    steps.push(format!("w {step_ms}"));
+                }
+            }
+        }
+        if stop.pause_ms > 0 {
+            steps.push(format!("w {}", stop.pause_ms));
+        }
+        at = Some(to);
+    }
+    let Some((x, y)) = at else {
+        return String::new();
+    };
+    if keep {
+        steps.push("h".into());
+    } else {
+        if stops.len() > 1 {
+            steps.push(format!("w {SETTLE_MS}"));
+        }
+        steps.push(format!("u {x:.0} {y:.0}"));
+    }
+    steps.join(";")
+}
+
+/// A reader input script for a swipe from `from` to `to` over about `ms`, lifted while still moving so it can fling.
+pub fn swipe_script(from: (f64, f64), to: (f64, f64), ms: u64) -> String {
+    let points = touch_path(from, to);
+    let step = ms / (points.len() as u64 + 1);
+    let mut steps = vec![
+        format!("d {:.0} {:.0}", from.0, from.1),
+        format!("w {step}"),
+    ];
+    for (x, y) in points {
+        steps.push(format!("d {x:.0} {y:.0}"));
+        steps.push(format!("w {step}"));
+    }
+    steps.push(format!("u {:.0} {:.0}", to.0, to.1));
+    steps.join(";")
+}
+
 /// How the device was doing, sampled after a result: part of the evidence. A slowly degrading emulator once produced
 /// one-off failures that looked like app bugs.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -73,7 +151,6 @@ pub trait Device {
     async fn read(&self, all: bool) -> Result<Vec<Element>>;
     async fn tap_at(&self, x: f64, y: f64) -> Result<()>;
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()>;
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()>;
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()>;
     /// Appends to the focused field.
     async fn type_text(&self, text: &str) -> Result<()>;
@@ -98,6 +175,37 @@ pub trait Device {
     }
     async fn touch_up(&self, _x: f64, _y: f64) -> Result<()> {
         Err(self.unsupported("preview-compare"))
+    }
+    /// One finger along `stops`, as [`touch_script`] describes. Readers override it to time the moves on the device;
+    /// this one goes through `touch_down`, `touch_move` and `touch_up` and can't keep the touch down.
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        use std::time::Duration;
+        use tokio::time::sleep;
+        if keep {
+            return Err(self.unsupported("release"));
+        }
+        let Some(first) = stops.first() else {
+            return Ok(());
+        };
+        self.touch_down(first.x, first.y).await?;
+        sleep(Duration::from_millis(first.pause_ms)).await;
+        let mut at = (first.x, first.y);
+        for stop in &stops[1..] {
+            for (x, y) in touch_path(at, (stop.x, stop.y)) {
+                self.touch_move(x, y).await?;
+                sleep(Duration::from_millis(16)).await;
+            }
+            sleep(Duration::from_millis(stop.pause_ms)).await;
+            at = (stop.x, stop.y);
+        }
+        if stops.len() > 1 {
+            sleep(Duration::from_millis(SETTLE_MS)).await;
+        }
+        self.touch_up(at.0, at.1).await
+    }
+    /// Lifts the touch a kept `touch` left down: where it is, or `back` along a line to where it began.
+    async fn release(&self, _back: bool) -> Result<()> {
+        Err(self.unsupported("release"))
     }
     /// The screen's size in the units coordinates use, so a screenshot's pixels can be mapped to them.
     async fn screen_size(&self) -> Result<(f64, f64)> {
@@ -165,6 +273,60 @@ pub trait Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stop(x: f64, y: f64, pause_ms: u64) -> Stop {
+        Stop { x, y, pause_ms }
+    }
+
+    #[test]
+    fn a_drag_holds_then_moves_and_settles_before_lifting() {
+        assert_eq!(
+            touch_script(&[stop(0.0, 0.0, 500), stop(10.0, 0.0, 0)], 16, false),
+            "d 0 0;w 500;d 10 0;w 16;w 300;u 10 0"
+        );
+    }
+
+    #[test]
+    fn a_touch_can_go_out_and_back_resting_on_the_way() {
+        let script = touch_script(
+            &[stop(0.0, 0.0, 0), stop(20.0, 0.0, 200), stop(0.0, 0.0, 0)],
+            30,
+            false,
+        );
+        assert_eq!(
+            script,
+            "d 0 0;d 10 0;w 30;d 20 0;w 30;w 200;d 10 0;w 30;d 0 0;w 30;w 300;u 0 0"
+        );
+    }
+
+    #[test]
+    fn a_kept_touch_ends_held_down() {
+        let script = touch_script(&[stop(0.0, 0.0, 100), stop(10.0, 0.0, 0)], 16, true);
+        assert_eq!(script, "d 0 0;w 100;d 10 0;w 16;h");
+    }
+
+    #[test]
+    fn a_still_touch_is_a_hold() {
+        assert_eq!(
+            touch_script(&[stop(5.0, 6.0, 800)], 16, false),
+            "d 5 6;w 800;u 5 6"
+        );
+    }
+
+    #[test]
+    fn a_path_ends_where_it_was_aimed() {
+        let p = touch_path((0.0, 0.0), (25.0, 5.0));
+        assert_eq!(p.len(), 3);
+        assert_eq!(p.last(), Some(&(25.0, 5.0)));
+    }
+
+    #[test]
+    fn a_swipe_lifts_while_moving() {
+        assert_eq!(
+            swipe_script((0.0, 0.0), (20.0, 0.0), 300),
+            "d 0 0;w 100;d 10 0;w 100;d 20 0;w 100;u 20 0"
+        );
+    }
 
     #[test]
     fn a_busy_host_isnt_a_degraded_device() {

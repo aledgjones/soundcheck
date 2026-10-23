@@ -207,7 +207,8 @@ Nothing in a run may wait for a human:
   - `sleep <ms>`: a plain timed pause, at most 30 s (the coordinator's `pause` pauses the run, hence the name);
   - `shot`;
   - `errors`.
-- **Input:** `tap`, `fill`, `type`, `clear`, `swipe`, `drag`, `hold`, `keyboard`, `launch`.
+- **Input:** `tap`, `fill`, `type`, `clear`, `swipe`, `drag`, `hold`, `touch`, `release`, `keyboard`, `launch`.
+- **`touch`: one finger along a path** (SA-715). Each stop is an element or a point, with a rest there; the finger moves between stops at a fixed finger pace, settles and lifts at the last. It covers any gesture a finger makes without lifting: slide off a control and back, long-press then drag, stop a slider partway. Every element is found before the finger goes down, so nothing is read mid-gesture. With `keep` the touch stays down at the last stop, so a tester can `see` or `shot` mid-gesture, until `release` (where it is, or `back` to its start so nothing drops), the next input or 30 s, which both go back first. `drag` and `hold` are its two-stop and one-stop cases; `swipe` stays apart, since it lifts while moving to fling. The pace can't be set, for the same reason as `double-tap`'s rhythm. Web has no `keep`.
 - **Web-only:** `hover`, `goto` (URL, back, forward), `viewport`, key shortcuts. They're in the interface from day one, and a platform without one refuses it clearly, so a spec never silently skips a step.
 - **`batch`:** a sequence of steps that stops at its first failure.
 - **`soundcheck drive <platform> <command>`** runs the same commands from a terminal outside a run (Android and iOS; web has no browser to keep between calls), for exploring, reproducing a bug or setting up screenshots. Two more are for the harness itself: `parity` (4.3) and `keyboard hardware|software` (iOS).
@@ -216,7 +217,8 @@ Nothing in a run may wait for a human:
   - `network-drop <seconds>`, with the app in the background: nothing passes and nothing closes, as when a phone loses the network in the background. Connections open during the drop stay frozen; new ones get through after it;
   - `offline` on and off: connections are refused and open ones closed, as in airplane mode, until the tester brings the network back. The run brings it back before every spec and after every attempt;
   - on Android and iOS both go through the suite's network proxy (5.2 `network`); web uses Chrome's own offline switch. A suite without a `network` section can't use them on a device, and lint says so (Aled, 2026-10-22: iOS had no way offline, and Android's airplane mode never cut the local stack, since `adb reverse` goes around it);
-  - timed `drag`, `hold` and `swipe`.
+  - timed `drag`, `hold` and `swipe`, and `touch` with its rests.
+- **A person's pace between actions** (Aled, 2026-10-23). Every interaction is one a person could physically and realistically make: the screen responds before the next action. The 2026-10-22 run filed findings for taps a few milliseconds into a drawer's close and for a second row tapped while the list shifted; the app was right each time, and no user does that. So the brief tells testers to act at a person's pace and that a tap lost mid-animation isn't a finding, `batch` starts each input at least 500 ms after the last one ended, and a spec's probes never ask for the impossible. Single gestures keep their own fixed rhythms (`tap`, `double-tap`, `touch`'s pace).
 - **Units:** milliseconds everywhere, and absurd values are rejected (an agent once passed ms to a seconds argument and waited 16 hours).
 
 ### 4.2 Element model

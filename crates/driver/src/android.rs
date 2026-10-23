@@ -1,7 +1,9 @@
 //! The Android driver: an emulator over adb, read through a long-lived reader on the device.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Health, Result, double_tap_script};
+use crate::device::{
+    Device, DriverError, Health, Result, Stop, double_tap_script, swipe_script, touch_script,
+};
 use crate::element::{Element, Rect};
 use regex::Regex;
 use std::os::unix::process::CommandExt;
@@ -165,35 +167,8 @@ fn url_encode(text: &str) -> String {
     out
 }
 
-/// A reader input script for one touch through `points`: down at the first, held `hold_ms`, moving through the rest
-/// `step_ms` apart, up at the last.
-fn touch_script(points: &[(f64, f64)], hold_ms: u64, step_ms: u64) -> String {
-    let mut steps = Vec::new();
-    if let Some((x, y)) = points.first() {
-        steps.push(format!("d {x:.0} {y:.0}"));
-        steps.push(format!("w {hold_ms}"));
-    }
-    for (x, y) in points.iter().skip(1) {
-        steps.push(format!("d {x:.0} {y:.0}"));
-        steps.push(format!("w {step_ms}"));
-    }
-    if let Some((x, y)) = points.last() {
-        steps.push(format!("u {x:.0} {y:.0}"));
-    }
-    steps.join(";")
-}
-
-fn path(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
-    let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / 10.0)
-        .ceil()
-        .max(1.0) as u32;
-    (1..=steps)
-        .map(|i| {
-            let t = f64::from(i) / f64::from(steps);
-            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
-        })
-        .collect()
-}
+/// How long a moving touch takes per step: one frame.
+const STEP_MS: u64 = 16;
 
 fn keycode(key: &str) -> Option<u32> {
     Some(match key {
@@ -353,8 +328,9 @@ impl Android {
         let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
         if !head.starts_with("HTTP/1.0 200") {
             return Err(device(format!(
-                "reader: {}",
-                head.lines().next().unwrap_or("")
+                "reader: {}: {}",
+                head.lines().next().unwrap_or(""),
+                body.trim()
             )));
         }
         Ok(body.to_string())
@@ -568,25 +544,24 @@ impl Device for Android {
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
-        self.input(&touch_script(&[(x, y)], ms, 0)).await
+        let stop = Stop { x, y, pause_ms: ms };
+        self.input(&touch_script(&[stop], STEP_MS, false)).await
     }
 
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        let mut points = vec![from];
-        points.extend(path(from, to));
-        // A pause at the end, so the drop isn't read as a fling.
-        let mut script = touch_script(&points, hold_ms, 16);
-        if let Some(up) = script.rfind(";u ") {
-            script.insert_str(up, ";w 300");
-        }
-        self.input(&script).await
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        self.input(&touch_script(stops, STEP_MS, keep)).await
+    }
+
+    async fn release(&self, back: bool) -> Result<()> {
+        // Not `reader_call`: "No touch held" is an answer, not a sign of an old reader to replace.
+        self.ensure_reader().await?;
+        self.reader_get(if back { "/release?back" } else { "/release" })
+            .await
+            .map(|_| ())
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
-        let mut points = vec![from];
-        points.extend(path(from, to));
-        let step = ms / points.len() as u64;
-        self.input(&touch_script(&points, step, step)).await
+        self.input(&swipe_script(from, to, ms)).await
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
@@ -934,13 +909,5 @@ mod tests {
         let out = "    mTouchableInsets=3 mGivenInsetsPending=false\n    touchable region=SkRegion((0,1824,1600,2560))";
         let region = touchable_region(out).unwrap();
         assert_eq!((region.y, region.height), (1824.0, 736.0));
-    }
-
-    #[test]
-    fn a_drag_holds_then_moves() {
-        assert_eq!(
-            touch_script(&[(0.0, 0.0), (10.0, 0.0)], 500, 16),
-            "d 0 0;w 500;d 10 0;w 16;u 10 0"
-        );
     }
 }

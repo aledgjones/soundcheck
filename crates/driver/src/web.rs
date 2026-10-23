@@ -1,7 +1,7 @@
 //! The web driver: its own headless Chrome over the DevTools protocol, reading Chrome's accessibility tree.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Result};
+use crate::device::{Device, DriverError, Result, SETTLE_MS, Stop, touch_path};
 use crate::element::{Element, Rect};
 use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::accessibility::{
@@ -328,25 +328,31 @@ impl Device for Web {
             .await
     }
 
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        let revealed = self.reveal(from.0, from.1).await?;
-        let shift = (revealed.0 - from.0, revealed.1 - from.1);
-        let (from, to) = (revealed, (to.0 + shift.0, to.1 + shift.1));
-        self.mouse(DispatchMouseEventType::MouseMoved, from.0, from.1, false)
-            .await?;
-        self.mouse(DispatchMouseEventType::MousePressed, from.0, from.1, true)
-            .await?;
-        sleep(Duration::from_millis(hold_ms)).await;
-        let steps = 12;
-        for i in 1..=steps {
-            let t = f64::from(i) / f64::from(steps);
-            let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            self.mouse(DispatchMouseEventType::MouseMoved, x, y, true)
-                .await?;
-            sleep(Duration::from_millis(16)).await;
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        if keep {
+            return Err(self.unsupported("release"));
         }
-        self.mouse(DispatchMouseEventType::MouseReleased, to.0, to.1, false)
-            .await
+        let Some(first) = stops.first() else {
+            return Ok(());
+        };
+        let revealed = self.reveal(first.x, first.y).await?;
+        let (dx, dy) = (revealed.0 - first.x, revealed.1 - first.y);
+        let mut at = revealed;
+        self.touch_down(at.0, at.1).await?;
+        sleep(Duration::from_millis(first.pause_ms)).await;
+        for stop in &stops[1..] {
+            let to = (stop.x + dx, stop.y + dy);
+            for (x, y) in touch_path(at, to) {
+                self.touch_move(x, y).await?;
+                sleep(Duration::from_millis(16)).await;
+            }
+            sleep(Duration::from_millis(stop.pause_ms)).await;
+            at = to;
+        }
+        if stops.len() > 1 {
+            sleep(Duration::from_millis(SETTLE_MS)).await;
+        }
+        self.touch_up(at.0, at.1).await
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {

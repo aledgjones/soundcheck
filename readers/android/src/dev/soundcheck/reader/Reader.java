@@ -24,7 +24,7 @@ import java.util.concurrent.TimeoutException;
 
 // Keeps one UiAutomation connection open and serves the active window's tree as `uiautomator dump` XML on
 // 127.0.0.1:9018 (GET /dump, GET /dump?all, GET /ping answering "ok soundcheck"), so each read skips uiautomator's ~3.5 s start-up.
-// Input goes through the same connection (GET /input?<script>, GET /type?<text>) rather than an `adb shell input` per
+// Input goes through the same connection (GET /input?<script>, GET /type?<text>, GET /release[?back]) rather than an `adb shell input` per
 // action. Emulator-only test tool.
 public class Reader extends Instrumentation {
   private static final int PORT = 9018;
@@ -91,6 +91,14 @@ public class Reader extends Instrumentation {
         status = 500;
         body = String.valueOf(e);
       }
+    } else if (request != null && request.startsWith("GET /release")) {
+      try {
+        release(request.startsWith("GET /release?back"));
+        body = "ok";
+      } catch (Exception e) {
+        status = 500;
+        body = String.valueOf(e);
+      }
     } else if (request != null && request.startsWith("GET /ping")) {
       body = "ok soundcheck";
     } else {
@@ -107,17 +115,33 @@ public class Reader extends Instrumentation {
     out.flush();
   }
 
-  // When the held touch went down, or 0 when no touch is held; a second `d` moves it.
+  // When the touch went down, or 0 when none is down; a second `d` moves it.
   private long downTime;
+  private float originX, originY, lastX, lastY;
+  // Whether a script's closing `h` left the touch down for `release`; holdId ends the old hold's timeout.
+  private boolean held;
+  private int holdId;
 
   // A script of steps separated by `;` (the same as the iOS reader's): `d x y` touch down, or move while down; `u x y`
-  // touch up; `w ms` wait; `k code` key press; `kd code` / `ku code` key down and up. Codes are Android key codes.
-  private void input(String script) throws Exception {
-    for (String step : script.split(";")) {
+  // touch up; `w ms` wait; `k code` key press; `kd code` / `ku code` key down and up; and a last `h` that leaves the
+  // touch down until `release`. Codes are Android key codes. A touch still held goes back to its start and lifts first.
+  private synchronized void input(String script) throws Exception {
+    if (held) {
+      lift(true);
+    }
+    String[] steps = script.split(";");
+    for (int i = 0; i < steps.length; i++) {
+      String step = steps[i];
       String[] p = step.trim().split(" ");
       switch (p[0]) {
         case "d" -> touch(downTime == 0 ? MotionEvent.ACTION_DOWN : MotionEvent.ACTION_MOVE, p);
         case "u" -> touch(MotionEvent.ACTION_UP, p);
+        case "h" -> {
+          if (i != steps.length - 1 || downTime == 0) {
+            throw new IllegalArgumentException("`h` ends a script whose touch is down");
+          }
+          hold();
+        }
         case "w" -> Thread.sleep(Long.parseLong(p[1]));
         case "k" -> {
           key(KeyEvent.ACTION_DOWN, Integer.parseInt(p[1]));
@@ -130,19 +154,73 @@ public class Reader extends Instrumentation {
     }
   }
 
+  // Unlike iOS, Android never ends a touch held still, so a hold needs no keep-alive, only the 30 s timeout.
+  private void hold() {
+    held = true;
+    int id = ++holdId;
+    Thread timeout =
+        new Thread(
+            () -> {
+              try {
+                Thread.sleep(30_000);
+                synchronized (this) {
+                  if (held && holdId == id) {
+                    lift(true);
+                  }
+                }
+              } catch (Exception e) {
+                // The hold was released or the reader is stopping.
+              }
+            });
+    timeout.setDaemon(true);
+    timeout.start();
+  }
+
+  private synchronized void release(boolean back) throws Exception {
+    if (!held) {
+      throw new IllegalStateException("No touch held");
+    }
+    lift(back);
+  }
+
+  // Lifts the held touch where it is, or `back` along a straight line to where it began, so nothing is dropped.
+  private void lift(boolean back) throws Exception {
+    held = false;
+    holdId++;
+    if (back) {
+      int steps =
+          Math.max(1, (int) Math.ceil(Math.max(Math.abs(originX - lastX), Math.abs(originY - lastY)) / 10));
+      float fromX = lastX, fromY = lastY;
+      for (int i = 1; i <= steps; i++) {
+        float t = (float) i / steps;
+        touch(MotionEvent.ACTION_MOVE, fromX + (originX - fromX) * t, fromY + (originY - fromY) * t);
+        Thread.sleep(16);
+      }
+    }
+    touch(MotionEvent.ACTION_UP, lastX, lastY);
+  }
+
   private void touch(int action, String[] p) {
+    touch(action, Float.parseFloat(p[1]), Float.parseFloat(p[2]));
+  }
+
+  private void touch(int action, float x, float y) {
     long now = SystemClock.uptimeMillis();
     if (action == MotionEvent.ACTION_DOWN) {
       downTime = now;
+      originX = x;
+      originY = y;
     }
+    lastX = x;
+    lastY = y;
     // A finger, as `adb shell input` sends: the short obtain() leaves the tool type unknown, and the system file
     // picker routes gestures by tool type, so it showed a ripple but never selected.
     MotionEvent.PointerProperties[] props = {new MotionEvent.PointerProperties()};
     props[0].id = 0;
     props[0].toolType = MotionEvent.TOOL_TYPE_FINGER;
     MotionEvent.PointerCoords[] coords = {new MotionEvent.PointerCoords()};
-    coords[0].x = Float.parseFloat(p[1]);
-    coords[0].y = Float.parseFloat(p[2]);
+    coords[0].x = x;
+    coords[0].y = y;
     coords[0].pressure = 1;
     coords[0].size = 1;
     MotionEvent e =

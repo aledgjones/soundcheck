@@ -3,7 +3,9 @@
 //! Points everywhere but screenshots, which are in pixels.
 
 use crate::Platform;
-use crate::device::{Device, DriverError, Health, Result, double_tap_script};
+use crate::device::{
+    Device, DriverError, Health, Result, Stop, double_tap_script, swipe_script, touch_script,
+};
 use crate::element::{Element, Rect};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -266,25 +268,6 @@ impl Ios {
             Err(e) if lost_channel(&e) => Err(self.recover(e).await),
             Err(e) => Err(e),
         }
-    }
-
-    /// Drags as `drag` does but stays down at `to`, kept alive by the reader until `release`, other input, or 30 s.
-    pub async fn drag_keep(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        let mut points = vec![from];
-        points.extend(path(from, to));
-        let script = touch_script(&points, hold_ms, 30);
-        let down = script
-            .rsplit_once(";u ")
-            .map_or(script.as_str(), |(s, _)| s);
-        self.hid(&format!("{down};h")).await
-    }
-
-    /// Lifts the touch `drag_keep` left down: where it is, or `back` along the line to where it began.
-    pub async fn release(&self, back: bool) -> Result<()> {
-        self.ensure_reader().await?;
-        self.reader_get(if back { "/release?back" } else { "/release" })
-            .await
-            .map(|_| ())
     }
 
     /// The screen's elements when the on-screen keyboard is up (its `space` and `shift` keys show), else none.
@@ -758,33 +741,8 @@ fn type_script(text: &str) -> Option<String> {
     Some(steps.join(";"))
 }
 
-fn touch_script(points: &[(f64, f64)], hold_ms: u64, step_ms: u64) -> String {
-    let mut steps = Vec::new();
-    if let Some((x, y)) = points.first() {
-        steps.push(format!("d {x:.0} {y:.0}"));
-        steps.push(format!("w {hold_ms}"));
-    }
-    for (x, y) in points.iter().skip(1) {
-        steps.push(format!("d {x:.0} {y:.0}"));
-        steps.push(format!("w {step_ms}"));
-    }
-    if let Some((x, y)) = points.last() {
-        steps.push(format!("u {x:.0} {y:.0}"));
-    }
-    steps.join(";")
-}
-
-fn path(from: (f64, f64), to: (f64, f64)) -> Vec<(f64, f64)> {
-    let steps = (((to.0 - from.0).abs().max((to.1 - from.1).abs())) / 10.0)
-        .ceil()
-        .max(1.0) as u32;
-    (1..=steps)
-        .map(|i| {
-            let t = f64::from(i) / f64::from(steps);
-            (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t)
-        })
-        .collect()
-}
+/// How long a moving touch takes per step: iOS reads quicker moves as a flick.
+const STEP_MS: u64 = 30;
 
 impl Device for Ios {
     fn platform(&self) -> Platform {
@@ -801,21 +759,23 @@ impl Device for Ios {
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
-        self.hid(&touch_script(&[(x, y)], ms, 0)).await
+        let stop = Stop { x, y, pause_ms: ms };
+        self.hid(&touch_script(&[stop], STEP_MS, false)).await
     }
 
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        let mut points = vec![from];
-        points.extend(path(from, to));
-        self.hid(&format!("{};w 300", touch_script(&points, hold_ms, 30)))
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        self.hid(&touch_script(stops, STEP_MS, keep)).await
+    }
+
+    async fn release(&self, back: bool) -> Result<()> {
+        self.ensure_reader().await?;
+        self.reader_get(if back { "/release?back" } else { "/release" })
             .await
+            .map(|_| ())
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
-        let mut points = vec![from];
-        points.extend(path(from, to));
-        let step = ms / points.len().max(1) as u64;
-        self.hid(&touch_script(&points, 0, step)).await
+        self.hid(&swipe_script(from, to, ms)).await
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
@@ -1175,12 +1135,5 @@ mod tests {
             .map(|e| e.label.clone())
             .collect();
         assert!(seen.contains(&"score-row-icon".to_string()));
-    }
-
-    #[test]
-    fn a_drag_path_ends_where_it_was_aimed() {
-        let p = path((0.0, 0.0), (25.0, 5.0));
-        assert_eq!(p.len(), 3);
-        assert_eq!(p.last(), Some(&(25.0, 5.0)));
     }
 }

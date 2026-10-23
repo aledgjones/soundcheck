@@ -2,7 +2,7 @@
 
 use crate::Platform;
 use crate::android::Android;
-use crate::device::{Device, Health, Result};
+use crate::device::{Device, Health, Result, Stop};
 use crate::element::Element;
 use crate::ios::Ios;
 use crate::web::Web;
@@ -37,8 +37,11 @@ impl Device for AnyDevice {
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
         each!(self, d => d.hold_at(x, y, ms).await)
     }
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        each!(self, d => d.drag(from, to, hold_ms).await)
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        each!(self, d => d.touch(stops, keep).await)
+    }
+    async fn release(&self, back: bool) -> Result<()> {
+        each!(self, d => d.release(back).await)
     }
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
         each!(self, d => d.swipe(from, to, ms).await)

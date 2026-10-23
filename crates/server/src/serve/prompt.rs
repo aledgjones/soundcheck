@@ -91,4 +91,8 @@ Each judgment needs `observed`: what you actually saw, in one or two plain sente
 If, while probing, you find a problem the outcomes don't cover, add it to `side_finds` with a one-line summary and what you observed; it doesn't change your judgments. Its `evidence` is only screenshots on its topic: the control or screen the problem is about, such as a before and after around the step. Take the shot the moment you see it, and if it's gone first, retry the step once. When the problem itself isn't visible (a spoken value, a timing), still shoot the control it's about, and say in `observed` what you got instead: the `see` line or a call's output.
 
 An error from the app during the spec is a failure of the outcome it affected, never something to work around. Don't retry a failing step more than twice; judge what you saw.
+
+## Pace
+
+Act at a person's pace: let the screen respond to one action (a drawer or menu finishing its close, a list settling) before the next. A tap that lands mid-animation and is lost isn't a finding, and probing \"quickly\" means as fast as a person realistically could, never faster. `batch` keeps inputs at least 500 ms apart for you.
 ";

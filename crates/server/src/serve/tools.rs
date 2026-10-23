@@ -197,6 +197,34 @@ pub struct GestureParams {
     pub ms: u64,
 }
 
+/// A place one touch passes through.
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TouchStop {
+    /// An element, as `tap` takes it, or a point, `at:<x>,<y>`.
+    pub at: String,
+    /// Milliseconds the finger rests here; on the first stop, how long it presses before moving.
+    #[serde(default)]
+    pub pause_ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct TouchParams {
+    pub token: String,
+    /// The stops in order, 1 to 20: down at the first, moving between them at a finger's pace, up at the last.
+    pub path: Vec<TouchStop>,
+    /// Stay down at the last stop, so you can look mid-gesture, until `release` (or other input, or 30 s).
+    #[serde(default)]
+    pub keep: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct ReleaseParams {
+    pub token: String,
+    /// Move back to the first stop before lifting, so nothing is dropped or moved.
+    #[serde(default)]
+    pub back: bool,
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct HoldParams {
     pub token: String,
@@ -315,6 +343,15 @@ pub enum Step {
         to: [f64; 2],
         ms: u64,
     },
+    Touch {
+        path: Vec<TouchStop>,
+        #[serde(default)]
+        keep: bool,
+    },
+    Release {
+        #[serde(default)]
+        back: bool,
+    },
     Hover {
         target: String,
     },
@@ -328,6 +365,24 @@ pub enum Step {
     Pause {
         ms: u64,
     },
+}
+
+/// The least time between one input ending and the next starting in a batch: a person sees the screen respond before
+/// acting again. Faster sequences found only races no finger reaches, such as a tap 2 ms into a drawer's close.
+pub const INPUT_GAP: std::time::Duration = std::time::Duration::from_millis(500);
+
+impl Step {
+    /// Whether it touches or types, rather than only reading the screen or waiting.
+    pub fn is_input(&self) -> bool {
+        !matches!(
+            self,
+            Step::Expect { .. }
+                | Step::Gone { .. }
+                | Step::Wait { .. }
+                | Step::Check { .. }
+                | Step::Pause { .. }
+        )
+    }
 }
 
 pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverError> {
@@ -374,6 +429,28 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
         Step::Swipe { from, to, ms } => {
             d.swipe((from[0], from[1]), (to[0], to[1]), *ms).await?;
             "swiped".into()
+        }
+        Step::Touch { path, keep } => {
+            let stops = path
+                .iter()
+                .map(|s| Ok((matcher(&s.at)?, s.pause_ms)))
+                .collect::<Result<Vec<_>, DriverError>>()?;
+            let through: Vec<String> = d.touch(&stops, *keep).await?.iter().map(line).collect();
+            let end = if *keep {
+                "held down until `release`"
+            } else {
+                "lifted"
+            };
+            format!("touched {}; {end}", through.join(" → "))
+        }
+        Step::Release { back } => {
+            d.release(*back).await?;
+            if *back {
+                "moved back and released"
+            } else {
+                "released"
+            }
+            .into()
         }
         Step::Hover { target } => {
             let e = d.expect(&matcher(target)?).await?;
@@ -1007,11 +1084,36 @@ impl Tools {
         Parameters(p): Parameters<GestureParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            d.drag((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms)
+            d.drag((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms, false)
                 .await
                 .map(|()| "dragged")
         })
         .await
+    }
+
+    #[tool(
+        description = "Tester: one finger along a path of stops (elements or `at:x,y` points), resting `pause_ms` at each, at a finger's pace: slide off a control and back before lifting, long-press then drag, stop a slider partway. With `keep` it stays down at the last stop until `release`, so you can `see` or `shot` mid-gesture."
+    )]
+    async fn touch(
+        &self,
+        Parameters(p): Parameters<TouchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let s = Step::Touch {
+            path: p.path,
+            keep: p.keep,
+        };
+        self.device(&p.token, async |d| step(d, &s).await).await
+    }
+
+    #[tool(
+        description = "Tester: lift the touch a kept `touch` left down, where it is, or with `back` after moving back to its first stop."
+    )]
+    async fn release(
+        &self,
+        Parameters(p): Parameters<ReleaseParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let s = Step::Release { back: p.back };
+        self.device(&p.token, async |d| step(d, &s).await).await
     }
 
     #[tool(description = "Tester: press and hold an element for `ms` milliseconds.")]
@@ -1172,7 +1274,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, hover, goto, press, pause), stopping at the first that fails; pause steps keep a sequence's timing on the device. Returns what each step did."
+        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, touch, release, hover, goto, press, pause), stopping at the first that fails; pause steps keep a sequence's timing on the device. Inputs start at least 500 ms after the last one ended, as a person's would. Returns what each step did."
     )]
     async fn batch(
         &self,
@@ -1180,8 +1282,18 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
             let mut done = Vec::new();
+            let mut last_input: Option<tokio::time::Instant> = None;
             for (i, s) in p.steps.iter().enumerate() {
-                match step(d, s).await {
+                if s.is_input()
+                    && let Some(at) = last_input
+                {
+                    tokio::time::sleep_until(at + INPUT_GAP).await;
+                }
+                let result = step(d, s).await;
+                if s.is_input() {
+                    last_input = Some(tokio::time::Instant::now());
+                }
+                match result {
                     Ok(what) => done.push(what),
                     Err(e) => {
                         return Err(DriverError::Invalid(format!(

@@ -65,6 +65,16 @@ pub const TOOLS: &[Tool] = &[
     basic("swipe", ALL, "swipe between two points"),
     basic("drag", ALL, "press, hold, then drag"),
     basic("hold", ALL, "press and hold"),
+    basic(
+        "touch",
+        ALL,
+        "one finger along a path of stops, resting at each: slide off and back, long-press then drag; `keep` holds it down",
+    ),
+    basic(
+        "release",
+        &[Platform::Android, Platform::Ios],
+        "lift the touch a kept `touch` left down, optionally back at its start",
+    ),
     basic("keyboard", ALL, "whether the on-screen keyboard is shown"),
     basic(
         "press",

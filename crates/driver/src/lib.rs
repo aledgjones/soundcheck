@@ -13,7 +13,7 @@ pub mod proxy;
 pub mod tools;
 pub mod web;
 
-pub use device::{Device, DriverError, Health};
+pub use device::{Device, DriverError, Health, Stop};
 pub use element::{Element, Rect};
 pub use matcher::Matcher;
 pub use ops::Driver;

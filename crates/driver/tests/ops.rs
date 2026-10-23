@@ -1,5 +1,5 @@
 use soundcheck_driver::device::Result;
-use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher, Platform, Rect};
+use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher, Platform, Rect, Stop};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -46,8 +46,12 @@ impl Device for Fake {
         self.log(format!("hold {x},{y} {ms}"));
         Ok(())
     }
-    async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        self.log(format!("drag {from:?} {to:?} {hold_ms}"));
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        let path: Vec<String> = stops
+            .iter()
+            .map(|s| format!("{},{}+{}", s.x, s.y, s.pause_ms))
+            .collect();
+        self.log(format!("touch {} keep={keep}", path.join(" ")));
         Ok(())
     }
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
@@ -215,6 +219,29 @@ async fn double_tap_takes_a_point() {
         *driver.device.actions.lock().unwrap(),
         ["tap 516,700", "tap 516,700"]
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_touch_finds_every_stop_before_it_goes_down() {
+    let thumb = el("Thumb", 100.0);
+    let driver = Driver::new(Fake::new(vec![vec![thumb]]));
+    let path = [(m("Thumb"), 300), (m("at:500,200"), 0), (m("Thumb"), 0)];
+    driver.touch(&path, false).await.unwrap();
+    assert_eq!(
+        *driver.device.actions.lock().unwrap(),
+        ["touch 105,5+300 500,200+0 105,5+0 keep=false"]
+    );
+    let err = driver.touch(&[(m("Gone"), 0)], false).await.unwrap_err();
+    assert!(err.to_string().contains("Gone"), "{err}");
+    assert_eq!(driver.device.actions.lock().unwrap().len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_touch_refuses_an_empty_path_and_long_rests() {
+    let driver = Driver::new(Fake::new(vec![vec![]]));
+    assert!(driver.touch(&[], false).await.is_err());
+    assert!(driver.touch(&[(m("at:1,1"), 60_000)], false).await.is_err());
+    assert!(driver.device.actions.lock().unwrap().is_empty());
 }
 
 #[tokio::test(start_paused = true)]

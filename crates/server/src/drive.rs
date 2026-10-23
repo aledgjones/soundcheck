@@ -2,12 +2,11 @@
 //! setting up screenshots. The readers stay up on the device between calls, so each call costs a connect, not a
 //! reader start.
 
-use crate::serve::tools::{Step, line, step};
+use crate::serve::tools::{Step, TouchStop, line, step};
 use crate::suite::config::Platform;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use soundcheck_driver::any::AnyDevice;
-use soundcheck_driver::ios::Ios;
 use soundcheck_driver::parity::compare;
 use soundcheck_driver::{Device, Matcher};
 use std::path::{Path, PathBuf};
@@ -65,13 +64,22 @@ pub enum Action {
         y2: f64,
         #[arg(default_value_t = 700)]
         hold_ms: u64,
-        /// Stay down at the end, kept alive, until `release`, other input, or 30 s. iOS only.
+        /// Stay down at the end until `release`, other input, or 30 s.
         #[arg(long)]
         keep: bool,
     },
-    /// Lift the touch `drag --keep` left down. iOS only.
+    /// One finger along a path: stops are elements or `at:x,y` points, and `+ms` after a stop rests there, e.g.
+    /// `touch Thumb +500 at:900,400 Thumb` presses Thumb for 500 ms, slides away and back, and lifts.
+    Touch {
+        #[arg(required = true)]
+        path: Vec<String>,
+        /// Stay down at the last stop until `release`, other input, or 30 s.
+        #[arg(long)]
+        keep: bool,
+    },
+    /// Lift the touch `touch --keep` or `drag --keep` left down.
     Release {
-        /// Move back to where the drag began first, so nothing is dropped.
+        /// Move back to where the touch began first, so nothing is dropped.
         #[arg(long)]
         back: bool,
     },
@@ -144,25 +152,21 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             hold_ms,
             keep,
         } => {
+            d.drag((x1, y1), (x2, y2), hold_ms, keep).await?;
             if keep {
-                ios(&d.device)?
-                    .drag_keep((x1, y1), (x2, y2), hold_ms)
-                    .await?;
                 "dragged; the touch stays down until `release`".into()
             } else {
-                d.drag((x1, y1), (x2, y2), hold_ms).await?;
                 "dragged".into()
             }
         }
-        Action::Release { back } => {
-            ios(&d.device)?.release(back).await?;
-            if back {
-                "moved back and released"
-            } else {
-                "released"
-            }
-            .into()
+        Action::Touch { path, keep } => {
+            as_step(Step::Touch {
+                path: touch_path(&path)?,
+                keep,
+            })
+            .await?
         }
+        Action::Release { back } => as_step(Step::Release { back }).await?,
         Action::Press { key } => as_step(Step::Press { key }).await?,
         Action::Launch => {
             d.device.launch().await?;
@@ -205,11 +209,25 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
     })
 }
 
-fn ios(device: &AnyDevice) -> Result<&Ios> {
-    match device {
-        AnyDevice::Ios(i) => Ok(i),
-        _ => bail!("a held touch is iOS only"),
+/// `touch`'s arguments as stops: each element or point, with the `+ms` after it as its rest.
+fn touch_path(args: &[String]) -> Result<Vec<TouchStop>> {
+    let mut stops: Vec<TouchStop> = Vec::new();
+    for arg in args {
+        if let Some(ms) = arg.strip_prefix('+') {
+            let Some(stop) = stops.last_mut() else {
+                bail!("{arg} rests at a stop, so it comes after one");
+            };
+            stop.pause_ms = ms
+                .parse()
+                .map_err(|_| anyhow::anyhow!("{arg}: a rest is `+<ms>`, e.g. `+500`"))?;
+        } else {
+            stops.push(TouchStop {
+                at: arg.clone(),
+                pause_ms: 0,
+            });
+        }
     }
+    Ok(stops)
 }
 
 async fn parity(device: &AnyDevice) -> Result<String> {

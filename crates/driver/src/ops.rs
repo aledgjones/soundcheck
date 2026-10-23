@@ -11,6 +11,7 @@ use tokio::time::{Instant, sleep};
 pub const WAIT_MAX_MS: u64 = 120_000;
 pub const TAP_WAIT_MS: u64 = 5_000;
 pub const GESTURE_MAX_MS: u64 = 10_000;
+pub const TOUCH_MAX_STOPS: u64 = 20;
 pub const NETWORK_DROP_MAX_S: u64 = 300;
 const POLL_MS: u64 = 250;
 const FILL_TRIES: u32 = 3;
@@ -150,9 +151,57 @@ impl<D: Device> Driver<D> {
         self.wait_for(target, TAP_WAIT_MS, last).await
     }
 
-    pub async fn drag(&self, from: (f64, f64), to: (f64, f64), hold_ms: u64) -> Result<()> {
-        within("drag's hold", hold_ms, 0, GESTURE_MAX_MS, "milliseconds")?;
-        self.device.drag(from, to, hold_ms).await
+    /// Presses at `from`, holds `hold_ms`, moves to `to` and lifts there, or with `keep` stays down until `release`.
+    pub async fn drag(
+        &self,
+        from: (f64, f64),
+        to: (f64, f64),
+        hold_ms: u64,
+        keep: bool,
+    ) -> Result<()> {
+        let stops = [
+            (Matcher::Point(from.0, from.1), hold_ms),
+            (Matcher::Point(to.0, to.1), 0),
+        ];
+        self.touch(&stops, keep).await.map(|_| ())
+    }
+
+    /// One finger through `path`, each stop an element or a point with how long to rest there: down at the first,
+    /// moving at a finger's pace, lifted at the last, or with `keep` held there until `release`. Every element is
+    /// found before the touch goes down, so nothing is read mid-gesture.
+    pub async fn touch(&self, path: &[(Matcher, u64)], keep: bool) -> Result<Vec<Element>> {
+        within(
+            "touch's path",
+            path.len() as u64,
+            1,
+            TOUCH_MAX_STOPS,
+            "stops",
+        )?;
+        let mut elements = Vec::new();
+        let mut stops = Vec::new();
+        for (target, pause_ms) in path {
+            within(
+                "a stop's pause",
+                *pause_ms,
+                0,
+                GESTURE_MAX_MS,
+                "milliseconds",
+            )?;
+            let e = self.target(target, false).await?;
+            let (x, y) = e.tap_point();
+            stops.push(crate::device::Stop {
+                x,
+                y,
+                pause_ms: *pause_ms,
+            });
+            elements.push(e);
+        }
+        self.device.touch(&stops, keep).await?;
+        Ok(elements)
+    }
+
+    pub async fn release(&self, back: bool) -> Result<()> {
+        self.device.release(back).await
     }
 
     pub async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
