@@ -682,7 +682,13 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
         let _ = write!(out, "<span class=\"platform-label\">{name}</span>");
     }
     let reason = r.review.as_ref().map(|(_, reason)| reason.as_str());
-    let outcome = |i: usize| judged_as(spec, r, i);
+    let failed = matches!(
+        r.row,
+        Row::Filed {
+            result: Final::Fail,
+            ..
+        }
+    );
 
     match &r.row {
         Row::Filed {
@@ -703,35 +709,20 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
                 })
                 .map(|p| thumbs(page, &p.evidence))
                 .unwrap_or_default();
-            if let Some(posted) = &r.posted {
-                let failed: Vec<_> = posted
-                    .judgments
-                    .iter()
-                    .filter(|j| {
-                        matches!(
-                            j.answer,
-                            Answer::Failed | Answer::CouldntCheck | Answer::Unsure
-                        )
-                    })
-                    .collect();
-                for (i, j) in failed.iter().enumerate() {
-                    let _ = write!(
-                        out,
-                        "<div class=\"failed-outcome\"><span class=\"expect\">{}</span><span class=\"saw\">{}</span><span class=\"callline\">{}{}</span>{}</div>",
-                        esc(outcome(j.outcome)),
-                        esc(&j.observed),
-                        if r.verifying {
-                            "Reproduced on verification. "
-                        } else {
-                            ""
-                        },
-                        esc(call),
-                        if i + 1 == failed.len() {
-                            shots.as_str()
-                        } else {
-                            ""
-                        }
-                    );
+            // Why it was filed and what it looked like, inside the failed outcome's red box.
+            let evidence = format!(
+                "<span class=\"callline\">{}{}</span>{shots}",
+                if r.verifying {
+                    "Reproduced on verification. "
+                } else {
+                    ""
+                },
+                esc(call),
+            );
+            match &r.posted {
+                Some(posted) => out.push_str(&outcomes(spec, posted, r, Some(&evidence))),
+                None => {
+                    let _ = write!(out, "<div class=\"failed-outcome\">{evidence}</div>");
                 }
             }
         }
@@ -760,35 +751,29 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
         );
     }
     if let Some(posted) = &r.posted {
-        let in_block = matches!(
-            r.row,
-            Row::Filed {
-                result: Final::Fail,
-                ..
-            }
-        );
-        out.push_str(&outcomes(spec, posted, r, in_block));
+        if !failed {
+            out.push_str(&outcomes(spec, posted, r, None));
+        }
         out.push_str(&evidence(page, posted, &r.captured));
     }
     out
 }
 
 /// `skip_shown`: a failed row already shows its failed outcomes in the red block, so they aren't listed twice.
-fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> String {
+/// The outcomes as judged. `failure` is the filed failure's call and screenshots, which go inside its last failed
+/// outcome, so the red box holds the outcome and its evidence together.
+fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, failure: Option<&str>) -> String {
     let settled = match &r.review {
         Some((Call::Judge { .. }, reason)) => Some(reason.as_str()),
         _ => None,
     };
-    let listed: Vec<_> = posted
-        .judgments
-        .iter()
-        .filter(|j| !(skip_shown && j.answer != Answer::Held))
-        .collect();
+    let listed: Vec<_> = posted.judgments.iter().collect();
     if listed.is_empty() {
         return String::new();
     }
+    let last_failed = listed.iter().rposition(|j| j.answer == Answer::Failed);
     let mut out = String::from("<ul class=\"outcomes\">");
-    for j in listed {
+    for (i, j) in listed.into_iter().enumerate() {
         let (class, mark, label) = match j.answer {
             Answer::Held => ("held", "✓", "held"),
             Answer::Failed => ("failed", "✕", "failed"),
@@ -802,9 +787,16 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> St
             ),
             _ => String::new(),
         };
+        let (row, evidence) = match failure {
+            Some(evidence) if Some(i) == last_failed => (" class=\"failed-outcome\"", evidence),
+            _ if j.answer == Answer::Failed && failure.is_some() => {
+                (" class=\"failed-outcome\"", "")
+            }
+            _ => ("", ""),
+        };
         let _ = write!(
             out,
-            "<li><span class=\"mark {class}\" aria-label=\"{label}\">{mark}</span><span><span class=\"o\">{}</span><span class=\"obs\">{}</span>{note}</span></li>",
+            "<li{row}><span class=\"mark {class}\" aria-label=\"{label}\">{mark}</span><span><span class=\"o\">{}</span><span class=\"obs\">{}</span>{note}{evidence}</span></li>",
             esc(judged_as(spec, r, j.outcome)),
             esc(&j.observed)
         );

@@ -140,6 +140,8 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .failed-outcome .expect{display:block;color:var(--ink)}
 .failed-outcome .expect{font-weight:600}
 .failed-outcome .saw{display:block;color:var(--fail)}
+.outcomes li.failed-outcome{margin:0 -12px}
+.outcomes li.failed-outcome .obs{color:var(--fail)}
 .callline{display:block;margin-top:4px;font-size:14px;color:var(--label2)}
 .call{border-left:3px solid var(--accent);padding-left:12px;color:var(--ink)}
 .call b{font-weight:600}
