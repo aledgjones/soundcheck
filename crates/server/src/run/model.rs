@@ -79,6 +79,9 @@ pub struct Posted {
     pub side_finds: Vec<SideFind>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// What the tester tried from the spec's `Probe around it`, and what happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed: Option<String>,
 }
 
 impl Posted {

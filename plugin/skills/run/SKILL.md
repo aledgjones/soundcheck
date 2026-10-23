@@ -54,6 +54,8 @@ The project's regression skill gives you:
 - A dispatch refused with `held:` means the platform is restarting or the Mac is busy. Wait for its `<platform> ready` event, then dispatch again.
 - When a tester posts (`posted … filed` or `needs review`) or stalls (`stalled … queued again`), dispatch the next spec straight away, **before** reviewing anything. Reviews never hold up testing.
 - Queued rows (send-backs, verifications, stalls) go before untested specs.
+- A tester that never starts (the agent failed to launch, or its first call never comes) stalls after 10 minutes on its own. When you know it's gone, `queue` its spec with the reason instead of waiting: the attempt is abandoned and the row is free.
+- A spec reworded mid-run (a vague outcome, a probe that asked for the impossible) takes effect when you `queue` it again: the server rereads it from disk, and the report notes the change beside its results.
 
 ## 3. Review
 
@@ -73,6 +75,7 @@ A `needs review` event means a tester claimed FAIL, BLOCKED or Unsure. Call `sta
 - **A degraded device** (`degraded` on the row in `status`, and a `DEGRADED` event): the server samples the device's health after every result and restarts a degraded one before the next spec. A failure seen on a degraded device can't be upheld until it reproduces: call **verify**, and the rerun runs on the restarted device. A BLOCKED with cause `harness` can still be upheld.
 - **Look at the evidence, not just the claim.** Open a screenshot only when the judgments don't settle it, which keeps your context small for a long run.
 - **Side finds** (`side find(s) need review: id <n>: <summary>`; `status` lists the waiting ones under `side_finds_waiting`): `review_find` with that `id` and a `title` if it's worth the person's attention (it becomes a finding), or none if it isn't a problem. Open each of its screenshots (in `evidence_dir`) and pass in `keep` only those on its topic: the control or screen the find is about, whether they confirm it or contradict it. Drop the rest (a slider finding doesn't keep shots of pen marks); when none is on topic, keep none and the page says so.
+- **A pass with untried probes** (`PASS without trying its probes`, and `probes_untried` in `status`) waits as an Unsure: the outcomes held, but the tester said nothing in `probed`. Send it back to probe, or **judge** it PASS with the reason when the probes don't apply.
 - **A person's pace.** A claim or side find that only happens faster than a person acts (a tap a few milliseconds into a drawer's close, a second row tapped while the list is still shifting) isn't a problem: `review_find` it with no title, or send the claim back. When a spec's own probe asked for it, say so to the person at triage so the probe can be reworded.
 - A spec gets at most 3 attempts. After that, file what's known.
 

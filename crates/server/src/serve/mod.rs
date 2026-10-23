@@ -284,6 +284,9 @@ impl Hub {
                     .join(", ")
             );
         }
+        let rerun: std::collections::BTreeSet<String> =
+            again.iter().map(|r| r.spec.clone()).collect();
+        self.refresh_specs(&rerun.into_iter().collect::<Vec<_>>())?;
         let added = self.add_specs(requested)?;
         let requeued = match reason {
             Some(reason) if !again.is_empty() => self.with_run(|run, now| {
@@ -299,6 +302,65 @@ impl Hub {
             anyhow::bail!("nothing to queue: none of them runs on the platforms named");
         }
         Ok(Queued { added, requeued })
+    }
+
+    /// Rereads each spec whose file changed since the run's snapshot, so a rerun uses what's on disk: it must lint
+    /// clean, joins the snapshot, and the run takes up its outcomes. Returns the specs that changed.
+    fn refresh_specs(&self, ids: &[String]) -> Result<Vec<String>> {
+        let info = saved::read_info(&self.run_dir)?;
+        let live = crate::suite::load(&info.suite);
+        let text = |root: &std::path::Path, id: &str| {
+            std::fs::read_to_string(root.join(&live.specs_dir).join(format!("{id}.spec.md"))).ok()
+        };
+        let snapshot = self.run_dir.join(saved::SNAPSHOT_DIR);
+        let changed: Vec<String> = ids
+            .iter()
+            .filter(|id| {
+                let now = text(&live.root, id);
+                now.is_some() && now != text(&snapshot, id)
+            })
+            .cloned()
+            .collect();
+        if changed.is_empty() {
+            return Ok(changed);
+        }
+        let files: Vec<PathBuf> = changed
+            .iter()
+            .map(|id| live.specs_dir.join(format!("{id}.spec.md")))
+            .collect();
+        let problems: Vec<String> = crate::lint::lint(&live, crate::VERSION)
+            .into_iter()
+            .filter(|p| files.contains(&p.path))
+            .map(|p| format!("{}: {}", p.path.display(), p.message))
+            .collect();
+        if !problems.is_empty() {
+            anyhow::bail!(
+                "the edited spec doesn't lint clean: {}",
+                problems.join("; ")
+            );
+        }
+        let planned = saved::plan_for(&live, &info.platforms, &changed)?.specs;
+        saved::snapshot_specs(&self.run_dir, &live, &changed)?;
+        {
+            let mut suite = self.suite.write().unwrap_or_else(|e| e.into_inner());
+            let mut next = (**suite).clone();
+            for id in &changed {
+                if let Some(spec) = live.specs.iter().find(|s| s.id == *id) {
+                    next.specs.retain(|s| s.id != *id);
+                    next.specs.push(spec.clone());
+                }
+            }
+            next.specs
+                .sort_by(|a, b| (&a.feature, &a.id).cmp(&(&b.feature, &b.id)));
+            *suite = Arc::new(next);
+        }
+        self.with_run(|run, now| {
+            for spec in planned {
+                run.spec_changed(now, &spec.id, spec.outcomes)?;
+            }
+            Ok(())
+        })?;
+        Ok(changed)
     }
 
     /// Adds the specs named that aren't in the run yet, with their snapshot and `run.json`'s scope, so the run folder

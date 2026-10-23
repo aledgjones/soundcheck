@@ -1,6 +1,6 @@
 use super::{Hub, prompt};
 use crate::report;
-use crate::run::model::{Build, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
+use crate::run::model::{Answer, Build, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -41,6 +41,8 @@ pub struct PostResultParams {
     #[serde(default)]
     pub side_finds: Vec<SideFind>,
     pub notes: Option<String>,
+    /// When your brief has `Probe around it`: what you tried and what happened. A pass without it waits for review.
+    pub probed: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -514,6 +516,9 @@ struct RowStatus<'a> {
     /// Why the device was degraded during the latest attempt.
     #[serde(skip_serializing_if = "<[String]>::is_empty")]
     degraded: &'a [String],
+    /// For a claim waiting for review: everything the call rests on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    review: Option<serde_json::Value>,
 }
 
 #[tool_router(vis = "pub")]
@@ -540,6 +545,7 @@ impl Tools {
             judgments: p.judgments,
             side_finds: p.side_finds,
             notes: p.notes,
+            probed: p.probed,
         };
         let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
         let base = report::evidence_base(&spec, attempt, platform);
@@ -563,9 +569,15 @@ impl Tools {
                 missing.join(", ")
             )));
         }
+        let has_probes = self
+            .hub
+            .suite()
+            .specs
+            .iter()
+            .any(|s| s.id == spec && s.probe.is_some());
         let claim = match self
             .hub
-            .with_run(|run, now| run.post(now, &p.token, posted))
+            .with_run(|run, now| run.post_probed(now, &p.token, posted, has_probes))
         {
             Ok(claim) => claim,
             Err(e) => return reply(Err(e)),
@@ -603,6 +615,46 @@ impl Tools {
                         Row::NeedsReview { claim, .. } => ("needs review", None, Some(*claim)),
                         Row::Filed { result, .. } => ("filed", Some(*result), None),
                     };
+                    let review = match &r.row {
+                        Row::NeedsReview {
+                            attempt,
+                            posted,
+                            verify,
+                            ..
+                        } => {
+                            let outcomes = run
+                                .plan()
+                                .specs
+                                .iter()
+                                .find(|s| s.id == *spec)
+                                .map(|s| s.outcomes.as_slice())
+                                .unwrap_or_default();
+                            let judgments: Vec<_> = posted
+                                .judgments
+                                .iter()
+                                .map(|j| {
+                                    json!({
+                                        "outcome": j.outcome,
+                                        "text": outcomes.get(j.outcome),
+                                        "answer": j.answer,
+                                        "observed": j.observed,
+                                        "evidence": j.evidence,
+                                    })
+                                })
+                                .collect();
+                            let untried = claim == Some(Claim::Unsure)
+                                && !posted.judgments.iter().any(|j| j.answer == Answer::Unsure);
+                            Some(json!({
+                                "attempt": attempt,
+                                "verifying": verify,
+                                "judgments": judgments,
+                                "notes": posted.notes,
+                                "probed": posted.probed,
+                                "probes_untried": untried,
+                            }))
+                        }
+                        _ => None,
+                    };
                     RowStatus {
                         spec,
                         platform: *platform,
@@ -611,6 +663,7 @@ impl Tools {
                         result,
                         claim,
                         degraded: &r.degraded,
+                        review,
                     }
                 })
                 .collect();

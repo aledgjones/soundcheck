@@ -28,7 +28,7 @@ fn text(node: &Value, key: &str) -> Option<String> {
 }
 
 /// Parses `axe describe-ui` JSON into elements, in tree order. React Native nests the same text twice, so repeats at
-/// the same point are dropped, as are elements off the screen. The default view leaves out labels that are only an
+/// the same point are dropped, as are elements wholly off the screen; one partly on it keeps its visible part. The default view leaves out labels that are only an
 /// accessibility id, which VoiceOver never speaks; `all` keeps them.
 pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
     let tree: Value = serde_json::from_str(json).map_err(device)?;
@@ -57,17 +57,21 @@ pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
             (None, true) if id.is_some() => id.clone().unwrap_or_default(),
             _ => continue,
         };
-        let f = frame(node);
-        let (cx, cy) = f.centre();
-        if f.width <= 0.0
-            || f.height <= 0.0
-            || cx < 0.0
-            || cy < 0.0
-            || cx > screen.width
-            || cy > screen.height
-        {
+        // Clipped to the screen: a row scrolled half off is still there for a person, and a tap lands on what shows.
+        let whole = frame(node);
+        let (left, top) = (whole.x.max(screen.x), whole.y.max(screen.y));
+        let right = (whole.x + whole.width).min(screen.x + screen.width);
+        let bottom = (whole.y + whole.height).min(screen.y + screen.height);
+        if right <= left || bottom <= top {
             continue;
         }
+        let f = Rect {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        };
+        let (cx, cy) = f.centre();
         if !seen.insert(format!("{cx:.0},{cy:.0}|{label:?}|{value:?}|{id:?}")) {
             continue;
         }
@@ -1112,6 +1116,19 @@ mod tests {
                 "Save (disabled)"
             ]
         );
+    }
+
+    #[test]
+    fn a_row_scrolled_mostly_off_screen_keeps_its_visible_part() {
+        let tree = r#"[{"type":"Application","frame":{"x":0,"y":0,"width":1032,"height":1376},"children":[
+          {"type":"Button","AXLabel":"Coffee","frame":{"x":0,"y":1346,"width":1032,"height":100}},
+          {"type":"Button","AXLabel":"Gone","frame":{"x":0,"y":1400,"width":1032,"height":100}}
+        ]}]"#;
+        let seen = parse(tree, false).unwrap();
+        assert_eq!(seen.len(), 1, "wholly off screen stays out");
+        assert_eq!(seen[0].label, "Coffee");
+        assert_eq!(seen[0].frame.height, 30.0);
+        assert_eq!(seen[0].tap_point(), (516.0, 1361.0));
     }
 
     #[test]

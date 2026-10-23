@@ -181,6 +181,7 @@ fn main() -> Result<()> {
         ],
         side_finds: vec![],
         notes: None,
+        probed: None,
     };
     post(
         &mut run,
@@ -230,6 +231,7 @@ fn main() -> Result<()> {
         ],
         side_finds: vec![],
         notes: None,
+        probed: None,
     };
     post(
         &mut run,
@@ -294,6 +296,7 @@ fn main() -> Result<()> {
             ],
             side_finds: vec![],
             notes: None,
+            probed: None,
         };
         post(
             &mut run,
@@ -383,6 +386,7 @@ fn held(observed: &[&str]) -> Posted {
             .collect(),
         side_finds: vec![],
         notes: None,
+        probed: None,
     }
 }
 

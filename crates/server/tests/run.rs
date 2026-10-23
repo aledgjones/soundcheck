@@ -69,6 +69,7 @@ fn judged(answers: &[Answer]) -> Posted {
             .collect(),
         side_finds: vec![],
         notes: None,
+        probed: None,
     }
 }
 
@@ -1215,6 +1216,43 @@ fn any_row_can_be_queued_again_whatever_its_state() {
         run.row(DRAW, Ios).unwrap().row,
         Row::Queued { .. }
     ));
+}
+
+#[test]
+fn a_pass_that_skips_its_probes_waits_for_review() {
+    let path = journal("unprobed");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let claim = run
+        .post_probed(2, &t, judged(&[Answer::Held]), true)
+        .unwrap();
+    assert_eq!(claim, Claim::Unsure);
+    assert!(matches!(
+        run.row(BACK, Android).unwrap().row,
+        Row::NeedsReview { .. }
+    ));
+    run.review(
+        3,
+        BACK,
+        Android,
+        Call::Judge {
+            result: Final::Pass,
+            title: None,
+        },
+        "the outcomes held; the probes don't apply to this build",
+    )
+    .unwrap();
+    assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
+
+    // Saying what was probed files the pass straight away, and a replay keeps both calls.
+    let t = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let mut probed = judged(&[Answer::Held, Answer::Held]);
+    probed.probed = Some("undid twice quickly: both strokes went".into());
+    assert_eq!(run.post_probed(5, &t, probed, true).unwrap(), Claim::Pass);
+    drop(run);
+    let run = Run::open(plan(false), &path, 0).unwrap();
+    assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
 }
 
 #[test]

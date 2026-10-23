@@ -232,6 +232,20 @@ async fn a_spec_runs_end_to_end_over_mcp() {
             .unwrap()
             .contains("needs review")
     );
+    // The waiting claim carries what a review call rests on.
+    let waiting = status["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["state"] == "needs review")
+        .unwrap();
+    let failed = &waiting["review"]["judgments"][0];
+    assert_eq!(failed["answer"], "failed");
+    assert_eq!(failed["observed"], "the stroke stayed after undo");
+    assert_eq!(
+        failed["text"],
+        "The stroke disappears on undo and returns in the same place on redo."
+    );
 
     let reviewed = call(
         &client,
@@ -811,6 +825,48 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
             .is_some()
     );
     assert!(!reloaded.state().finished);
+
+    // A spec edited mid-run is reread when it's queued again, and the next brief has the new wording.
+    let back = root.join("annotations/002-back.spec.md");
+    let edited = std::fs::read_to_string(&back)
+        .unwrap()
+        .replace("double-tap back", "tap back twice, a second apart");
+    std::fs::write(&back, edited).unwrap();
+    let queued = call(
+        &client,
+        "queue",
+        json!({ "specs": ["annotations/002-back", "annotations/003-erase"], "reason": "the goal was reworded" }),
+    )
+    .await;
+    assert!(
+        queued["requeued"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["spec"] == "annotations/003-erase" && r["was"] == "running"),
+        "a running attempt is abandoned: {queued}"
+    );
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    let brief = call(&client, "brief", json!({ "token": dispatched["token"] })).await;
+    assert!(
+        brief
+            .as_str()
+            .is_some_and(|b| b.contains("tap back twice, a second apart")),
+        "the rerun gets the edited spec: {brief}"
+    );
+    assert!(
+        std::fs::read_to_string(dir.join("suite/annotations/002-back.spec.md"))
+            .unwrap()
+            .contains("a second apart"),
+        "the snapshot takes the new text"
+    );
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains(r#""event":"spec-changed","spec":"annotations/002-back""#));
 
     client.cancel().await.unwrap();
     server.shutdown.cancel();

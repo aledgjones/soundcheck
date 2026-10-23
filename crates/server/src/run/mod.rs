@@ -276,6 +276,18 @@ impl Run {
 
     /// A tester's result. A PASS files at once; anything else waits for review.
     pub fn post(&mut self, now: u64, token: &str, posted: Posted) -> Result<Claim> {
+        self.post_probed(now, token, posted, false)
+    }
+
+    /// Records a tester's result. When the spec has probes and a pass says nothing about them, it waits for review
+    /// as an Unsure, since probes are where new bugs turn up.
+    pub fn post_probed(
+        &mut self,
+        now: u64,
+        token: &str,
+        posted: Posted,
+        has_probes: bool,
+    ) -> Result<Claim> {
         self.open_for_commands()?;
         let (spec, _) = self.running(token)?;
         let planned = self.planned(&spec)?;
@@ -311,7 +323,14 @@ impl Run {
                 find.summary
             );
         }
-        let claim = posted.claim();
+        let unprobed = has_probes
+            && posted.claim() == Claim::Pass
+            && posted.probed.as_deref().is_none_or(|p| p.trim().is_empty());
+        let claim = if unprobed {
+            Claim::Unsure
+        } else {
+            posted.claim()
+        };
         let find_ids = (0..posted.side_finds.len() as u32)
             .map(|i| self.state.next_id + i)
             .collect();
@@ -320,6 +339,7 @@ impl Run {
             Event::Posted {
                 token: token.into(),
                 posted,
+                unprobed,
                 find_ids,
             },
         )?;
@@ -933,6 +953,15 @@ impl Run {
         Ok(was)
     }
 
+    /// Takes up a spec's new text, read from disk when it was queued again; later attempts judge `outcomes`.
+    pub fn spec_changed(&mut self, now: u64, spec: &str, outcomes: Vec<String>) -> Result<()> {
+        let Some(planned) = self.plan.specs.iter_mut().find(|s| s.id == spec) else {
+            bail!("no spec {spec} in this run");
+        };
+        planned.outcomes = outcomes;
+        self.commit(now, Event::SpecChanged { spec: spec.into() })
+    }
+
     pub fn pause(&mut self, now: u64, reason: &str) -> Result<()> {
         self.open_for_commands()?;
         if self.state.paused {
@@ -1147,7 +1176,12 @@ impl State {
                     };
                 }
             }
-            Event::Posted { token, posted, .. } => {
+            Event::Posted {
+                token,
+                posted,
+                unprobed,
+                ..
+            } => {
                 let Some(key) = self.running_token(token) else {
                     return;
                 };
@@ -1171,7 +1205,11 @@ impl State {
                 if let Some(r) = self.rows.get_mut(&key) {
                     r.posted = Some(posted.clone());
                 }
-                let claim = posted.claim();
+                let claim = if *unprobed {
+                    Claim::Unsure
+                } else {
+                    posted.claim()
+                };
                 if claim == Claim::Pass {
                     if let Some(original) = &verify
                         && self.rows[&key].verified_claim == Some(Claim::Fail)
@@ -1374,6 +1412,22 @@ impl State {
                         reason: reason.clone(),
                         status: Status::Open,
                         evidence,
+                    });
+                }
+            }
+            Event::SpecChanged { spec } => {
+                for platform in self
+                    .rows
+                    .keys()
+                    .filter(|(s, _)| s == spec)
+                    .map(|(_, p)| *p)
+                    .collect::<Vec<_>>()
+                {
+                    self.notes.push(Note {
+                        spec: spec.clone(),
+                        platform,
+                        text: "spec changed since the run started: later attempts use the new text"
+                            .into(),
                     });
                 }
             }

@@ -54,7 +54,10 @@ pub fn render(
         );
     }
     if let Some(probe) = &spec.probe {
-        let _ = writeln!(out, "## Probe around it\n\n{probe}\n");
+        let _ = writeln!(
+            out,
+            "## Probe around it\n\n{probe}\n\nAfter the outcomes, try these at a person's pace, and say in `probed` what you tried and what happened. A pass that leaves `probed` out waits for review.\n"
+        );
     }
     if let Some(context) = feature_context.map(str::trim).filter(|c| !c.is_empty()) {
         let _ = writeln!(out, "## About this feature\n\n{context}\n");

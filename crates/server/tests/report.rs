@@ -19,6 +19,7 @@ fn judged(answers: &[(Answer, &str)]) -> Posted {
             .collect(),
         side_finds: vec![],
         notes: None,
+        probed: None,
     }
 }
 

@@ -23,9 +23,11 @@ pub fn summary(entry: &Entry) -> String {
         Event::Posted {
             token,
             posted,
+            unprobed,
             find_ids,
         } => {
             let outcome = match posted.claim() {
+                Claim::Pass if *unprobed => "PASS without trying its probes: needs review",
                 Claim::Pass => "PASS: filed",
                 Claim::Fail => "FAIL: needs review",
                 Claim::Blocked => "BLOCKED: needs review",
@@ -153,6 +155,9 @@ pub fn summary(entry: &Entry) -> String {
                 .collect::<Vec<_>>()
                 .join(", ")
         ),
+        Event::SpecChanged { spec } => {
+            format!("{spec} changed since the run started: reread from disk")
+        }
         Event::Paused { reason } => format!("paused: {reason}"),
         Event::Resumed => "resumed".into(),
         Event::Finished { result_counts: c } => format!(

@@ -19,6 +19,9 @@ pub enum Event {
     Posted {
         token: String,
         posted: Posted,
+        /// A pass on a spec with probes that says nothing about them: it waits for review like an Unsure.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        unprobed: bool,
         /// The ids its side finds get, in order, for `review_find`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         find_ids: Vec<u32>,
@@ -119,6 +122,11 @@ pub enum Event {
         /// For the next attempt's brief.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+    },
+    /// A spec's file changed since the run began and was read again when it was queued: later attempts use the new
+    /// text, and the report says so beside its results.
+    SpecChanged {
+        spec: String,
     },
     /// Platforms added on resume: their rows for the run's scope join it, and a finished run opens again.
     PlatformsAdded {
