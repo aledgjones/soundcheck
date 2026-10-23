@@ -1,0 +1,18 @@
+# A made-up shopping list app's suite, for the README's screenshots (`cargo run --example demo`).
+soundcheck: "0.1"
+platforms:
+  android:
+    app-id: com.example.larder
+  ios:
+    app-id: com.example.larder
+hooks:
+  guard: "true"
+  seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+  build-identity: "true"
+seeds: [empty, kitchen, shared]
+reports: ../reports
+tickets:
+  url: https://example.atlassian.net/browse/{id}
+network:
+  proxy:
+    - { name: api, listen: 23000, upstream: 3000 }
