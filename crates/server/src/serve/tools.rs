@@ -13,7 +13,7 @@ use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
-pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers use post_result with their spec token; the coordinator uses status, dispatch, add_specs, review, review_find, install_build, triage, pause, resume and finish.";
+pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers call brief with their spec token first and post_result at the end; the coordinator uses status, dispatch, add_specs, review, review_find, install_build, triage, pause, resume and finish.";
 
 #[derive(Clone)]
 pub struct Tools {
@@ -498,7 +498,7 @@ impl Tools {
         let hub = self.hub.clone();
         tokio::spawn(async move { hub.check_health(&spec, platform, attempt).await });
         reply(Ok(
-            json!({ "claim": claim, "next": "you're done: stop here" }),
+            json!({ "claim": claim, "next": "you're done: reply in one line (token, claim, side finds) and stop" }),
         ))
     }
 
@@ -561,7 +561,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a spec's next attempt on a platform. Returns the tester's brief: pass it unchanged to a background soundcheck-tester agent."
+        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model and a short prompt: pass the prompt unchanged to a background soundcheck-tester agent, which fetches its brief with `brief`."
     )]
     async fn dispatch(
         &self,
@@ -601,14 +601,13 @@ impl Tools {
             .find(|f| f.name == spec.feature)
             .and_then(|f| f.context.as_deref());
         reply(hub.with_run(|run, now| {
-            let mut brief = String::new();
             let rerun = run
                 .state()
                 .rows
                 .get(&(p.spec.clone(), p.platform))
                 .and_then(|r| r.rerun_note.clone());
             let token = run.dispatch(now, &p.spec, p.platform, |token, verify| {
-                brief = prompt::render(
+                prompt::render(
                     spec,
                     context,
                     p.platform,
@@ -616,11 +615,35 @@ impl Tools {
                     verify,
                     rerun.as_deref(),
                     seeded.as_deref(),
-                );
-                brief.clone()
+                )
             })?;
-            Ok(json!({ "token": token, "model": spec.front.model, "brief": brief }))
+            Ok(json!({
+                "token": token,
+                "model": spec.front.model.clone().or_else(|| {
+                    suite.config.as_ref().map(|c| c.models.default.clone())
+                }),
+                "prompt": prompt::handoff(&token),
+            }))
         }))
+    }
+
+    #[tool(
+        description = "Tester: your brief, the spec you're testing and how to post its result. Call it first, with the token you were given."
+    )]
+    async fn brief(
+        &self,
+        Parameters(p): Parameters<TokenParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let brief = self.hub.with_run(|run, now| {
+            let brief = run.brief(&p.token)?;
+            run.call_started(now, &p.token);
+            run.call_finished(now, &p.token);
+            Ok(brief)
+        });
+        Ok(match brief {
+            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
+            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("refused: {e:#}"))]),
+        })
     }
 
     #[tool(

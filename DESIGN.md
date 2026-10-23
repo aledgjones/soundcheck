@@ -45,7 +45,7 @@ The driver is a separate crate, so the compiler enforces that it never depends o
 
 How they talk:
 
-- **Tester → server:** MCP tool calls.
+- **Tester → server:** MCP tool calls, starting with `brief` for its spec.
 - **Server → tester:** only in the reply to the tester's next call ("device degraded, stop"). MCP notifications don't wake a Claude agent, so nothing relies on them.
 - **Server → coordinator:** an event stream. The coordinator runs `soundcheck events` under a Monitor, which prints one line per event (spec finished, result needs review, device degraded) and replays anything missed since its cursor, so re-arming the Monitor every 30 minutes loses nothing.
 - **Coordinator → server:** MCP tools or the CLI (start, dispatch, add specs, uphold, verify, send back, pause, resume). It reaches testers only through the server, so every instruction is in the journal.
@@ -73,9 +73,10 @@ How they talk:
    The project supplies every specific (hooks, `ready` labels); soundcheck supplies the sequence and the generic checks, so it stays project-agnostic.
 2. **Dispatch, one spec at a time per platform:** the coordinator calls `dispatch(spec, platform)`.
    - The server runs the project's `seed` hook, relaunches the app, then checks the spec's `starts-on` elements are on screen. A failure there is a **reset error**: retried automatically (twice), never counted as an attempt and never blamed on the tester or the app; if it persists, the spec is filed BLOCKED "reset failed" with the server's capture.
-   - It returns the rendered prompt: the spec, its `_feature.md`, the platform hints, the result contract and a spec token. The prompt is recorded in the journal.
-   - The coordinator passes the prompt unchanged to a **background** `soundcheck-tester` agent with the spec's model.
-3. **The tester works** through the driver tools and posts the spec's result once, with evidence.
+   - It renders the tester's brief (the spec, its `_feature.md`, the platform hints, the result contract and a spec token) and records it in the journal.
+   - It returns the token, the spec's model (the suite's `models.default` when the spec names none) and a short prompt naming the token. The coordinator passes the prompt unchanged to a **background** `soundcheck-tester` agent with the spec's model.
+   - **The brief never passes through the coordinator** (2026-10-23): the tester fetches it with `brief`, which answers only while the token's spec is running. A brief is 3–8k tokens, and returning it from `dispatch` put each one in the coordinator's context twice, which ran a long run's coordinator out of context.
+3. **The tester works** through the driver tools and posts the spec's result once, with evidence. Its final reply to the coordinator is one line (token, claim, side-find count): everything else is on the server.
 4. **When a spec finishes,** the event wakes the coordinator. It dispatches the next spec straight away and reviews any non-pass in parallel.
 5. **Finish:** the server refuses to finish the run (stamp the verdict, allow the final export) while any result is unreviewed or any spec is still running, and names what blocks it. Sections have no closing step: each grid tile always shows its live state.
 
@@ -188,7 +189,7 @@ Nothing in a run may wait for a human:
 - **Accounts:** each platform's account is set up so seeding and sign-in never need a person (no account pickers, no device-policy prompts). `setup` checks this.
 - **Stuck devices:** the server restarts a degraded or wedged device (3.7). If a spec still can't run, the coordinator files it BLOCKED with the reason and moves on.
 - **Where the coordinator runs:** in v1, an ordinary Claude Code session on the test machine, left open. Headless dispatch stays a later step.
-- **A coordinator that lasts hours:** all state lives in the server, so a compacted or restarted coordinator reconnects and carries on from the journal. The coordinator reads short evidence summaries and opens a screenshot only when the summary isn't enough, keeping its context small.
+- **A coordinator that lasts hours:** all state lives in the server, so a compacted or restarted coordinator reconnects and carries on from the journal. The coordinator reads short evidence summaries and opens a screenshot only when the summary isn't enough, and never handles a tester's brief or a long hand-back (3.2), keeping its context small.
 - **Stop is pause.** When the person asks the coordinator to stop, the run pauses with everything in the journal; `resume` continues from the next spec. That covers "big bug: fix it, then carry on" with no special case.
 
 ---

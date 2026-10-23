@@ -70,6 +70,13 @@ pub fn render(
     out
 }
 
+/// What the coordinator passes to the tester agent: the brief itself travels by `brief`, outside the coordinator.
+pub fn handoff(token: &str) -> String {
+    format!(
+        "Run soundcheck spec `{token}`: call `brief` with this token first, and follow it. When you've posted, reply with one line only: the token, the claim `post_result` returned and how many side finds you posted."
+    )
+}
+
 const CONTRACT: &str = "## Posting your result
 
 Call `post_result` once, at the end, with a judgment for every outcome above by its number:

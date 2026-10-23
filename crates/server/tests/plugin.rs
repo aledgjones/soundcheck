@@ -20,6 +20,7 @@ fn the_tester_agent_can_use_every_driver_tool() {
         );
     }
     assert!(agent.contains(&format!("{PREFIX}post_result")));
+    assert!(agent.contains(&format!("{PREFIX}brief")));
     assert!(
         !agent.contains(&format!("{PREFIX}review")),
         "testers never review"

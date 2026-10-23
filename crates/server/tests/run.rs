@@ -79,6 +79,24 @@ fn result(run: &Run, spec: &str, platform: Platform) -> Option<Final> {
 }
 
 #[test]
+fn a_tester_gets_its_brief_only_while_its_spec_runs() {
+    let (mut run, _) = open("brief");
+    let token = run
+        .dispatch(1, DRAW, Android, |t, _| format!("brief for {t}"))
+        .unwrap();
+    assert_eq!(run.brief(&token).unwrap(), format!("brief for {token}"));
+    run.post(2, &token, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    assert!(
+        run.brief(&token)
+            .unwrap_err()
+            .to_string()
+            .contains("isn't a running spec")
+    );
+    assert!(run.brief("annotations/001-draw#9@android").is_err());
+}
+
+#[test]
 fn a_pass_files_at_once() {
     let (mut run, _) = open("pass");
     let token = run.dispatch(1, DRAW, Android, brief).unwrap();

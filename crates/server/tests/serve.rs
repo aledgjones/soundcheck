@@ -80,7 +80,8 @@ async fn call(
     if result.is_error == Some(true) {
         Value::String(text)
     } else {
-        serde_json::from_str(&text).unwrap()
+        // `brief` answers in plain Markdown.
+        serde_json::from_str(&text).unwrap_or(Value::String(text))
     }
 }
 
@@ -142,6 +143,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<_> = tools.iter().map(|t| t.name.to_string()).collect();
     for want in [
+        "brief",
         "post_result",
         "status",
         "dispatch",
@@ -168,7 +170,17 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     )
     .await;
     let token = dispatched["token"].as_str().unwrap().to_string();
-    let brief = dispatched["brief"].as_str().unwrap();
+    let prompt = dispatched["prompt"].as_str().unwrap();
+    assert!(
+        prompt.contains(&token) && prompt.contains("`brief`"),
+        "{prompt}"
+    );
+    assert!(
+        dispatched.get("brief").is_none(),
+        "the brief skips the coordinator"
+    );
+    let brief = call(&client, "brief", json!({ "token": token })).await;
+    let brief = brief.as_str().unwrap();
     assert!(brief.contains(&token));
     assert!(brief.contains("0. The stroke disappears on undo"));
     assert!(
@@ -203,6 +215,14 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     )
     .await;
     assert_eq!(posted["claim"], "FAIL");
+    let refused = call(&client, "brief", json!({ "token": token })).await;
+    assert!(
+        refused
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("refused: token {token} isn't a running spec")),
+        "a posted spec's brief is refused: {refused}"
+    );
 
     let status = call(&client, "status", json!({})).await;
     assert_eq!(status["verdict"]["status"], "not-ready");
@@ -752,8 +772,9 @@ async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
         json!({ "spec": "annotations/003-erase", "platform": "ios" }),
     )
     .await;
+    let brief = call(&client, "brief", json!({ "token": dispatched["token"] })).await;
     assert!(
-        dispatched["brief"]
+        brief
             .as_str()
             .is_some_and(|b| b.contains("Erase a pen stroke")),
         "the run is open again and dispatches the new spec: {dispatched}"

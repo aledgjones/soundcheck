@@ -47,8 +47,9 @@ The project's regression skill gives you:
 
 ## 2. Dispatch
 
-- Call `dispatch` with the next spec in scope and its platform. It returns the tester's `brief`, a `token` and the spec's `model`.
-- Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `brief` as its prompt, **unchanged**, and the token as its description.
+- Call `dispatch` with the next spec in scope and its platform. It returns a `token`, the spec's `model` and a short `prompt`. The brief itself isn't in it: the tester fetches it from the server with `brief`, so it never passes through your context.
+- Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `prompt` as its prompt, **unchanged**, and the token as its description.
+- A tester's final reply is one line (token, claim, side finds). Its judgments and evidence are on the server: read them with `status` when you review, not from the reply.
 - One spec runs at a time unless the suite says `parallel: true`. The server refuses a second dispatch and says why; that's your cue to wait for the next event.
 - A dispatch refused with `held:` means the platform is restarting or the Mac is busy. Wait for its `<platform> ready` event, then dispatch again.
 - When a tester posts (`posted … filed` or `needs review`) or stalls (`stalled … queued again`), dispatch the next spec straight away, **before** reviewing anything. Reviews never hold up testing.

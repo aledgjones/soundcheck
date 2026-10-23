@@ -994,6 +994,21 @@ impl Run {
         }
     }
 
+    /// The brief a running token's tester was sent, as journalled at dispatch.
+    pub fn brief(&self, token: &str) -> Result<String> {
+        self.running(token)?;
+        let sent = self.entries.iter().rev().find_map(|e| match &e.event {
+            Event::Dispatched {
+                token: t, prompt, ..
+            } if t == token => Some(prompt.clone()),
+            _ => None,
+        });
+        match sent {
+            Some(prompt) => Ok(prompt),
+            None => bail!("no brief was journalled for {token}"),
+        }
+    }
+
     fn commit(&mut self, now: u64, event: Event) -> Result<()> {
         let entry = self.journal.append(now, event)?;
         self.state.apply(&self.plan, &entry);
