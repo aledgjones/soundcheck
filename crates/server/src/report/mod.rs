@@ -1,5 +1,6 @@
 //! The run's page: one renderer for the live page and the export, so what's watched is what's kept.
 
+use crate::run::journal::Entry;
 use crate::run::model::{Answer, Call, Final, Posted, ProblemKind, ProblemSource, Status};
 use crate::run::verdict::{Verdict, VerdictStatus, verdict};
 use crate::run::{Row, RowRecord, Run};
@@ -186,6 +187,20 @@ fn overdue(since: u64, warn_ms: u64, label: &str) -> String {
     )
 }
 
+/// The longest quiet spell that still counts as working: a spec runs for minutes between journal entries, but a run
+/// left overnight and rerun the next morning shouldn't count the night.
+const ACTIVE_GAP_MS: u64 = 30 * 60_000;
+
+/// How long the run has been working: the time between its journal entries, leaving out quiet spells longer than
+/// [`ACTIVE_GAP_MS`].
+pub fn active_ms(entries: &[Entry]) -> u64 {
+    entries
+        .windows(2)
+        .map(|w| w[1].at.saturating_sub(w[0].at))
+        .filter(|gap| *gap <= ACTIVE_GAP_MS)
+        .sum()
+}
+
 fn now_bar(page: &Page) -> String {
     let state = page.run.state();
     let entries = page.run.entries_after(0);
@@ -222,11 +237,16 @@ fn now_bar(page: &Page) -> String {
         ));
     }
     let timer = entries
-        .first()
-        .map(|first| {
+        .last()
+        .map(|last| {
+            let counting = if state.finished || state.paused {
+                String::new()
+            } else {
+                format!(" data-since=\"{}\" data-cap=\"{ACTIVE_GAP_MS}\"", last.at)
+            };
             format!(
-                "<span class=\"nowbar-time elapsed\" data-since=\"{}\"></span>",
-                first.at
+                "<span class=\"nowbar-time elapsed\" data-active=\"{}\"{counting} title=\"Time the run has been working, without the gaps between sessions\"></span>",
+                active_ms(entries)
             )
         })
         .unwrap_or_default();
@@ -247,6 +267,17 @@ fn header(page: &Page) -> String {
     }
     if let Some(last) = entries.last() {
         facts.push(format!("<span>Updated {}</span>", time(last.at)));
+    }
+    let minutes = active_ms(entries) / 60_000;
+    if minutes > 0 {
+        let took = if minutes < 60 {
+            format!("{minutes} min")
+        } else {
+            format!("{} h {} min", minutes / 60, minutes % 60)
+        };
+        facts.push(format!(
+            "<span title=\"Time the run spent working, without the gaps between sessions\">Active {took}</span>"
+        ));
     }
     if let Some(export) = page.export {
         facts.push(format!(
@@ -995,8 +1026,9 @@ fn notes(page: &Page) -> String {
         .iter()
         .map(|(t, d)| format!("<dt>{t}</dt><dd>{d}</dd>"))
         .collect();
+    let count = state.notes.len() + usize::from(!state.builds.is_empty());
     format!(
-        "<section class=\"block\"><h2>Notes</h2><div class=\"card notes\"><dl>{dl}</dl></div></section>"
+        "<section class=\"block\"><h2>Notes</h2><div class=\"card notes\"><details class=\"fold\" id=\"notes\"><summary>Show all {count} notes</summary><dl>{dl}</dl></details></div></section>"
     )
 }
 

@@ -172,8 +172,8 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .nowbar-time{flex:none;margin-left:auto;font-weight:600}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--accent);display:inline-block;margin-right:6px;animation:breathe 2.4s ease-in-out infinite}
 .nowbar .warn{color:var(--partial);font-weight:600}
-.notes{padding:20px 28px;display:flex;flex-direction:column;gap:14px;font-size:15px}
-.notes dl{display:grid;grid-template-columns:max-content 1fr;gap:10px 20px;margin:0}
+.notes{padding:18px 28px;font-size:15px}
+.notes dl{display:grid;grid-template-columns:max-content 1fr;gap:10px 20px;margin:14px 0 0}
 .notes dt{font-weight:600}
 .notes dd{margin:0;color:var(--label2)}
 .timeline{padding:18px 28px}

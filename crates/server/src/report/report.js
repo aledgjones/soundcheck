@@ -21,8 +21,11 @@
       }
       return min < 60 ? `${min} min` : `${Math.floor(min / 60)} h ${min % 60} min`;
     };
-    for (const e of document.querySelectorAll(".elapsed[data-since]")) {
-      const s = Math.max(0, Math.floor((now - Number(e.dataset.since)) / 1000));
+    for (const e of document.querySelectorAll(".elapsed[data-active]")) {
+      // Counting on from the last entry, unless the run has gone quiet for longer than counts as working.
+      const quiet = e.dataset.since ? now - Number(e.dataset.since) : 0;
+      const live = quiet <= Number(e.dataset.cap || 0) ? Math.max(0, quiet) : 0;
+      const s = Math.floor((Number(e.dataset.active) + live) / 1000);
       const h = Math.floor(s / 3600);
       const ms = `${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
       e.textContent = h > 0 ? `${h}:${ms}` : ms;

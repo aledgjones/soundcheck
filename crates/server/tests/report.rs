@@ -246,3 +246,17 @@ fn a_shot_is_named_under_its_attempts_prefix() {
         );
     }
 }
+
+#[test]
+fn the_timer_counts_working_time_not_a_night_between_sessions() {
+    use soundcheck::run::event::Event;
+    use soundcheck::run::journal::Entry;
+    let at = |seq: u64, minutes: u64| Entry {
+        seq,
+        at: minutes * 60_000,
+        event: Event::Resumed,
+    };
+    // Ten minutes of work, a night off, then five more.
+    let entries = [at(1, 0), at(2, 4), at(3, 10), at(4, 10 + 600), at(5, 615)];
+    assert_eq!(report::active_ms(&entries), 15 * 60_000);
+}
