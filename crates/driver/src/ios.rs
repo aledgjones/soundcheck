@@ -942,19 +942,6 @@ impl Device for Ios {
         self.hid(&format!("k {code}")).await
     }
 
-    // The HID session keeps one touch held between scripts; another down moves it.
-    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        self.hid(&format!("d {x:.0} {y:.0}")).await
-    }
-
-    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
-        self.touch_down(x, y).await
-    }
-
-    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        self.hid(&format!("u {x:.0} {y:.0}")).await
-    }
-
     async fn screen_size(&self) -> Result<(f64, f64)> {
         let tree: Value = serde_json::from_str(&self.screen_json(true).await?).map_err(device)?;
         let root = tree.as_array().and_then(|r| r.first()).unwrap_or(&tree);

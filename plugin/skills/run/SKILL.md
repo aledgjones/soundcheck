@@ -11,7 +11,7 @@ allowed-tools:
   - Read
   - mcp__plugin_soundcheck_soundcheck__status
   - mcp__plugin_soundcheck_soundcheck__dispatch
-  - mcp__plugin_soundcheck_soundcheck__add_specs
+  - mcp__plugin_soundcheck_soundcheck__queue
   - mcp__plugin_soundcheck_soundcheck__review
   - mcp__plugin_soundcheck_soundcheck__review_find
   - mcp__plugin_soundcheck_soundcheck__triage
@@ -98,7 +98,7 @@ If the server dies, start it again with `soundcheck run <suite> --resume <run fo
 
 To add a platform to a paused or finished run (the person wants both platforms in one report), resume it with `--platforms <list>`: platforms the run doesn't have yet get rows for its saved scope after their preflight, and a finished run opens again, so dispatch the new rows and `finish` once more. Platforms already in the run are kept either way.
 
-To add specs mid-run (ones the person wants covered too, or a spec written since the run started), call `add_specs` with spec IDs or features: their rows join on every platform of the run they run on, live, and a finished run opens again. Resuming with `--scope <list>` does the same; specs already in the run are kept either way.
+To run specs again or add new ones, at any point, call `queue` with spec IDs or features. A spec not in the run joins it (one the person wants covered too, or a spec written since the run started). A spec already in the run runs again whatever state its rows are in (a harness gap that blocked it is fixed, the person wants it checked again, a tester went wrong mid-attempt): give the `reason`, which the report shows beside the result, `platforms` to limit it, and a `note` for the tester when the attempt should know something. A running attempt is abandoned and a claim waiting for review set aside, so review it first if its evidence matters. Each queued row gets a fresh attempt budget and a finished run opens again: dispatch them and `finish` once more. Resuming with `--scope <list>` adds specs the same way.
 
 ## 7. Triage, with the person
 

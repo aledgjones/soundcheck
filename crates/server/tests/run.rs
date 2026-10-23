@@ -1,3 +1,4 @@
+use soundcheck::run::event::RowRef;
 use soundcheck::run::model::*;
 use soundcheck::run::{MAX_ATTEMPTS, Plan, PlannedSpec, Row, Run};
 use soundcheck::suite::config::Platform::{self, Android, Ios};
@@ -1143,6 +1144,88 @@ fn a_build_installs_only_between_specs() {
     assert!(err.contains("still running or waiting for review"), "{err}");
     run.install_build(2, Ios, build("b2", "fp1"), vec![])
         .unwrap();
+}
+
+#[test]
+fn a_rerun_after_finishing_opens_the_run_again() {
+    let path = journal("fix-after-finish");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    pass(&mut run, 1, BACK, Android);
+    run.finish(3).unwrap();
+    let none = run
+        .install_build(4, Android, build("a1", "fp1"), vec![])
+        .unwrap();
+    assert!(none.is_empty() && run.state().finished);
+    let rerun = vec![Rerun {
+        spec: BACK.into(),
+        reason: "the harness gap that blocked it is fixed".into(),
+    }];
+    run.install_build(5, Android, build("a1", "fp1"), rerun)
+        .unwrap();
+    assert!(!run.state().finished);
+    run.dispatch(6, BACK, Android, brief).unwrap();
+    drop(run);
+    assert!(!Run::open(plan(false), &path, 0).unwrap().state().finished);
+}
+
+fn row(spec: &str, platform: Platform) -> RowRef {
+    RowRef {
+        spec: spec.into(),
+        platform,
+    }
+}
+
+#[test]
+fn any_row_can_be_queued_again_whatever_its_state() {
+    let path = journal("requeue");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    // Filed.
+    pass(&mut run, 1, BACK, Android);
+    // Waiting for review.
+    let t = run.dispatch(3, DRAW, Android, brief).unwrap();
+    run.post(4, &t, judged(&[Answer::Failed, Answer::Held]))
+        .unwrap();
+    // Running.
+    let running = run.dispatch(5, DRAW, Ios, brief).unwrap();
+    assert!(run.requeue(6, vec![row(BACK, Android)], " ", None).is_err());
+    let was = run
+        .requeue(
+            6,
+            vec![row(BACK, Android), row(DRAW, Android), row(DRAW, Ios)],
+            "the harness fix needs proving",
+            Some("use `touch` for outcome 1".into()),
+        )
+        .unwrap();
+    let was: Vec<&str> = was.iter().map(|(_, w)| *w).collect();
+    assert_eq!(was, ["already filed", "waiting for review", "running"]);
+    for (spec, platform) in [(BACK, Android), (DRAW, Android), (DRAW, Ios)] {
+        let r = run.row(spec, platform).unwrap();
+        assert!(matches!(r.row, Row::Queued { verify: None }), "{spec}");
+        assert_eq!(r.budget, 0);
+        assert_eq!(r.rerun_note.as_deref(), Some("use `touch` for outcome 1"));
+    }
+    // The abandoned attempt's tester can't post any more.
+    assert!(
+        run.post(7, &running, judged(&[Answer::Held, Answer::Held]))
+            .is_err()
+    );
+    drop(run);
+    let run = Run::open(plan(false), &path, 0).unwrap();
+    assert!(matches!(
+        run.row(DRAW, Ios).unwrap().row,
+        Row::Queued { .. }
+    ));
+}
+
+#[test]
+fn queueing_a_finished_run_opens_it_again() {
+    let mut run = open("requeue-finished").0;
+    pass(&mut run, 1, BACK, Android);
+    run.finish(3).unwrap();
+    run.requeue(4, vec![row(BACK, Android)], "check it again", None)
+        .unwrap();
+    assert!(!run.state().finished);
+    run.dispatch(5, BACK, Android, brief).unwrap();
 }
 
 #[test]

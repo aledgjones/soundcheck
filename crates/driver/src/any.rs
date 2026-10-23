@@ -68,15 +68,6 @@ impl Device for AnyDevice {
     async fn push_file(&self, source: &Path, name: &str) -> Result<()> {
         each!(self, d => d.push_file(source, name).await)
     }
-    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        each!(self, d => d.touch_down(x, y).await)
-    }
-    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
-        each!(self, d => d.touch_move(x, y).await)
-    }
-    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        each!(self, d => d.touch_up(x, y).await)
-    }
     async fn screen_size(&self) -> Result<(f64, f64)> {
         each!(self, d => d.screen_size().await)
     }

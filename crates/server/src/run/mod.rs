@@ -8,7 +8,7 @@ pub mod verdict;
 
 use crate::suite::config::Platform;
 use anyhow::{Result, bail};
-use event::{Event, ResultCounts};
+use event::{Event, ResultCounts, RowRef};
 use journal::{Entry, Journal};
 use model::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -608,7 +608,7 @@ impl Run {
         build: Build,
         listed: Vec<Rerun>,
     ) -> Result<Vec<Rerun>> {
-        self.open_for_commands()?;
+        // Allowed on a finished run, which its reruns open again: a harness fix after finishing must reach its rows.
         if build.commit.trim().is_empty() {
             bail!("a build needs its commit");
         }
@@ -891,6 +891,46 @@ impl Run {
             self.plan.specs.push(spec);
         }
         Ok(added)
+    }
+
+    /// Queues rows again whatever state they're in, with a fresh attempt budget; returns each with what it was. A
+    /// running attempt is abandoned (its token stops working) and a claim waiting for review is set aside unjudged.
+    /// Allowed on a finished run, which opens again.
+    pub fn requeue(
+        &mut self,
+        now: u64,
+        rows: Vec<RowRef>,
+        reason: &str,
+        note: Option<String>,
+    ) -> Result<Vec<(RowRef, &'static str)>> {
+        if reason.trim().is_empty() {
+            bail!("say why these rows run again: the report shows it beside their results");
+        }
+        if rows.is_empty() {
+            bail!("name at least one row");
+        }
+        let mut was = Vec::new();
+        let mut abandoned = Vec::new();
+        for r in &rows {
+            let record = self.record(&r.spec, r.platform)?;
+            if let Row::Running { token, .. } = &record.row {
+                abandoned.push(token.clone());
+            }
+            was.push((r.clone(), describe(&record.row)));
+        }
+        let note = note.filter(|n| !n.trim().is_empty());
+        self.commit(
+            now,
+            Event::Requeued {
+                rows,
+                reason: reason.into(),
+                note,
+            },
+        )?;
+        for token in abandoned {
+            self.activity.remove(&token);
+        }
+        Ok(was)
     }
 
     pub fn pause(&mut self, now: u64, reason: &str) -> Result<()> {
@@ -1337,6 +1377,26 @@ impl State {
                     });
                 }
             }
+            Event::Requeued { rows, reason, note } => {
+                for row in rows {
+                    let Some(r) = self.rows.get_mut(&(row.spec.clone(), row.platform)) else {
+                        continue;
+                    };
+                    let was = describe(&r.row);
+                    if !matches!(r.row, Row::NotRun) {
+                        r.row = Row::Queued { verify: None };
+                    }
+                    r.budget = 0;
+                    r.sightings = 0;
+                    r.rerun_note.clone_from(note);
+                    self.notes.push(Note {
+                        spec: row.spec.clone(),
+                        platform: row.platform,
+                        text: format!("queued again ({was}): {reason}"),
+                    });
+                }
+                self.finished = false;
+            }
             Event::Interrupted { token } => {
                 let Some(key) = self.running_token(token) else {
                     return;
@@ -1418,6 +1478,9 @@ impl State {
                 reruns,
             } => {
                 self.builds.insert(*platform, build.clone());
+                if !reruns.is_empty() {
+                    self.finished = false;
+                }
                 for rerun in reruns {
                     if let Some(r) = self.rows.get_mut(&(rerun.spec.clone(), *platform)) {
                         r.row = Row::Queued { verify: None };

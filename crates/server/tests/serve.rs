@@ -147,7 +147,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         "post_result",
         "status",
         "dispatch",
-        "add_specs",
+        "queue",
         "review",
         "review_find",
         "install_build",
@@ -671,7 +671,7 @@ async fn post_result_refuses_evidence_that_was_never_saved() {
 }
 
 #[tokio::test]
-async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
+async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
     use soundcheck::run::saved;
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -718,7 +718,7 @@ async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
 
     let refused = call(
         &client,
-        "add_specs",
+        "queue",
         json!({ "specs": ["annotations/404-nope"] }),
     )
     .await;
@@ -731,24 +731,24 @@ async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
     );
     let refused = call(
         &client,
-        "add_specs",
+        "queue",
         json!({ "specs": ["annotations/001-draw"] }),
     )
     .await;
     assert!(
-        refused.as_str().unwrap().contains("already in the run"),
+        refused.as_str().unwrap().contains("already ran: say why"),
         "{refused}"
     );
 
     let added = call(
         &client,
-        "add_specs",
+        "queue",
         json!({ "specs": ["annotations/002-back"] }),
     )
     .await;
     assert_eq!(
         added,
-        json!({ "added": [{ "spec": "annotations/002-back", "platform": "android" }] })
+        json!({ "added": [{ "spec": "annotations/002-back", "platform": "android" }], "requeued": [] })
     );
     let finished = call(&client, "finish", json!({})).await;
     assert!(finished["report"].is_string(), "{finished}");
@@ -758,12 +758,21 @@ async fn add_specs_joins_a_live_run_and_reopens_a_finished_one() {
         .unwrap()
         .replace("Draw a pen stroke, undo and redo it", "Erase a pen stroke");
     std::fs::write(root.join("annotations/003-erase.spec.md"), text).unwrap();
-    let added = call(&client, "add_specs", json!({ "specs": ["annotations"] })).await;
+    let added = call(
+        &client,
+        "queue",
+        json!({ "specs": ["annotations"], "reason": "the eraser joined; check the rest again" }),
+    )
+    .await;
     assert_eq!(
         added,
         json!({ "added": [
             { "spec": "annotations/003-erase", "platform": "android" },
             { "spec": "annotations/003-erase", "platform": "ios" }
+        ], "requeued": [
+            { "spec": "annotations/001-draw", "platform": "android", "was": "not run" },
+            { "spec": "annotations/001-draw", "platform": "ios", "was": "not run" },
+            { "spec": "annotations/002-back", "platform": "android", "was": "not run" }
         ] })
     );
     let dispatched = call(

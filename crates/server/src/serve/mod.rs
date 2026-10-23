@@ -7,6 +7,7 @@ pub mod reports;
 pub mod tools;
 
 use crate::report;
+use crate::run::event::RowRef;
 use crate::run::journal::Entry;
 use crate::run::model::Build;
 use crate::run::{Run, saved};
@@ -137,6 +138,12 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// What `queue` did: rows that joined the run, and rows queued again with what each was.
+pub struct Queued {
+    pub added: Vec<(String, Platform)>,
+    pub requeued: Vec<(RowRef, String)>,
+}
+
 pub struct Hub {
     /// Swapped whole when specs join mid-run, so a reader keeps a consistent copy.
     suite: RwLock<Arc<Suite>>,
@@ -230,12 +237,73 @@ impl Hub {
         self.suite.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Adds spec IDs or features to the run, live, from the suite as it is on disk now; returns the rows added.
-    /// Each new spec joins the snapshot and `run.json`'s scope, so the run folder stays self-contained.
-    pub fn add_specs(&self, requested: &[String]) -> Result<Vec<(String, Platform)>> {
+    /// Queues spec IDs or features: specs not in the run join it, read from the suite as it is on disk now; specs in
+    /// it run again on `platforms` (all of theirs by default) whatever state their rows are in, which needs a reason.
+    /// Returns the rows added, and the rows queued again with what each was.
+    pub fn queue(
+        &self,
+        requested: &[String],
+        platforms: Option<&[Platform]>,
+        reason: Option<&str>,
+        note: Option<String>,
+    ) -> Result<Queued> {
         if requested.is_empty() {
             anyhow::bail!("name at least one spec ID or feature");
         }
+        let again: Vec<RowRef> = self.with_run(|run, _| {
+            Ok(run
+                .plan()
+                .specs
+                .iter()
+                .filter(|s| {
+                    requested.iter().any(|i| {
+                        *i == s.id
+                            || s.id
+                                .strip_prefix(i.as_str())
+                                .is_some_and(|rest| rest.starts_with('/'))
+                    })
+                })
+                .flat_map(|s| s.platforms.iter().map(move |p| (s, *p)))
+                .filter(|(_, p)| platforms.is_none_or(|ps| ps.contains(p)))
+                .map(|(s, platform)| RowRef {
+                    spec: s.id.clone(),
+                    platform,
+                })
+                .collect())
+        })?;
+        let reason = reason.map(str::trim).filter(|r| !r.is_empty());
+        if !again.is_empty() && reason.is_none() {
+            anyhow::bail!(
+                "{} already ran: say why it runs again, and the report shows it beside the result",
+                again
+                    .iter()
+                    .map(|r| r.spec.as_str())
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        let added = self.add_specs(requested)?;
+        let requeued = match reason {
+            Some(reason) if !again.is_empty() => self.with_run(|run, now| {
+                Ok(run
+                    .requeue(now, again, reason, note)?
+                    .into_iter()
+                    .map(|(r, was)| (r, was.to_string()))
+                    .collect())
+            })?,
+            _ => Vec::new(),
+        };
+        if added.is_empty() && requeued.is_empty() {
+            anyhow::bail!("nothing to queue: none of them runs on the platforms named");
+        }
+        Ok(Queued { added, requeued })
+    }
+
+    /// Adds the specs named that aren't in the run yet, with their snapshot and `run.json`'s scope, so the run folder
+    /// stays self-contained; returns the rows added.
+    fn add_specs(&self, requested: &[String]) -> Result<Vec<(String, Platform)>> {
         let info = saved::read_info(&self.run_dir)?;
         let live = crate::suite::load(&info.suite);
         for item in requested {
@@ -266,7 +334,7 @@ impl Hub {
             .filter(|s| !in_run.contains(&s.id))
             .collect();
         if new.is_empty() {
-            anyhow::bail!("{} is already in the run", requested.join(", "));
+            return Ok(Vec::new());
         }
         let files: Vec<PathBuf> = new
             .iter()

@@ -13,7 +13,7 @@ use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher};
 use std::sync::Arc;
 
-pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers call brief with their spec token first and post_result at the end; the coordinator uses status, dispatch, add_specs, review, review_find, install_build, triage, pause, resume and finish.";
+pub const INSTRUCTIONS: &str = "Soundcheck runs a regression suite. Testers call brief with their spec token first and post_result at the end; the coordinator uses status, dispatch, queue, review, review_find, install_build, triage, pause, resume and finish.";
 
 #[derive(Clone)]
 pub struct Tools {
@@ -108,9 +108,15 @@ pub struct ReasonParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct AddSpecsParams {
+pub struct QueueParams {
     /// Spec IDs or features, as `--scope` takes them, e.g. `annotations/003-eraser` or `viewer`.
     pub specs: Vec<String>,
+    /// For specs already in the run, the platforms to run them on again (default: all of theirs).
+    pub platforms: Option<Vec<Platform>>,
+    /// Why specs already in the run run again; required for them.
+    pub reason: Option<String>,
+    /// Something the next attempt's tester should know, e.g. a harness fix to use.
+    pub note: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -193,7 +199,7 @@ pub struct GestureParams {
     pub token: String,
     pub from: [f64; 2],
     pub to: [f64; 2],
-    /// Milliseconds: the swipe's duration, or how long a drag holds before moving.
+    /// The swipe's duration in milliseconds.
     pub ms: u64,
 }
 
@@ -819,18 +825,30 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: add specs to the run, live: spec IDs or features, read from the suite as it is now. Each new spec gets a row on every platform of the run it runs on; rows already in the run are kept. A finished run opens again. Returns the rows added."
+        description = "Coordinator: queue specs to run, whatever state they're in. Spec IDs or features: a spec not in the run joins it, read from the suite as it is now, with a row on every run platform it runs on. A spec in the run runs again on `platforms` (default: all of its): a filed result or a claim waiting for review is set aside, a running attempt abandoned, and it gets a fresh attempt budget; that needs a `reason`, shown in the report. `note` goes into the rerun's brief. A finished run opens again. Returns the rows added and requeued."
     )]
-    async fn add_specs(
+    async fn queue(
         &self,
-        Parameters(p): Parameters<AddSpecsParams>,
+        Parameters(p): Parameters<QueueParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        reply(self.hub.add_specs(&p.specs).map(|rows| {
-            let rows: Vec<_> = rows
+        let queued = self.hub.queue(
+            &p.specs,
+            p.platforms.as_deref(),
+            p.reason.as_deref(),
+            p.note,
+        );
+        reply(queued.map(|q| {
+            let added: Vec<_> = q
+                .added
                 .into_iter()
                 .map(|(spec, platform)| json!({ "spec": spec, "platform": platform }))
                 .collect();
-            json!({ "added": rows })
+            let requeued: Vec<_> = q
+                .requeued
+                .into_iter()
+                .map(|(r, was)| json!({ "spec": r.spec, "platform": r.platform, "was": was }))
+                .collect();
+            json!({ "added": added, "requeued": requeued })
         }))
     }
 
@@ -1077,22 +1095,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: press, hold for `ms` milliseconds, then drag to the second point (reorder handles)."
-    )]
-    async fn drag(
-        &self,
-        Parameters(p): Parameters<GestureParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
-            d.drag((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms, false)
-                .await
-                .map(|()| "dragged")
-        })
-        .await
-    }
-
-    #[tool(
-        description = "Tester: one finger along a path of stops (elements or `at:x,y` points), resting `pause_ms` at each, at a finger's pace: slide off a control and back before lifting, long-press then drag, stop a slider partway. With `keep` it stays down at the last stop until `release`, so you can `see` or `shot` mid-gesture."
+        description = "Tester: one finger along a path of stops (elements or `at:x,y` points), resting `pause_ms` at each, at a finger's pace. A drag is two stops (a reorder handle: rest about 700 ms on the first); also slide off a control and back before lifting, stop a slider partway. With `keep` it stays down at the last stop until `release`, so you can `see` or `shot` mid-gesture."
     )]
     async fn touch(
         &self,

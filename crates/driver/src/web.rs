@@ -41,7 +41,12 @@ pub struct Web {
     base_url: String,
     errors: Arc<Mutex<Vec<String>>>,
     tasks: Vec<JoinHandle<()>>,
+    /// Where a kept `touch` began and where it's held now, until `release`.
+    held: Mutex<Option<Held>>,
 }
+
+/// A kept touch's start and where it is now.
+type Held = ((f64, f64), (f64, f64));
 
 fn device(e: impl std::fmt::Display) -> DriverError {
     DriverError::Device(e.to_string())
@@ -85,6 +90,22 @@ async fn set_page_offline(page: &Page, offline: bool) -> Result<()> {
 }
 
 impl Web {
+    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
+            .await?;
+        self.mouse(DispatchMouseEventType::MousePressed, x, y, true)
+            .await
+    }
+
+    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseMoved, x, y, true)
+            .await
+    }
+
+    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
+        self.mouse(DispatchMouseEventType::MouseReleased, x, y, false)
+            .await
+    }
     /// Starts Chrome with a fresh, temporary profile and opens `base_url`: headless, or in a window to watch with
     /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
     /// a test, so a watched window is for looking only.
@@ -161,6 +182,7 @@ impl Web {
             base_url: base_url.to_string(),
             errors,
             tasks,
+            held: Mutex::new(None),
         };
         web.launch().await?;
         Ok(web)
@@ -329,8 +351,8 @@ impl Device for Web {
     }
 
     async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
-        if keep {
-            return Err(self.unsupported("release"));
+        if self.held.lock().unwrap().is_some() {
+            self.release(true).await?;
         }
         let Some(first) = stops.first() else {
             return Ok(());
@@ -349,10 +371,29 @@ impl Device for Web {
             sleep(Duration::from_millis(stop.pause_ms)).await;
             at = to;
         }
+        if keep {
+            *self.held.lock().unwrap() = Some((revealed, at));
+            return Ok(());
+        }
         if stops.len() > 1 {
             sleep(Duration::from_millis(SETTLE_MS)).await;
         }
         self.touch_up(at.0, at.1).await
+    }
+
+    async fn release(&self, back: bool) -> Result<()> {
+        let held = self.held.lock().unwrap().take();
+        let Some((origin, at)) = held else {
+            return Err(DriverError::Invalid("no touch held".into()));
+        };
+        if !back {
+            return self.touch_up(at.0, at.1).await;
+        }
+        for (x, y) in touch_path(at, origin) {
+            self.touch_move(x, y).await?;
+            sleep(Duration::from_millis(16)).await;
+        }
+        self.touch_up(origin.0, origin.1).await
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
@@ -455,23 +496,6 @@ impl Device for Web {
             }
         };
         self.key(key, code).await
-    }
-
-    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
-            .await?;
-        self.mouse(DispatchMouseEventType::MousePressed, x, y, true)
-            .await
-    }
-
-    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
-        self.mouse(DispatchMouseEventType::MouseMoved, x, y, true)
-            .await
-    }
-
-    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        self.mouse(DispatchMouseEventType::MouseReleased, x, y, false)
-            .await
     }
 
     async fn screen_size(&self) -> Result<(f64, f64)> {

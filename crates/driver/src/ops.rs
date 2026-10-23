@@ -1,5 +1,5 @@
 use crate::compare::{Comparison, Image, PixelBox, changed_box, colour_box};
-use crate::device::{Device, DriverError, Result};
+use crate::device::{Device, DriverError, Result, Stop};
 use crate::element::Element;
 use crate::element::Rect;
 use crate::matcher::Matcher;
@@ -151,21 +151,6 @@ impl<D: Device> Driver<D> {
         self.wait_for(target, TAP_WAIT_MS, last).await
     }
 
-    /// Presses at `from`, holds `hold_ms`, moves to `to` and lifts there, or with `keep` stays down until `release`.
-    pub async fn drag(
-        &self,
-        from: (f64, f64),
-        to: (f64, f64),
-        hold_ms: u64,
-        keep: bool,
-    ) -> Result<()> {
-        let stops = [
-            (Matcher::Point(from.0, from.1), hold_ms),
-            (Matcher::Point(to.0, to.1), 0),
-        ];
-        self.touch(&stops, keep).await.map(|_| ())
-    }
-
     /// One finger through `path`, each stop an element or a point with how long to rest there: down at the first,
     /// moving at a finger's pace, lifted at the last, or with `keep` held there until `release`. Every element is
     /// found before the touch goes down, so nothing is read mid-gesture.
@@ -313,23 +298,22 @@ impl<D: Device> Driver<D> {
         };
         match &req.commit {
             None => {
-                self.device.touch_down(req.from.0, req.from.1).await?;
-                sleep(Duration::from_millis(300)).await;
-                let steps = (((to.0 - req.from.0).hypot(to.1 - req.from.1)) / 20.0)
-                    .ceil()
-                    .max(1.0) as u32;
-                for i in 1..=steps {
-                    let t = f64::from(i) / f64::from(steps);
-                    self.device
-                        .touch_move(
-                            req.from.0 + (to.0 - req.from.0) * t,
-                            req.from.1 + (to.1 - req.from.1) * t,
-                        )
-                        .await?;
-                }
+                let stops = [
+                    Stop {
+                        x: req.from.0,
+                        y: req.from.1,
+                        pause_ms: 300,
+                    },
+                    Stop {
+                        x: to.0,
+                        y: to.1,
+                        pause_ms: 0,
+                    },
+                ];
+                self.device.touch(&stops, true).await?;
                 sleep(Duration::from_millis(600)).await;
                 self.device.screenshot(&file("preview")).await?;
-                self.device.touch_up(to.0, to.1).await?;
+                self.device.release(false).await?;
             }
             Some(commit) => {
                 self.device.screenshot(&file("preview")).await?;

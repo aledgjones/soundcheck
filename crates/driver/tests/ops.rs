@@ -54,6 +54,10 @@ impl Device for Fake {
         self.log(format!("touch {} keep={keep}", path.join(" ")));
         Ok(())
     }
+    async fn release(&self, back: bool) -> Result<()> {
+        self.log(format!("release back={back}"));
+        Ok(())
+    }
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
         self.log(format!("swipe {from:?} {to:?} {ms}"));
         Ok(())

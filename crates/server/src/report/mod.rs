@@ -946,13 +946,31 @@ fn notes(page: &Page) -> String {
     let mut kinds: Vec<(&str, Vec<String>)> =
         vec![("Reruns", vec![]), ("Harness and environment", vec![])];
     for n in &state.notes {
+        // A harness gap filed the row BLOCKED; once a later attempt files something else, it's history.
+        let still_blocked = state
+            .rows
+            .get(&(n.spec.clone(), n.platform))
+            .is_some_and(|r| {
+                matches!(
+                    r.row,
+                    Row::Filed {
+                        result: Final::Blocked,
+                        ..
+                    }
+                )
+            });
+        let since = if n.text.starts_with("harness gap") && !still_blocked {
+            " (an earlier attempt; it has run again since)"
+        } else {
+            ""
+        };
         let line = format!(
-            "{} on {}: {}",
+            "{} on {}: {}{since}",
             esc(&n.spec),
             platform_name(n.platform),
             esc(&n.text)
         );
-        if n.text.starts_with("rerun") {
+        if n.text.starts_with("rerun") || n.text.starts_with("queued again") {
             kinds[0].1.push(line);
         } else {
             kinds[1].1.push(line);

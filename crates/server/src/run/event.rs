@@ -111,6 +111,15 @@ pub enum Event {
         build: Build,
         reruns: Vec<Rerun>,
     },
+    /// The coordinator queued rows again, whatever state they were in: a running attempt is abandoned and a claim
+    /// waiting for review set aside unjudged. Each gets a fresh attempt budget, and a finished run opens again.
+    Requeued {
+        rows: Vec<RowRef>,
+        reason: String,
+        /// For the next attempt's brief.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+    },
     /// Platforms added on resume: their rows for the run's scope join it, and a finished run opens again.
     PlatformsAdded {
         platforms: Vec<Platform>,
@@ -145,4 +154,11 @@ impl ResultCounts {
             None => self.not_run += 1,
         }
     }
+}
+
+/// One row: a spec on a platform.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowRef {
+    pub spec: String,
+    pub platform: Platform,
 }

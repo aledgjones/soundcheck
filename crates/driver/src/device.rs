@@ -151,6 +151,11 @@ pub trait Device {
     async fn read(&self, all: bool) -> Result<Vec<Element>>;
     async fn tap_at(&self, x: f64, y: f64) -> Result<()>;
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()>;
+    /// One finger along `stops`, as [`touch_script`] describes; with `keep` it stays down at the last until `release`.
+    /// A touch still held goes back to where it began and lifts first.
+    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()>;
+    /// Lifts the touch a kept `touch` left down: where it is, or `back` along a line to where it began.
+    async fn release(&self, back: bool) -> Result<()>;
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()>;
     /// Appends to the focused field.
     async fn type_text(&self, text: &str) -> Result<()>;
@@ -166,47 +171,6 @@ pub trait Device {
         Err(self.unsupported("push"))
     }
 
-    /// A touch that stays down until `touch_up`, for gestures that must be watched mid-way.
-    async fn touch_down(&self, _x: f64, _y: f64) -> Result<()> {
-        Err(self.unsupported("preview-compare"))
-    }
-    async fn touch_move(&self, _x: f64, _y: f64) -> Result<()> {
-        Err(self.unsupported("preview-compare"))
-    }
-    async fn touch_up(&self, _x: f64, _y: f64) -> Result<()> {
-        Err(self.unsupported("preview-compare"))
-    }
-    /// One finger along `stops`, as [`touch_script`] describes. Readers override it to time the moves on the device;
-    /// this one goes through `touch_down`, `touch_move` and `touch_up` and can't keep the touch down.
-    async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
-        use std::time::Duration;
-        use tokio::time::sleep;
-        if keep {
-            return Err(self.unsupported("release"));
-        }
-        let Some(first) = stops.first() else {
-            return Ok(());
-        };
-        self.touch_down(first.x, first.y).await?;
-        sleep(Duration::from_millis(first.pause_ms)).await;
-        let mut at = (first.x, first.y);
-        for stop in &stops[1..] {
-            for (x, y) in touch_path(at, (stop.x, stop.y)) {
-                self.touch_move(x, y).await?;
-                sleep(Duration::from_millis(16)).await;
-            }
-            sleep(Duration::from_millis(stop.pause_ms)).await;
-            at = (stop.x, stop.y);
-        }
-        if stops.len() > 1 {
-            sleep(Duration::from_millis(SETTLE_MS)).await;
-        }
-        self.touch_up(at.0, at.1).await
-    }
-    /// Lifts the touch a kept `touch` left down: where it is, or `back` along a line to where it began.
-    async fn release(&self, _back: bool) -> Result<()> {
-        Err(self.unsupported("release"))
-    }
     /// The screen's size in the units coordinates use, so a screenshot's pixels can be mapped to them.
     async fn screen_size(&self) -> Result<(f64, f64)> {
         Err(self.unsupported("preview-compare"))

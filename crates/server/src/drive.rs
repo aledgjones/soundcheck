@@ -56,20 +56,9 @@ pub enum Action {
         #[arg(default_value_t = 300)]
         ms: u64,
     },
-    /// Press, hold, then drag between two points.
-    Drag {
-        x1: f64,
-        y1: f64,
-        x2: f64,
-        y2: f64,
-        #[arg(default_value_t = 700)]
-        hold_ms: u64,
-        /// Stay down at the end until `release`, other input, or 30 s.
-        #[arg(long)]
-        keep: bool,
-    },
     /// One finger along a path: stops are elements or `at:x,y` points, and `+ms` after a stop rests there, e.g.
-    /// `touch Thumb +500 at:900,400 Thumb` presses Thumb for 500 ms, slides away and back, and lifts.
+    /// `touch Thumb +500 at:900,400 Thumb` presses Thumb for 500 ms, slides away and back, and lifts. A drag is two
+    /// stops: `touch at:980,640 +700 at:980,420`.
     Touch {
         #[arg(required = true)]
         path: Vec<String>,
@@ -77,7 +66,7 @@ pub enum Action {
         #[arg(long)]
         keep: bool,
     },
-    /// Lift the touch `touch --keep` or `drag --keep` left down.
+    /// Lift the touch `touch --keep` left down.
     Release {
         /// Move back to where the touch began first, so nothing is dropped.
         #[arg(long)]
@@ -143,21 +132,6 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
                 ms,
             })
             .await?
-        }
-        Action::Drag {
-            x1,
-            y1,
-            x2,
-            y2,
-            hold_ms,
-            keep,
-        } => {
-            d.drag((x1, y1), (x2, y2), hold_ms, keep).await?;
-            if keep {
-                "dragged; the touch stays down until `release`".into()
-            } else {
-                "dragged".into()
-            }
         }
         Action::Touch { path, keep } => {
             as_step(Step::Touch {

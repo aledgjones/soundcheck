@@ -146,6 +146,13 @@ pub fn summary(entry: &Entry) -> String {
             "added {}: their rows join the run, not run yet",
             specs.join(", ")
         ),
+        Event::Requeued { rows, reason, .. } => format!(
+            "queued again: {} ({reason})",
+            rows.iter()
+                .map(|r| format!("{} on {}", r.spec, r.platform))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         Event::Paused { reason } => format!("paused: {reason}"),
         Event::Resumed => "resumed".into(),
         Event::Finished { result_counts: c } => format!(

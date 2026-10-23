@@ -669,19 +669,6 @@ impl Device for Android {
         self.input(&format!("k {code}")).await
     }
 
-    // The reader keeps the touch held between calls: a second `d` moves it.
-    async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
-        self.input(&format!("d {x:.0} {y:.0}")).await
-    }
-
-    async fn touch_move(&self, x: f64, y: f64) -> Result<()> {
-        self.input(&format!("d {x:.0} {y:.0}")).await
-    }
-
-    async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
-        self.input(&format!("u {x:.0} {y:.0}")).await
-    }
-
     async fn screen_size(&self) -> Result<(f64, f64)> {
         // `wm size` is the panel's natural size, landscape on a tablet even while it shows portrait; the display's
         // `cur=` size is what's on screen now, with rotation and any override applied.
