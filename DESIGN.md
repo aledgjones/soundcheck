@@ -380,6 +380,7 @@ The soundcheck repo ships as a Claude Code plugin:
   - **`setup`:** interviews the person, then scaffolds `suite.yaml`, hook stubs and a draft project skill. On a suite pinned to an older version, it migrates the suite and shows the diff for review.
   - **`run`:** the generic coordinator procedure: start, dispatch background testers, review while the next spec runs, close, export. A project skill passes the scope it was given (platforms, specs or features) and delegates to it; choosing the scope belongs to whatever calls it, such as a release process.
   - **`create-test`:** add or change specs. Search for duplicates first, turn a found bug into a regression spec, add a seed scenario when needed, and finish with lint.
+  - **`drive`:** use a device by hand outside a run (look at a screen, reproduce a bug, check a change, set up a screenshot) through `soundcheck drive`. It adds nothing `drive` can't already do: it's there so a session asked to look at the app finds the commands without loading a regression skill and treating a look as a test run (Aled, 2026-10-23).
 
 ---
 

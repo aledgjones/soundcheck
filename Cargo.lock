@@ -1477,7 +1477,7 @@ dependencies = [
 
 [[package]]
 name = "soundcheck"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "anyhow",
  "axum",
@@ -1498,7 +1498,7 @@ dependencies = [
 
 [[package]]
 name = "soundcheck-driver"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "chromiumoxide",
  "futures",
