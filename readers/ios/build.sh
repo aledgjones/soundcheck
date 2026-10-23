@@ -34,11 +34,15 @@ if [ "$(cat "$FW/.idb-ref" 2>/dev/null)" != "$IDB_REF" ]; then
   cp -R build/derived/Build/Products/Release/*.framework "$FW/"
   echo "$IDB_REF" >"$FW/.idb-ref"
 fi
+# The reader reports this on /ping and the driver compares it with reader.build-id, so an older one is replaced.
+BUILD_ID=$({ cat Reader.swift; echo "$IDB_REF"; } | shasum -a 256 | cut -c1-12)
+echo "let readerBuildID = \"$BUILD_ID\"" >build/BuildID.swift
 H="$IDB/PrivateHeaders"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14 \
   -F "$FW" -framework FBControlCore -framework FBSimulatorControl \
   -I "$H" -I "$H/AccessibilityPlatformTranslation" -I "$H/AXRuntime" -I "$H/CoreSimDeviceIO" \
   -I "$H/CoreSimulator" -I "$H/CoreSimulatorUtilities" -I "$H/SimulatorKit" \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
-  Reader.swift -o build/reader
-echo "built $(pwd)/build/reader"
+  Reader.swift build/BuildID.swift -o build/reader
+echo "$BUILD_ID" >build/reader.build-id
+echo "built $(pwd)/build/reader ($BUILD_ID)"

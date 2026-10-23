@@ -162,9 +162,61 @@ pub struct Ios {
     headed: bool,
     /// When the reader was last checked against the simulator's boot, so the check costs a `ps` every few seconds.
     boot_checked: std::sync::Mutex<Option<std::time::Instant>>,
-    /// Set when a reader older than the simulator's boot was restarted, until health reports it.
-    reader_restarted: std::sync::atomic::AtomicBool,
+    /// What soundcheck restarted on its own and why, until health reports it.
+    restarts: std::sync::Mutex<Vec<String>>,
+    /// How many times a lost reader channel rebooted the simulator, and when it last did.
+    recoveries: std::sync::atomic::AtomicU32,
+    recovered_at: std::sync::Mutex<Option<std::time::Instant>>,
 }
+
+/// What a reader's `/ping` says: `ok <udid> <build id> <pid> <started, unix seconds>`. A reader built before it
+/// carried them says only `ok <udid>`.
+#[derive(Debug, PartialEq)]
+struct Ping {
+    udid: String,
+    build: Option<String>,
+    pid: Option<u32>,
+    started: Option<u64>,
+}
+
+fn parse_ping(body: &str) -> Option<Ping> {
+    let mut parts = body.split_whitespace();
+    if parts.next()? != "ok" {
+        return None;
+    }
+    Some(Ping {
+        udid: parts.next()?.to_string(),
+        build: parts.next().map(str::to_string),
+        pid: parts.next().and_then(|p| p.parse().ok()),
+        started: parts.next().and_then(|s| s.parse().ok()),
+    })
+}
+
+/// Why a reader answering for this simulator must be replaced: a build other than the one on disk, or a start
+/// before the simulator's current boot, whose input session answers but lands nowhere.
+fn stale_reader(ping: &Ping, built: Option<&str>, booted_at: Option<u64>) -> Option<&'static str> {
+    if let Some(built) = built
+        && ping.build.as_deref() != Some(built)
+    {
+        return Some("it was another build than the one on disk");
+    }
+    // `ps` and the reader both count whole seconds, so a couple of seconds' slack.
+    if let (Some(started), Some(boot)) = (ping.started, booted_at)
+        && started + 2 < boot
+    {
+        return Some("the simulator had rebooted under it");
+    }
+    None
+}
+
+/// The reader's link to the simulator broke; only a simulator reboot mends it (2026-10-23: five times in one run).
+fn lost_channel(e: &DriverError) -> bool {
+    e.to_string().contains("Channel disconnected")
+}
+
+/// At most one simulator reboot for a lost channel in this window, so a reader that keeps failing isn't rebooted
+/// in a loop.
+const RECOVERY_COOLDOWN: Duration = Duration::from_secs(120);
 
 /// Health limits for the Mac that runs the simulator, and the app's launch.
 const MIN_FREE_MEMORY_PERCENT: f64 = 10.0;
@@ -201,14 +253,19 @@ impl Ios {
     async fn hid(&self, script: &str) -> Result<()> {
         self.ensure_reader().await?;
         let path = format!("/hid?{}", script.replace(' ', "%20"));
-        if self.reader_get(&path).await.is_ok() {
-            return Ok(());
+        match self.reader_get(&path).await {
+            Ok(_) => return Ok(()),
+            Err(e) if lost_channel(&e) => return Err(self.recover(e).await),
+            Err(_) => {}
         }
-        // A reader from an older build has no HID endpoint, and one from before a simulator reboot has a dead
-        // session; a fresh one has neither problem.
-        self.stop_reader();
+        // A reader from before a simulator reboot can have a dead session; a fresh one doesn't.
+        self.stop_reader().await;
         self.ensure_reader().await?;
-        self.reader_get(&path).await.map(|_| ())
+        match self.reader_get(&path).await {
+            Ok(_) => Ok(()),
+            Err(e) if lost_channel(&e) => Err(self.recover(e).await),
+            Err(e) => Err(e),
+        }
     }
 
     /// Drags as `drag` does but stays down at `to`, kept alive by the reader until `release`, other input, or 30 s.
@@ -322,7 +379,9 @@ impl Ios {
             hardware_keyboard: std::sync::atomic::AtomicBool::new(false),
             headed: false,
             boot_checked: std::sync::Mutex::new(None),
-            reader_restarted: std::sync::atomic::AtomicBool::new(false),
+            restarts: std::sync::Mutex::new(Vec::new()),
+            recoveries: std::sync::atomic::AtomicU32::new(0),
+            recovered_at: std::sync::Mutex::new(None),
         };
         ios.no_hardware_keyboard().await?;
         run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
@@ -379,77 +438,145 @@ impl Ios {
         Ok(body.to_string())
     }
 
-    async fn reader_alive(&self) -> bool {
-        self.reader_get("/ping")
+    /// Whatever reader answers on the port, whichever simulator it's for.
+    async fn ping(&self) -> Option<Ping> {
+        // Short: stopping a wedged reader asks it first.
+        let body = timeout(Duration::from_secs(2), self.reader_get("/ping"))
             .await
-            .is_ok_and(|b| b == format!("ok {}", self.udid))
+            .ok()?
+            .ok()?;
+        parse_ping(&body)
     }
 
-    fn stop_reader(&self) {
-        if let Some(binary) = &self.reader {
-            let _ = std::process::Command::new("pkill")
-                .args(["-f", &binary.display().to_string()])
-                .status();
+    async fn reader_alive(&self) -> bool {
+        self.ping().await.is_some_and(|p| p.udid == self.udid)
+    }
+
+    /// Stops the reader by the pid it reports, or the one listening on its port, so it goes whatever path started
+    /// it (a `cargo test` reader once outlived its tests and took the server's taps); the path is the last resort.
+    async fn stop_reader(&self) {
+        let pid = match self.ping().await.and_then(|p| p.pid) {
+            Some(pid) => Some(pid.to_string()),
+            None => run(
+                "lsof",
+                &["-t", &format!("-iTCP:{READER_PORT}"), "-sTCP:LISTEN"],
+            )
+            .await
+            .ok()
+            .and_then(|out| out.lines().next().map(str::to_string)),
+        };
+        let Some(pid) = pid else {
+            if let Some(binary) = &self.reader {
+                let _ = run("pkill", &["-f", &binary.display().to_string()]).await;
+            }
+            return;
+        };
+        let _ = run("kill", &[&pid]).await;
+        // The next reader binds the same port, so wait for this one to go.
+        for _ in 0..30 {
+            if run("kill", &["-0", &pid]).await.is_err() {
+                return;
+            }
+            sleep(Duration::from_millis(100)).await;
         }
+        let _ = run("kill", &["-9", &pid]).await;
     }
 
-    /// Whether the running reader started before the simulator's current boot. Its input session then answers but
-    /// lands nowhere, so taps silently do nothing while reads still work.
-    async fn reader_predates_boot(&self) -> bool {
+    /// Why the running reader must be replaced, checked every few seconds at most: the build id on disk is a file
+    /// read and the simulator's boot a `ps`.
+    async fn reader_stale(&self, ping: &Ping) -> Option<&'static str> {
         {
             let mut checked = self.boot_checked.lock().unwrap_or_else(|e| e.into_inner());
             if checked.is_some_and(|at| at.elapsed() < Duration::from_secs(5)) {
-                return false;
+                return None;
             }
             *checked = Some(std::time::Instant::now());
         }
-        let Some(binary) = &self.reader else {
-            return false;
-        };
-        let reader = started_seconds_ago(&binary.display().to_string()).await;
-        let boot = started_seconds_ago(&format!("launchd_sim .*{}", self.udid)).await;
-        matches!((reader, boot), (Some(r), Some(b)) if r > b)
+        let built = self
+            .reader
+            .as_ref()
+            .and_then(|b| std::fs::read_to_string(b.with_file_name("reader.build-id")).ok());
+        let now = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let booted_at = started_seconds_ago(&format!("launchd_sim .*{}", self.udid))
+            .await
+            .map(|ago| now.saturating_sub(ago));
+        stale_reader(ping, built.as_deref().map(str::trim), booted_at)
     }
 
-    /// Starts the reader if it isn't answering for this simulator; one attached to another simulator is no use.
-    async fn ensure_reader(&self) -> Result<()> {
-        if self.reader_alive().await {
-            if !self.reader_predates_boot().await {
-                return Ok(());
+    fn note_restart(&self, what: String) {
+        self.restarts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(what);
+    }
+
+    /// Starts the reader if none answers for this simulator, or replaces a stale one; one attached to another
+    /// simulator is no use. True when it started a fresh one.
+    async fn ensure_reader(&self) -> Result<bool> {
+        if let Some(ping) = self.ping().await.filter(|p| p.udid == self.udid) {
+            match self.reader_stale(&ping).await {
+                None => return Ok(false),
+                Some(why) => self.note_restart(format!("restarted the reader: {why}")),
             }
-            self.reader_restarted
-                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
         let Some(binary) = &self.reader else {
             return Err(device("no iOS reader built (readers/ios/build.sh)"));
         };
-        self.stop_reader();
-        std::process::Command::new(binary)
-            .args(["--udid", &self.udid, "--port", &READER_PORT.to_string()])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(device)?;
+        self.stop_reader().await;
+        let spawn = || {
+            std::process::Command::new(binary)
+                .args(["--udid", &self.udid, "--port", &READER_PORT.to_string()])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .map_err(device)
+        };
+        let mut child = spawn()?;
         for _ in 0..40 {
             if self.reader_alive().await {
-                return Ok(());
+                return Ok(true);
+            }
+            // One that can't bind the port yet (still in use as the last one closes) exits at once.
+            if matches!(child.try_wait(), Ok(Some(_))) {
+                child = spawn()?;
             }
             sleep(Duration::from_millis(250)).await;
         }
         Err(device("the iOS reader didn't start"))
     }
 
+    /// A fresh reader's first read, given a minute: just after a boot the simulator's automation session takes a
+    /// while to come up ("Timed out creating the simulator remote automation session").
+    async fn first_read(&self, path: &str) -> Result<String> {
+        let started = std::time::Instant::now();
+        loop {
+            match self.reader_get(path).await {
+                Ok(json) => return Ok(json),
+                Err(e) if lost_channel(&e) || started.elapsed() > Duration::from_secs(60) => {
+                    return Err(e);
+                }
+                Err(_) => sleep(Duration::from_secs(1)).await,
+            }
+        }
+    }
+
     async fn screen_json(&self, all: bool) -> Result<String> {
-        self.ensure_reader().await?;
+        let path = if all { "/describe" } else { "/describe?lean" };
+        // A fresh reader that never reads has lost its channel as surely as one that says so.
+        if self.ensure_reader().await?
+            && let Err(e) = self.first_read(path).await
+        {
+            return Err(self.recover(e).await);
+        }
         let mut last = device("not read");
         for _ in 0..3 {
-            match self
-                .reader_get(if all { "/describe" } else { "/describe?lean" })
-                .await
-            {
+            match self.reader_get(path).await {
                 Ok(json) if has_content(&json) => return Ok(json),
                 Ok(json) => last = device(format!("an empty screen: {}", json.trim())),
+                Err(e) if lost_channel(&e) => return Err(self.recover(e).await),
                 Err(e) => {
                     last = e;
                     break;
@@ -458,8 +585,55 @@ impl Ios {
             sleep(Duration::from_millis(300)).await;
         }
         // A reader from before a simulator reboot answers pings but can't read; the next read starts a fresh one.
-        self.stop_reader();
+        self.stop_reader().await;
         Err(last)
+    }
+
+    /// Mends a reader that lost its channel to the simulator the way only a reboot does: stops the reader, reboots
+    /// the simulator, starts a fresh reader and checks it reads. The app's state is gone with the reboot, so the
+    /// call that hit it fails with a harness error saying so; the next spec starts on the working reader.
+    async fn recover(&self, cause: DriverError) -> DriverError {
+        let lately = {
+            let mut at = self.recovered_at.lock().unwrap_or_else(|e| e.into_inner());
+            let lately = at.is_some_and(|t| t.elapsed() < RECOVERY_COOLDOWN);
+            if !lately {
+                *at = Some(std::time::Instant::now());
+            }
+            lately
+        };
+        if lately {
+            self.stop_reader().await;
+            return cause;
+        }
+        self.recoveries
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let mended = async {
+            self.restart().await?;
+            self.ensure_reader().await?;
+            self.first_read("/describe?lean").await
+        }
+        .await;
+        match mended {
+            Ok(_) => {
+                self.note_restart(format!(
+                    "restarted the simulator: the reader lost its channel ({cause})"
+                ));
+                device(format!(
+                    "harness: the reader lost its channel to the simulator ({cause}), so soundcheck restarted the \
+                     simulator and its reader; the app's state went with it, so this spec needs a rerun"
+                ))
+            }
+            Err(e) => {
+                self.note_restart(format!(
+                    "restarted the simulator: the reader lost its channel ({cause}), and a fresh reader still can't \
+                     read ({e})"
+                ));
+                device(format!(
+                    "harness: the reader lost its channel to the simulator ({cause}); restarting the simulator didn't \
+                     mend it ({e})"
+                ))
+            }
+        }
     }
 
     /// "On My iPad" in Files: the LocalStorage app group's `File Provider Storage`, whose folder differs per simulator.
@@ -694,6 +868,7 @@ impl Device for Ios {
             *self.launched.lock().unwrap_or_else(|e| e.into_inner()) = SystemTime::now();
             let started = std::time::Instant::now();
             run("xcrun", &["simctl", "launch", &self.udid, &self.bundle_id]).await?;
+            let recoveries = self.recoveries.load(std::sync::atomic::Ordering::Relaxed);
             let mut json = String::new();
             while started.elapsed() < Duration::from_secs(60) {
                 json = self.screen_json(true).await.unwrap_or_default();
@@ -701,6 +876,12 @@ impl Device for Ios {
                     break;
                 }
                 sleep(Duration::from_millis(300)).await;
+            }
+            // A lost reader channel rebooted the simulator mid-launch, taking the app with it.
+            if attempt < 2
+                && self.recoveries.load(std::sync::atomic::Ordering::Relaxed) != recoveries
+            {
+                continue;
             }
             *self
                 .last_launch_ms
@@ -769,7 +950,7 @@ impl Device for Ios {
         self.ensure_reader().await?;
         if self.reader_get(&path).await.is_err() {
             // A reader from an older build answers pings but has no keyboard switch; a fresh one does.
-            self.stop_reader();
+            self.stop_reader().await;
             self.ensure_reader().await?;
             self.reader_get(&path).await?;
         }
@@ -864,23 +1045,21 @@ impl Device for Ios {
                 ms > MAX_LAUNCH_MS,
             );
         }
-        if self
-            .reader_restarted
-            .swap(false, std::sync::atomic::Ordering::Relaxed)
-        {
-            health
-                .facts
-                .push("restarted the reader: the simulator had rebooted under it".into());
-        }
+        health
+            .facts
+            .append(&mut self.restarts.lock().unwrap_or_else(|e| e.into_inner()));
         Ok(health)
     }
 
     async fn restart(&self) -> Result<()> {
         // A reader from before the reboot answers pings but can't read.
-        self.stop_reader();
+        self.stop_reader().await;
         let _ = run("xcrun", &["simctl", "shutdown", &self.udid]).await;
         run("xcrun", &["simctl", "boot", &self.udid]).await?;
         run("xcrun", &["simctl", "bootstatus", &self.udid, "-b"]).await?;
+        // The keyboard setting applies at boot, and is off.
+        self.hardware_keyboard
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if self.headed {
             self.show();
         }
@@ -902,6 +1081,49 @@ mod tests {
         assert_eq!(parse_etime("01:02:03"), Some(3723));
         assert_eq!(parse_etime("2-00:00:05"), Some(172_805));
         assert_eq!(parse_etime("soon"), None);
+    }
+
+    #[test]
+    fn a_ping_names_the_reader() {
+        let udid = "68A7F6A7-4339-4BC4-8A04-072296D06525";
+        assert_eq!(
+            parse_ping(&format!("ok {udid} 8ccc022d1070 63127 1792710420")),
+            Some(Ping {
+                udid: udid.into(),
+                build: Some("8ccc022d1070".into()),
+                pid: Some(63127),
+                started: Some(1_792_710_420),
+            })
+        );
+        let old = parse_ping(&format!("ok {udid}")).unwrap();
+        assert_eq!((old.udid.as_str(), old.build, old.pid), (udid, None, None));
+        assert_eq!(parse_ping("404"), None);
+    }
+
+    #[test]
+    fn a_reader_is_replaced_when_its_build_or_boot_is_stale() {
+        let ping = parse_ping("ok U abc 1 1000").unwrap();
+        assert_eq!(stale_reader(&ping, Some("abc"), Some(990)), None);
+        assert_eq!(stale_reader(&ping, None, None), None);
+        assert!(stale_reader(&ping, Some("def"), Some(990)).is_some());
+        assert_eq!(
+            stale_reader(&ping, Some("abc"), Some(1010)),
+            Some("the simulator had rebooted under it")
+        );
+        // Within the seconds' rounding of `ps` and the reader's clock.
+        assert_eq!(stale_reader(&ping, Some("abc"), Some(1002)), None);
+        let old = parse_ping("ok U").unwrap();
+        assert!(stale_reader(&old, Some("abc"), None).is_some());
+    }
+
+    #[test]
+    fn only_a_dropped_channel_counts_as_lost() {
+        assert!(lost_channel(&device(
+            "reader: HTTP/1.0 500 Error Channel disconnected"
+        )));
+        assert!(!lost_channel(&device(
+            "the reader didn't answer within 15 s"
+        )));
     }
 
     #[test]

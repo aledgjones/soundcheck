@@ -1,5 +1,6 @@
 // Keeps one FBSimulatorControl session open and serves the booted simulator's accessibility tree as JSON on
-// 127.0.0.1:9009 (GET /describe, GET /ping), and input through one held HID session (GET /hid).
+// 127.0.0.1:9009 (GET /describe, GET /ping), and input through one held HID session (GET /hid). /ping answers
+// `ok <udid> <build id> <pid> <started, unix seconds>`, so the driver can replace an old or stale reader by its pid.
 // The fetch and serialisation follow AXe 1.8.0's AccessibilityFetcher (MIT, github.com/cameroncooke/AXe), so the
 // JSON is `axe describe-ui`'s schema; build.sh builds idb's frameworks from source. Test tool, simulator only.
 //   reader --udid <udid> [--port 9009]
@@ -241,6 +242,7 @@ final class Reader {
 @main
 struct Main {
   static func main() async {
+    let started = Int(Date().timeIntervalSince1970)
     let args = CommandLine.arguments
     func option(_ name: String) -> String? {
       args.firstIndex(of: name).flatMap { $0 + 1 < args.count ? args[$0 + 1] : nil }
@@ -308,7 +310,7 @@ struct Main {
               body = error.localizedDescription.data(using: .utf8)!
             }
           } else if line.hasPrefix("GET /ping") {
-            body = "ok \(udid)".data(using: .utf8)!
+            body = "ok \(udid) \(readerBuildID) \(getpid()) \(started)".data(using: .utf8)!
           } else {
             status = "404 Not Found"
             body = Data()
