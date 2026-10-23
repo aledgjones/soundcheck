@@ -6,7 +6,7 @@ fn problems(fixture: &str) -> Vec<Problem> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(fixture);
-    lint(&suite::load(&root), "0.1.0")
+    lint(&suite::load(&root), "0.2.0")
 }
 
 #[test]
@@ -15,7 +15,7 @@ fn a_good_suite_has_no_problems() {
     let suite = suite::load(&root);
     let ids: Vec<_> = suite.specs.iter().map(|s| s.id.as_str()).collect();
     assert_eq!(ids, ["annotations/001-draw", "annotations/002-back"]);
-    assert_eq!(lint(&suite, "0.1.0"), vec![]);
+    assert_eq!(lint(&suite, "0.2.0"), vec![]);
 }
 
 #[test]
@@ -26,7 +26,7 @@ fn a_broken_suite_reports_every_rule() {
         .map(|p| format!("{}: {}", p.path.display(), p.message))
         .collect();
     let expect = [
-        "suite.yaml: pinned to soundcheck 0.2",
+        "suite.yaml: pinned to soundcheck 0.3",
         "suite.yaml: platforms.android: needs app-id",
         "suite.yaml: platforms.web: needs start",
         "suite.yaml: hooks.seed must contain {scenario}",
@@ -87,7 +87,7 @@ fn a_reports_folder_inside_the_suite_is_not_a_feature() {
     }
     let config = std::fs::read_to_string(good.join("suite.yaml")).unwrap() + "reports: runs\n";
     std::fs::write(root.join("suite.yaml"), config).unwrap();
-    assert_eq!(lint(&suite::load(&root), "0.1.0"), vec![]);
+    assert_eq!(lint(&suite::load(&root), "0.2.0"), vec![]);
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn specs_can_live_in_their_own_folder() {
     let suite = suite::load(&root);
     assert_eq!(suite.specs.len(), 1);
     // The missing _feature.md is reported where it belongs.
-    let paths: Vec<_> = lint(&suite, "0.1.0").into_iter().map(|p| p.path).collect();
+    let paths: Vec<_> = lint(&suite, "0.2.0").into_iter().map(|p| p.path).collect();
     assert_eq!(paths, [Path::new("suite/annotations/_feature.md")]);
 }
 

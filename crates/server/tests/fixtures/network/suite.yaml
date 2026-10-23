@@ -1,4 +1,4 @@
-soundcheck: "0.1"
+soundcheck: "0.2"
 platforms:
   android:
     app-id: com.example.app

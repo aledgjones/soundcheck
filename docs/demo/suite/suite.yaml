@@ -1,5 +1,5 @@
 # A made-up shopping list app's suite, for the README's screenshots (`cargo run --example demo`).
-soundcheck: "0.1"
+soundcheck: "0.2"
 platforms:
   android:
     app-id: com.example.larder

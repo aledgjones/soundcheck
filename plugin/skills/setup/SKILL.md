@@ -47,7 +47,7 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
 `suite.yaml`:
 
 ```yaml
-soundcheck: "0.1" # the version this suite is written for
+soundcheck: "0.2" # the version this suite is written for
 platforms:
   android:
     app-id: com.example.app
