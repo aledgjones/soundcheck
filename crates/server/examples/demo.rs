@@ -412,7 +412,14 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         notes: None,
         probed: None,
     };
-    post(&mut run, &mut t, "items/003-reorder", Platform::Android, failed, 4)?;
+    post(
+        &mut run,
+        &mut t,
+        "items/003-reorder",
+        Platform::Android,
+        failed,
+        4,
+    )?;
     run.review(
         t.tick(1),
         "items/003-reorder",

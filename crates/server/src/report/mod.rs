@@ -619,13 +619,18 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
 
 /// Whether the row's current attempt has no result in yet.
 fn waiting(r: &RowRecord) -> bool {
-    matches!(r.row, Row::NotRun | Row::Queued { .. } | Row::Running { .. })
+    matches!(
+        r.row,
+        Row::NotRun | Row::Queued { .. } | Row::Running { .. }
+    )
 }
 
 /// The outcomes of a row with no result yet, so a reader can see what it will check while it waits or runs.
 fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
     let (state, running) = match &r.row {
-        Row::Running { attempt, .. } if *attempt > 1 => (format!("Running now, attempt {attempt}"), true),
+        Row::Running { attempt, .. } if *attempt > 1 => {
+            (format!("Running now, attempt {attempt}"), true)
+        }
         Row::Running { .. } => ("Running now".to_string(), true),
         Row::Queued {
             verify: Some(claim),
@@ -642,8 +647,15 @@ fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> Strin
         );
     }
     let state = esc(&state);
-    let _ = write!(out, "<p class=\"pending-state\">{state}</p><ul class=\"outcomes\">");
-    let class = if running { "pending running" } else { "pending" };
+    let _ = write!(
+        out,
+        "<p class=\"pending-state\">{state}</p><ul class=\"outcomes\">"
+    );
+    let class = if running {
+        "pending running"
+    } else {
+        "pending"
+    };
     for outcome in &spec.outcomes {
         let _ = write!(
             out,
