@@ -1,6 +1,6 @@
 use crate::run::event::Event;
 use crate::run::journal::Entry;
-use crate::run::model::Claim;
+use crate::run::model::{Answer, Claim};
 use crate::suite::config::Platform;
 
 /// One plain line per journal entry, for the coordinator's Monitor: every line wakes it.
@@ -18,6 +18,16 @@ pub fn summary(entry: &Entry) -> String {
                 ", verification"
             } else {
                 ""
+            }
+        ),
+        Event::Judged { token, judgment } => format!(
+            "{token} judged outcome {}: {}",
+            judgment.outcome,
+            match judgment.answer {
+                Answer::Held => "held",
+                Answer::Failed => "failed",
+                Answer::Unsure => "unsure",
+                Answer::CouldntCheck => "couldn't check",
             }
         ),
         Event::Posted {

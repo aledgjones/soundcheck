@@ -35,7 +35,7 @@ fn reply(result: anyhow::Result<serde_json::Value>) -> Result<CallToolResult, Er
 pub struct PostResultParams {
     /// Your spec token, from your brief.
     pub token: String,
-    /// One judgment per outcome, by its number in your brief.
+    /// One judgment per outcome by its number in your brief, for those you haven't already recorded with `judge`.
     pub judgments: Vec<Judgment>,
     /// Problems found while probing that the outcomes don't cover.
     #[serde(default)]
@@ -43,6 +43,14 @@ pub struct PostResultParams {
     pub notes: Option<String>,
     /// When your brief has `Probe around it`: what you tried and what happened. A pass without it waits for review.
     pub probed: Option<String>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct JudgeParams {
+    /// Your spec token, from your brief.
+    pub token: String,
+    /// The outcome you've settled, as one judgment: its number in your brief, your answer, what you saw.
+    pub judgment: Judgment,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -531,7 +539,39 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: post your spec's result once, at the end, judging every outcome. A PASS files at once; anything else goes to the coordinator for review."
+        description = "Tester: record one outcome as soon as you've settled it, so the run shows your progress. Judging it again replaces it. `post_result` takes up what you've judged, so you needn't repeat it there."
+    )]
+    async fn judge(
+        &self,
+        Parameters(mut p): Parameters<JudgeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let (spec, platform, attempt) = match self.attempt_of(&p.token) {
+            Ok(row) => row,
+            Err(e) => return reply(Err(e)),
+        };
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let base = report::evidence_base(&spec, attempt, platform);
+        let mut missing = Vec::new();
+        for name in &mut p.judgment.evidence {
+            match report::resolve_evidence(&dir, &base, name) {
+                Some(file) => *name = file,
+                None => missing.push(name.clone()),
+            }
+        }
+        if !missing.is_empty() {
+            return reply(Err(anyhow::anyhow!(
+                "no saved evidence named {}: attach the names `shot` returned",
+                missing.join(", ")
+            )));
+        }
+        reply(self.hub.with_run(|run, now| {
+            let judged = run.judge(now, &p.token, p.judgment)?;
+            Ok(json!({ "judged": judged }))
+        }))
+    }
+
+    #[tool(
+        description = "Tester: post your spec's result once, at the end, judging every outcome you haven't recorded with `judge`. A PASS files at once; anything else goes to the coordinator for review."
     )]
     async fn post_result(
         &self,

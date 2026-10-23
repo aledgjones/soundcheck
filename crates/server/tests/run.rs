@@ -1277,6 +1277,46 @@ fn a_problem_keeps_the_wording_it_was_judged_against() {
 }
 
 #[test]
+fn outcomes_judged_along_the_way_are_taken_up_by_the_post() {
+    let path = journal("judged");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let judgment = |outcome, answer, observed: &str| Judgment {
+        outcome,
+        answer,
+        observed: observed.into(),
+        evidence: vec![],
+    };
+    assert_eq!(
+        run.judge(2, &t, judgment(0, Answer::Failed, "stayed"))
+            .unwrap(),
+        1
+    );
+    // A later step changes the tester's mind.
+    assert_eq!(
+        run.judge(3, &t, judgment(0, Answer::Held, "went")).unwrap(),
+        1
+    );
+    assert!(run.judge(3, &t, judgment(5, Answer::Held, "?")).is_err());
+    let rest = Posted {
+        judgments: vec![judgment(1, Answer::Held, "came back")],
+        side_finds: vec![],
+        notes: None,
+        probed: None,
+    };
+    assert_eq!(run.post(4, &t, rest).unwrap(), Claim::Pass);
+    drop(run);
+    let run = Run::open(plan(false), &path, 0).unwrap();
+    let posted = run.row(DRAW, Android).unwrap().posted.clone().unwrap();
+    let seen: Vec<_> = posted
+        .judgments
+        .iter()
+        .map(|j| (j.outcome, j.observed.as_str()))
+        .collect();
+    assert_eq!(seen, [(0, "went"), (1, "came back")]);
+}
+
+#[test]
 fn queueing_a_finished_run_opens_it_again() {
     let mut run = open("requeue-finished").0;
     pass(&mut run, 1, BACK, Android);

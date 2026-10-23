@@ -1,4 +1,4 @@
-use super::model::{Build, Call, Decision, Final, Posted, Rerun};
+use super::model::{Build, Call, Decision, Final, Judgment, Posted, Rerun};
 use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,12 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verify: Option<String>,
         prompt: String,
+    },
+    /// A tester settled one outcome before posting, so the page can show progress. Provisional: a later judgment of
+    /// the same outcome replaces it, and the post files them all.
+    Judged {
+        token: String,
+        judgment: Judgment,
     },
     Posted {
         token: String,

@@ -82,7 +82,9 @@ pub fn handoff(token: &str) -> String {
 
 const CONTRACT: &str = "## Posting your result
 
-Call `post_result` once, at the end, with a judgment for every outcome above by its number:
+As soon as you've settled an outcome, record it with `judge`: the run shows your progress as you go. Judging the same outcome again replaces it, if a later step changes your mind.
+
+Call `post_result` once, at the end. It takes up everything you've judged; add a judgment for any outcome you haven't, by its number:
 
 - `held`: you observed it working.
 - `failed`: you observed it broken.

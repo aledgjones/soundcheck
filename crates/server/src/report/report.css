@@ -41,6 +41,7 @@ a:hover{text-decoration:underline}
 .cell.fail .cell-text{color:var(--fail)}
 .cell.blocked .cell-text i{background:var(--blocked)}
 .cell.live .cell-text i{background:var(--accent)}
+.cell.review .cell-text i{background:var(--review)}
 .mini{display:flex;height:4px;width:150px;max-width:100%;border-radius:2px;overflow:hidden;background:var(--fill)}
 .mini i{display:block;height:100%}
 .mini .pass{background:var(--pass)}
@@ -61,7 +62,7 @@ a:hover{text-decoration:underline}
 .res.running{color:var(--accent)}
 .res.running::before{content:"";background:var(--accent);animation:breathe 2.4s ease-in-out infinite}
 .res.review{color:var(--review)}
-.res.review::before{content:"";background-color:var(--review);background-image:radial-gradient(circle at 5.5px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 10px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 14.5px 10px,#fff 1.4px,transparent 1.7px)}
+.res.review::before{content:"?";background:var(--review)}
 .age{font-size:13px;color:var(--label2);margin-left:2px}
 @keyframes breathe{50%{opacity:.35}}
 @media (prefers-reduced-motion:reduce){.res.running::before,.mark.pending.running{animation:none}}

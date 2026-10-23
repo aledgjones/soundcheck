@@ -5,6 +5,7 @@ model: sonnet
 tools:
   - Read
   - mcp__plugin_soundcheck_soundcheck__brief
+  - mcp__plugin_soundcheck_soundcheck__judge
   - mcp__plugin_soundcheck_soundcheck__post_result
   - mcp__plugin_soundcheck_soundcheck__see
   - mcp__plugin_soundcheck_soundcheck__expect

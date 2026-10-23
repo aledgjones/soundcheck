@@ -435,7 +435,7 @@ fn cell(t: &Tally) -> String {
         ("live", format!("Running · {done}/{}", t.total))
     } else if t.checking > 0 {
         (
-            "live",
+            "review",
             format!("{} checking · {done}/{}", t.checking, t.total),
         )
     } else if t.blocked > 0 {
@@ -627,11 +627,20 @@ fn waiting(r: &RowRecord) -> bool {
 
 /// The outcomes of a row with no result yet, so a reader can see what it will check while it waits or runs.
 fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
+    let so_far = if r.provisional.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " · {} of {} judged",
+            r.provisional.len(),
+            spec.outcomes.len()
+        )
+    };
     let (state, running) = match &r.row {
         Row::Running { attempt, .. } if *attempt > 1 => {
-            (format!("Running now, attempt {attempt}"), true)
+            (format!("Running now, attempt {attempt}{so_far}"), true)
         }
-        Row::Running { .. } => ("Running now".to_string(), true),
+        Row::Running { .. } => (format!("Running now{so_far}"), true),
         Row::Queued {
             verify: Some(claim),
         } => (format!("Queued to reproduce: {claim}"), false),
@@ -656,12 +665,30 @@ fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> Strin
     } else {
         "pending"
     };
-    for outcome in &spec.outcomes {
-        let _ = write!(
-            out,
-            "<li><span class=\"mark {class}\" aria-label=\"{state}\"></span><span><span class=\"o pending\">{}</span></span></li>",
-            esc(outcome)
-        );
+    for (i, outcome) in spec.outcomes.iter().enumerate() {
+        // Judged so far: held reads as held, anything else waits for the coordinator's call, like a claim in review.
+        match r.provisional.iter().find(|j| j.outcome == i) {
+            Some(j) if running => {
+                let (mark_class, mark) = if j.answer == Answer::Held {
+                    ("held", "✓")
+                } else {
+                    ("unsure", "?")
+                };
+                let _ = write!(
+                    out,
+                    "<li><span class=\"mark {mark_class}\" aria-label=\"judged so far\">{mark}</span><span><span class=\"o\">{}</span><span class=\"obs\">{}</span></span></li>",
+                    esc(outcome),
+                    esc(&j.observed)
+                );
+            }
+            _ => {
+                let _ = write!(
+                    out,
+                    "<li><span class=\"mark {class}\" aria-label=\"{state}\"></span><span><span class=\"o pending\">{}</span></span></li>",
+                    esc(outcome)
+                );
+            }
+        }
     }
     out.push_str("</ul>");
     out
@@ -773,8 +800,12 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, failure: Option<&str>) 
         Some((Call::Judge { result, .. }, reason)) => Some((*result, reason.as_str())),
         _ => None,
     };
-    // An Unsure the coordinator judged reads as its verdict, since that's what the row was filed on.
+    // An Unsure the coordinator judged reads as its verdict, since that's what the row was filed on; until a claim is
+    // reviewed, anything that didn't hold reads as a question.
+    let awaiting = matches!(r.row, Row::NeedsReview { .. });
     let shown = |answer: Answer| match (answer, judged) {
+        (Answer::Held, _) => Answer::Held,
+        _ if awaiting => Answer::Unsure,
         (Answer::Unsure, Some((Final::Fail, _))) => Answer::Failed,
         (Answer::Unsure, Some((Final::Pass, _))) => Answer::Held,
         _ => answer,

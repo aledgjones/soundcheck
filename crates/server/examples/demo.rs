@@ -462,10 +462,48 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         },
         "A person can't reach the stepper while typing a quantity: the keyboard covers it",
     )?;
-    // And one running now.
-    run.dispatch(t.tick(0), "items/003-reorder", Platform::Ios, |_, _| {
+    // A claim waiting for the coordinator.
+    let claimed = Posted {
+        judgments: vec![
+            judgment(
+                0,
+                Answer::Held,
+                "The empty account showed \"Create your first list\".",
+                vec![],
+            ),
+            judgment(
+                1,
+                Answer::Failed,
+                "Weekly shop was created, but the app stayed on the prompt until relaunched.",
+                vec![],
+            ),
+        ],
+        side_finds: vec![],
+        notes: None,
+        probed: None,
+    };
+    post(
+        &mut run,
+        &mut t,
+        "lists/001-first-list",
+        Platform::Android,
+        claimed,
+        3,
+    )?;
+    // And one running now, halfway through its outcomes.
+    let token = run.dispatch(t.tick(0), "items/003-reorder", Platform::Ios, |_, _| {
         "brief".into()
     })?;
+    run.judge(
+        t.tick(1),
+        &token,
+        judgment(
+            0,
+            Answer::Held,
+            "Bread followed the finger to the top while the rows below shifted down.",
+            vec![],
+        ),
+    )?;
     std::fs::write(
         run_dir.join(SUMMARY_FILE),
         soundcheck::report::run_summary(&run, label).to_string(),

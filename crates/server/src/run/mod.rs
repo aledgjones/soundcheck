@@ -82,6 +82,8 @@ pub struct RowRecord {
     pub captured: Vec<String>,
     /// Why the device was degraded during the latest attempt; empty when it was healthy.
     pub degraded: Vec<String>,
+    /// What the running attempt's tester has judged so far, before it posts; the post takes them up.
+    pub provisional: Vec<Judgment>,
     /// The outcomes' wording the latest result was judged against; empty in journals from before it was kept.
     pub judged_against: Vec<String>,
     /// What the coordinator wants the next attempt told, after fixing a harness gap.
@@ -105,6 +107,7 @@ impl RowRecord {
             degraded: Vec::new(),
             rerun_note: None,
             judged_against: Vec::new(),
+            provisional: Vec::new(),
         }
     }
 }
@@ -282,17 +285,48 @@ impl Run {
         self.post_probed(now, token, posted, false)
     }
 
+    /// Records one outcome a tester has settled, before it posts. Returns how many it has judged so far.
+    pub fn judge(&mut self, now: u64, token: &str, judgment: Judgment) -> Result<usize> {
+        self.open_for_commands()?;
+        let (spec, platform) = self.running(token)?;
+        let outcomes = self.planned(&spec)?.outcomes.len();
+        if judgment.outcome >= outcomes {
+            bail!(
+                "outcome {} doesn't exist: the spec has {outcomes}",
+                judgment.outcome
+            );
+        }
+        if judgment.observed.trim().is_empty() {
+            bail!("outcome {} needs what you observed", judgment.outcome);
+        }
+        self.commit(
+            now,
+            Event::Judged {
+                token: token.into(),
+                judgment,
+            },
+        )?;
+        Ok(self.record(&spec, platform)?.provisional.len())
+    }
+
     /// Records a tester's result. When the spec has probes and a pass says nothing about them, it waits for review
     /// as an Unsure, since probes are where new bugs turn up.
     pub fn post_probed(
         &mut self,
         now: u64,
         token: &str,
-        posted: Posted,
+        mut posted: Posted,
         has_probes: bool,
     ) -> Result<Claim> {
         self.open_for_commands()?;
-        let (spec, _) = self.running(token)?;
+        let (spec, platform) = self.running(token)?;
+        // Outcomes judged along the way count unless the post judges them again.
+        for j in &self.record(&spec, platform)?.provisional {
+            if !posted.judgments.iter().any(|p| p.outcome == j.outcome) {
+                posted.judgments.push(j.clone());
+            }
+        }
+        posted.judgments.sort_by_key(|j| j.outcome);
         let planned = self.planned(&spec)?;
         let mut seen = BTreeSet::new();
         for j in &posted.judgments {
@@ -1174,12 +1208,22 @@ impl State {
                     r.captured.clear();
                     r.degraded.clear();
                     r.rerun_note = None;
+                    r.provisional.clear();
                     r.build = build;
                     r.row = Row::Running {
                         attempt: *attempt,
                         token: token.clone(),
                         verify: verify.clone(),
                     };
+                }
+            }
+            Event::Judged { token, judgment } => {
+                if let Some(key) = self.running_token(token)
+                    && let Some(r) = self.rows.get_mut(&key)
+                {
+                    r.provisional.retain(|j| j.outcome != judgment.outcome);
+                    r.provisional.push(judgment.clone());
+                    r.provisional.sort_by_key(|j| j.outcome);
                 }
             }
             Event::Posted {
