@@ -429,6 +429,39 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         },
         "Seen once: reproduce it on a fresh attempt",
     )?;
+    // An Unsure the coordinator judged a failure.
+    let unsure = Posted {
+        judgments: vec![
+            judgment(0, Answer::Held, "The row read Eggs × 12.", vec![]),
+            judgment(
+                1,
+                Answer::Unsure,
+                "The minus button sits under the keyboard, so I couldn't tap it at 1; with the keyboard hidden it stopped at 1.",
+                vec![],
+            ),
+        ],
+        side_finds: vec![],
+        notes: None,
+        probed: None,
+    };
+    post(
+        &mut run,
+        &mut t,
+        "items/004-quantities",
+        Platform::Android,
+        unsure,
+        3,
+    )?;
+    run.review(
+        t.tick(1),
+        "items/004-quantities",
+        Platform::Android,
+        Call::Judge {
+            result: Final::Fail,
+            title: Some("The quantity stepper is hidden under the keyboard".into()),
+        },
+        "A person can't reach the stepper while typing a quantity: the keyboard covers it",
+    )?;
     // And one running now.
     run.dispatch(t.tick(0), "items/003-reorder", Platform::Ios, |_, _| {
         "brief".into()

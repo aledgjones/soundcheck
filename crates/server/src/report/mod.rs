@@ -709,16 +709,22 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
                 })
                 .map(|p| thumbs(page, &p.evidence))
                 .unwrap_or_default();
-            // Why it was filed and what it looked like, inside the failed outcome's red box.
-            let evidence = format!(
-                "<span class=\"callline\">{}{}</span>{shots}",
-                if r.verifying {
-                    "Reproduced on verification. "
-                } else {
-                    ""
-                },
-                esc(call),
-            );
+            // Why it was filed and what it looked like, inside the failed outcome's red box. A judged Unsure already
+            // carries the call in its note.
+            let judged = matches!(r.review, Some((Call::Judge { .. }, _)));
+            let evidence = if judged {
+                shots
+            } else {
+                format!(
+                    "<span class=\"callline\">{}{}</span>{shots}",
+                    if r.verifying {
+                        "Reproduced on verification. "
+                    } else {
+                        ""
+                    },
+                    esc(call),
+                )
+            };
             match &r.posted {
                 Some(posted) => out.push_str(&outcomes(spec, posted, r, Some(&evidence))),
                 None => {
@@ -763,33 +769,46 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
 /// The outcomes as judged. `failure` is the filed failure's call and screenshots, which go inside its last failed
 /// outcome, so the red box holds the outcome and its evidence together.
 fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, failure: Option<&str>) -> String {
-    let settled = match &r.review {
-        Some((Call::Judge { .. }, reason)) => Some(reason.as_str()),
+    let judged = match &r.review {
+        Some((Call::Judge { result, .. }, reason)) => Some((*result, reason.as_str())),
         _ => None,
+    };
+    // An Unsure the coordinator judged reads as its verdict, since that's what the row was filed on.
+    let shown = |answer: Answer| match (answer, judged) {
+        (Answer::Unsure, Some((Final::Fail, _))) => Answer::Failed,
+        (Answer::Unsure, Some((Final::Pass, _))) => Answer::Held,
+        _ => answer,
     };
     let listed: Vec<_> = posted.judgments.iter().collect();
     if listed.is_empty() {
         return String::new();
     }
-    let last_failed = listed.iter().rposition(|j| j.answer == Answer::Failed);
+    let last_failed = listed
+        .iter()
+        .rposition(|j| shown(j.answer) == Answer::Failed);
     let mut out = String::from("<ul class=\"outcomes\">");
     for (i, j) in listed.into_iter().enumerate() {
-        let (class, mark, label) = match j.answer {
+        let (class, mark, label) = match shown(j.answer) {
             Answer::Held => ("held", "✓", "held"),
             Answer::Failed => ("failed", "✕", "failed"),
             Answer::Unsure => ("unsure", "?", "unsure"),
             Answer::CouldntCheck => ("blocked", "–", "couldn't check"),
         };
-        let note = match (j.answer, settled) {
-            (Answer::Unsure, Some(reason)) => format!(
-                "<span class=\"settled\">The coordinator settled it: {}</span>",
+        let note = match (j.answer, judged) {
+            (Answer::Unsure, Some((result, reason))) => format!(
+                "<span class=\"settled\">The tester was unsure; the coordinator judged it {}: {}</span>",
+                if result == Final::Fail {
+                    "failed"
+                } else {
+                    "passed"
+                },
                 esc(reason)
             ),
             _ => String::new(),
         };
         let (row, evidence) = match failure {
             Some(evidence) if Some(i) == last_failed => (" class=\"failed-outcome\"", evidence),
-            _ if j.answer == Answer::Failed && failure.is_some() => {
+            _ if shown(j.answer) == Answer::Failed && failure.is_some() => {
                 (" class=\"failed-outcome\"", "")
             }
             _ => ("", ""),
