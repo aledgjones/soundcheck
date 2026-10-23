@@ -50,6 +50,18 @@ impl Bridge {
                     self.url
                 )
             })?;
+        // A bridge outlives updates (Claude Code keeps it for the session), so an old one would drive a new server
+        // with the old tool list.
+        let theirs = service
+            .peer_info()
+            .and_then(|info| info.server_info.as_ref().map(|s| s.version.clone()))
+            .unwrap_or_default();
+        if theirs != crate::VERSION {
+            return Err(format!(
+                "this session's soundcheck connection is {} but the run's server is {theirs}: reconnect soundcheck with /mcp",
+                crate::VERSION
+            ));
+        }
         let peer = service.peer().clone();
         *run = Some(service);
         Ok(peer)
@@ -73,6 +85,10 @@ impl ServerHandler for Bridge {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(INSTRUCTIONS)
+            .with_server_info(rmcp::model::Implementation::new(
+                "soundcheck",
+                crate::VERSION,
+            ))
     }
 
     async fn list_tools(

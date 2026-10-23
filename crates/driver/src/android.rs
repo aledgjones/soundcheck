@@ -585,18 +585,29 @@ impl Device for Android {
                 self.package
             ))
             .await?;
-        let component = resolved
+        let Some(component) = resolved
             .lines()
             .rev()
             .find(|l| l.contains('/'))
-            .ok_or_else(|| {
-                device(format!(
-                    "{} has no launcher activity (is it installed?)",
-                    self.package
-                ))
-            })?
-            .trim()
-            .to_string();
+            .map(|l| l.trim().to_string())
+        else {
+            // A wedged emulator answers the same as a missing app here; the system package is always installed.
+            let answering = self
+                .shell("pm path android")
+                .await
+                .is_ok_and(|out| out.contains("package:"));
+            let installed = self
+                .shell(&format!("pm path {}", self.package))
+                .await
+                .is_ok_and(|out| out.contains("package:"));
+            return Err(device(if !answering {
+                "the emulator isn't answering (its package manager didn't reply): restart it".into()
+            } else if installed {
+                format!("{} is installed but has no launcher activity", self.package)
+            } else {
+                format!("{} isn't installed", self.package)
+            }));
+        };
         self.adb(&["logcat", "-c"]).await?;
         // -W waits until the activity has drawn and reports how long that took.
         // A first launch after a reboot can take a minute: that's a slow launch for health to record, not a failure.
@@ -617,6 +628,15 @@ impl Device for Android {
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = total;
         sleep(Duration::from_secs(1)).await;
+        // `am start` returns once the activity drew, even if it crashed or a system dialog took the screen after.
+        let focus = self.shell("dumpsys window | grep mCurrentFocus").await?;
+        if !focus.contains(&self.package) {
+            return Err(device(format!(
+                "{} isn't in front after launching ({})",
+                self.package,
+                focus.trim()
+            )));
+        }
         Ok(())
     }
 

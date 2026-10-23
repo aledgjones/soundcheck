@@ -239,6 +239,40 @@ impl<D: Device> Driver<D> {
         )))
     }
 
+    /// Types into the focused field and checks it landed: keys can drop under load, and a person would see it. A
+    /// field whose value changed but doesn't hold the text is reported, not passed over.
+    pub async fn type_checked(&self, text: &str) -> Result<()> {
+        let values = |elements: Vec<Element>| -> Vec<(String, Option<String>)> {
+            elements.into_iter().map(|e| (e.label, e.value)).collect()
+        };
+        let before = values(self.device.read(false).await?);
+        self.device.type_text(text).await?;
+        let typed = text.to_lowercase();
+        let mut changed = None;
+        for _ in 0..4 {
+            let after = values(self.device.read(false).await?);
+            if after.iter().any(|(label, value)| {
+                value
+                    .as_deref()
+                    .is_some_and(|v| v.to_lowercase().contains(&typed))
+                    || label.to_lowercase().contains(&typed)
+            }) {
+                return Ok(());
+            }
+            changed = after
+                .into_iter()
+                .find(|field| field.1.is_some() && !before.contains(field));
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+        match changed {
+            Some((label, Some(value))) => Err(DriverError::Invalid(format!(
+                "typed {text:?} but {label} shows {value:?}: keys were dropped. `fill` sets a field's whole value and checks it"
+            ))),
+            // Nothing readable changed (a secure field, or no value exposed), so there's nothing to check against.
+            _ => Ok(()),
+        }
+    }
+
     pub async fn double_tap(&self, target: &Matcher, last: bool) -> Result<Element> {
         let e = self.target(target, last).await?;
         let (x, y) = e.tap_point();

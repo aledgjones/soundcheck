@@ -582,10 +582,15 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
                 || !findings_for(page, &spec.id, *p).is_empty()
         })
         .collect();
-    let label_platforms = with_detail.len() > 1;
+    let label_platforms = records.len() > 1;
     let mut body = String::new();
-    for (platform, r) in &with_detail {
-        body.push_str(&detail(page, spec, *platform, r, label_platforms));
+    for (platform, r) in &records {
+        // A rerun's earlier result gives way to the attempt under way.
+        if waiting(r) {
+            body.push_str(&pending(spec, *platform, r, label_platforms));
+        } else if with_detail.iter().any(|(p, _)| p == platform) {
+            body.push_str(&detail(page, spec, *platform, r, label_platforms));
+        }
     }
     let open = records.iter().any(|(_, r)| {
         matches!(
@@ -612,6 +617,52 @@ fn check(page: &Page, spec: &Spec, shown: &[Platform]) -> String {
     )
 }
 
+/// Whether the row's current attempt has no result in yet.
+fn waiting(r: &RowRecord) -> bool {
+    matches!(r.row, Row::NotRun | Row::Queued { .. } | Row::Running { .. })
+}
+
+/// The outcomes of a row with no result yet, so a reader can see what it will check while it waits or runs.
+fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
+    let (state, running) = match &r.row {
+        Row::Running { attempt, .. } if *attempt > 1 => (format!("Running now, attempt {attempt}"), true),
+        Row::Running { .. } => ("Running now".to_string(), true),
+        Row::Queued {
+            verify: Some(claim),
+        } => (format!("Queued to reproduce: {claim}"), false),
+        Row::Queued { .. } => ("Queued for another attempt".to_string(), false),
+        _ => ("Not run yet".to_string(), false),
+    };
+    let mut out = String::new();
+    if label {
+        let _ = write!(
+            out,
+            "<span class=\"platform-label\">{}</span>",
+            platform_name(platform)
+        );
+    }
+    let state = esc(&state);
+    let _ = write!(out, "<p class=\"pending-state\">{state}</p><ul class=\"outcomes\">");
+    let class = if running { "pending running" } else { "pending" };
+    for outcome in &spec.outcomes {
+        let _ = write!(
+            out,
+            "<li><span class=\"mark {class}\" aria-label=\"{state}\"></span><span><span class=\"o pending\">{}</span></span></li>",
+            esc(outcome)
+        );
+    }
+    out.push_str("</ul>");
+    out
+}
+
+/// An outcome's wording as the latest result judged it, so a spec edited since then doesn't reword the result.
+fn judged_as<'a>(spec: &'a Spec, r: &'a RowRecord, i: usize) -> &'a str {
+    r.judged_against
+        .get(i)
+        .or_else(|| spec.outcomes.get(i))
+        .map_or("", String::as_str)
+}
+
 fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
     let mut out = String::new();
     let name = platform_name(platform);
@@ -619,7 +670,7 @@ fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bo
         let _ = write!(out, "<span class=\"platform-label\">{name}</span>");
     }
     let reason = r.review.as_ref().map(|(_, reason)| reason.as_str());
-    let outcome = |i: usize| spec.outcomes.get(i).map_or("", String::as_str);
+    let outcome = |i: usize| judged_as(spec, r, i);
 
     match &r.row {
         Row::Filed {
@@ -730,7 +781,7 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> St
             Answer::Held => ("held", "✓", "held"),
             Answer::Failed => ("failed", "✕", "failed"),
             Answer::Unsure => ("unsure", "?", "unsure"),
-            Answer::CouldntCheck => ("unsure", "–", "couldn't check"),
+            Answer::CouldntCheck => ("blocked", "–", "couldn't check"),
         };
         let note = match (j.answer, settled) {
             (Answer::Unsure, Some(reason)) => format!(
@@ -742,7 +793,7 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, skip_shown: bool) -> St
         let _ = write!(
             out,
             "<li><span class=\"mark {class}\" aria-label=\"{label}\">{mark}</span><span><span class=\"o\">{}</span><span class=\"obs\">{}</span>{note}</span></li>",
-            esc(spec.outcomes.get(j.outcome).map_or("", String::as_str)),
+            esc(judged_as(spec, r, j.outcome)),
             esc(&j.observed)
         );
     }
@@ -813,8 +864,10 @@ fn evidence(page: &Page, posted: &Posted, captured: &[String]) -> String {
         String::from("<details class=\"fold\"><summary>Evidence and tester's notes</summary>");
     out.push_str(&thumbs(page, &shots));
     for t in texts {
-        let label = if t.ends_with("-tree.txt") {
-            "Element tree"
+        let label = if t.ends_with("-seen.txt") {
+            "Element tree the tester last read"
+        } else if t.ends_with("-tree.txt") {
+            "Element tree when the result was posted"
         } else if t.ends_with("-errors.txt") {
             "Errors"
         } else {

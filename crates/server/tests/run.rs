@@ -1256,6 +1256,27 @@ fn a_pass_that_skips_its_probes_waits_for_review() {
 }
 
 #[test]
+fn a_problem_keeps_the_wording_it_was_judged_against() {
+    let path = journal("wording");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
+        .unwrap();
+    run.review(3, DRAW, Android, bug(), "real").unwrap();
+    drop(run);
+    // The spec is reworded, and the run resumed with the new text.
+    let mut reworded = plan(false);
+    reworded.specs[0].outcomes[0] = "Undo takes the stroke away".into();
+    let run = Run::open(reworded, &path, 0).unwrap();
+    let detail = &run.state().problems[0].detail;
+    assert!(detail.starts_with("Undo removes the stroke: "), "{detail}");
+    assert_eq!(
+        run.row(DRAW, Android).unwrap().judged_against[0],
+        "Undo removes the stroke"
+    );
+}
+
+#[test]
 fn queueing_a_finished_run_opens_it_again() {
     let mut run = open("requeue-finished").0;
     pass(&mut run, 1, BACK, Android);

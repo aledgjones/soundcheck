@@ -857,6 +857,25 @@ impl Device for Ios {
                 break;
             }
         }
+        // `simctl launch` returns before the app shows, and a simulator that crashes meanwhile leaves the home screen.
+        let services = run(
+            "xcrun",
+            &["simctl", "spawn", &self.udid, "launchctl", "list"],
+        )
+        .await
+        .unwrap_or_default();
+        if !services.contains(&format!("UIKitApplication:{}[", self.bundle_id)) {
+            return Err(device(format!(
+                "{} isn't running after launching: the simulator shows its home screen",
+                self.bundle_id
+            )));
+        }
+        if !has_content(&self.screen_json(true).await.unwrap_or_default()) {
+            return Err(device(format!(
+                "{} launched but showed no screen within 60 s",
+                self.bundle_id
+            )));
+        }
         Ok(())
     }
 

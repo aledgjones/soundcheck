@@ -22,6 +22,9 @@ pub enum Event {
         /// A pass on a spec with probes that says nothing about them: it waits for review like an Unsure.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         unprobed: bool,
+        /// The outcomes' wording as the tester judged them, so an edited spec never rewords an old result.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        outcomes: Vec<String>,
         /// The ids its side finds get, in order, for `review_find`.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         find_ids: Vec<u32>,
@@ -63,6 +66,9 @@ pub enum Event {
         attempt: u32,
         /// Why the device counted as degraded; empty when healthy.
         degraded: Vec<String>,
+        /// Why the Mac counted as busy, which holds the next dispatch however healthy the device is.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        busy: Vec<String>,
         facts: Vec<String>,
     },
     /// The server restarted a degraded device before the next spec.

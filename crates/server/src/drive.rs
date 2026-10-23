@@ -102,6 +102,13 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
     if platform == Platform::Web {
         bail!("web has no browser outside a run to drive: each call would start a fresh one");
     }
+    if !suite.join(crate::suite::CONFIG_FILE).exists() {
+        bail!(
+            "no {} in {}: run from the suite folder, or pass --suite",
+            crate::suite::CONFIG_FILE,
+            suite.canonicalize().unwrap_or(suite.into()).display()
+        );
+    }
     let loaded = crate::suite::load(suite);
     let driver = crate::serve::driver(platform, &loaded, false).await?;
     let d = &driver;

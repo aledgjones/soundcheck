@@ -64,7 +64,7 @@ a:hover{text-decoration:underline}
 .res.review::before{content:"";background-color:var(--review);background-image:radial-gradient(circle at 5.5px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 10px 10px,#fff 1.4px,transparent 1.7px),radial-gradient(circle at 14.5px 10px,#fff 1.4px,transparent 1.7px)}
 .age{font-size:13px;color:var(--label2);margin-left:2px}
 @keyframes breathe{50%{opacity:.35}}
-@media (prefers-reduced-motion:reduce){.res.running::before{animation:none}}
+@media (prefers-reduced-motion:reduce){.res.running::before,.mark.pending.running{animation:none}}
 .chip{display:inline-block;font-size:13px;font-weight:600;border-radius:999px;padding:2px 10px;white-space:nowrap;background:var(--fill);color:var(--label2)}
 .chip.ticket{color:var(--accent);background:color-mix(in srgb,var(--accent) 12%,transparent)}
 .chip.bug{color:var(--fail);background:color-mix(in srgb,var(--fail) 12%,transparent)}
@@ -131,6 +131,11 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .mark.held{background:var(--pass)}
 .mark.failed{background:var(--fail)}
 .mark.unsure{background:var(--review)}
+.mark.blocked{background:var(--blocked)}
+.mark.pending{background:transparent;box-shadow:inset 0 0 0 1.5px var(--label3)}
+.mark.pending.running{box-shadow:inset 0 0 0 1.5px var(--accent);animation:breathe 2.4s ease-in-out infinite}
+.outcomes .o.pending{font-weight:500;color:var(--label2)}
+.pending-state{margin:0 0 10px;font-size:14px;color:var(--label2)}
 .failed-outcome{background:color-mix(in srgb,var(--fail) 7%,transparent);border-radius:12px;padding:10px 12px}
 .failed-outcome .expect{display:block;color:var(--ink)}
 .failed-outcome .expect{font-weight:600}

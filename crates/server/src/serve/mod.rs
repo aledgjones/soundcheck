@@ -170,6 +170,9 @@ pub struct Hub {
     held: Mutex<std::collections::HashMap<Platform, String>>,
     /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
     gave_up: Mutex<std::collections::HashMap<Platform, u64>>,
+    /// Each running tester's last full read of the screen and when, saved with a FAIL: by the time it posts, the
+    /// screen has often moved on from the moment it judged.
+    seen: Mutex<std::collections::HashMap<String, (u64, Vec<String>)>>,
 }
 
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
@@ -197,6 +200,7 @@ impl Hub {
             last_restart: Mutex::new(std::collections::HashMap::new()),
             held: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
+            seen: Mutex::new(std::collections::HashMap::new()),
         })
     }
 
@@ -622,6 +626,8 @@ impl Hub {
                 break true;
             }
             reason = busy.join(", ");
+            // A refused dispatch quotes the latest reading, not the one that started the hold.
+            self.hold_for(platform, &format!("the Mac is busy ({reason})"));
             if now_ms().saturating_sub(started) >= HOST_WAIT_MAX_MS {
                 self.gave_up
                     .lock()
@@ -780,12 +786,50 @@ impl Hub {
 
     /// Saves what the device shows now for an attempt's non-pass: a screenshot, the element tree and the errors.
     /// Returns the file names it managed.
-    pub async fn capture(&self, spec: &str, platform: Platform, attempt: u32) -> Vec<String> {
+    /// Keeps a tester's latest full read of the screen, for its evidence if it fails.
+    pub fn remember_screen(&self, token: &str, lines: Vec<String>) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(token.to_string(), (now_ms(), lines));
+    }
+
+    pub fn forget_screen(&self, token: &str) {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+    }
+
+    pub async fn capture(
+        &self,
+        token: &str,
+        spec: &str,
+        platform: Platform,
+        attempt: u32,
+    ) -> Vec<String> {
         let dir = self.run_dir.join(report::EVIDENCE_DIR);
         if std::fs::create_dir_all(&dir).is_err() {
             return Vec::new();
         }
         let base = report::evidence_base(spec, attempt, platform);
+        let seen = self
+            .seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(token);
+        let mut earlier = Vec::new();
+        if let Some((at, lines)) = seen {
+            let name = format!("{base}-seen.txt");
+            let ago = now_ms().saturating_sub(at) / 1000;
+            let text = format!(
+                "The last screen the tester read, {ago} s before posting.\n\n{}",
+                lines.join("\n")
+            );
+            if std::fs::write(dir.join(&name), text).is_ok() {
+                earlier.push(name);
+            }
+        }
         let names = [
             format!("{base}-screen.png"),
             format!("{base}-tree.txt"),
@@ -821,7 +865,8 @@ impl Hub {
                 Ok(saved)
             })
             .await;
-        saved.unwrap_or_default()
+        earlier.extend(saved.unwrap_or_default());
+        earlier
     }
 
     /// Writes the self-contained copy of the report into the run's folder and returns its path.

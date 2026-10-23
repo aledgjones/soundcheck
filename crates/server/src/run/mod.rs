@@ -82,6 +82,8 @@ pub struct RowRecord {
     pub captured: Vec<String>,
     /// Why the device was degraded during the latest attempt; empty when it was healthy.
     pub degraded: Vec<String>,
+    /// The outcomes' wording the latest result was judged against; empty in journals from before it was kept.
+    pub judged_against: Vec<String>,
     /// What the coordinator wants the next attempt told, after fixing a harness gap.
     pub rerun_note: Option<String>,
 }
@@ -102,6 +104,7 @@ impl RowRecord {
             captured: Vec::new(),
             degraded: Vec::new(),
             rerun_note: None,
+            judged_against: Vec::new(),
         }
     }
 }
@@ -334,12 +337,14 @@ impl Run {
         let find_ids = (0..posted.side_finds.len() as u32)
             .map(|i| self.state.next_id + i)
             .collect();
+        let outcomes = planned.outcomes.clone();
         self.commit(
             now,
             Event::Posted {
                 token: token.into(),
                 posted,
                 unprobed,
+                outcomes,
                 find_ids,
             },
         )?;
@@ -524,6 +529,7 @@ impl Run {
                 platform,
                 attempt,
                 degraded: health.degraded,
+                busy: health.busy,
                 facts: health.facts,
             },
         )
@@ -1180,6 +1186,7 @@ impl State {
                 token,
                 posted,
                 unprobed,
+                outcomes,
                 ..
             } => {
                 let Some(key) = self.running_token(token) else {
@@ -1204,6 +1211,7 @@ impl State {
                 }
                 if let Some(r) = self.rows.get_mut(&key) {
                     r.posted = Some(posted.clone());
+                    r.judged_against.clone_from(outcomes);
                 }
                 let claim = if *unprobed {
                     Claim::Unsure
@@ -1274,12 +1282,15 @@ impl State {
                 else {
                     return;
                 };
-                let outcomes = plan
-                    .specs
-                    .iter()
-                    .find(|s| &s.id == spec)
-                    .map(|s| s.outcomes.clone())
-                    .unwrap_or_default();
+                let outcomes = match self.rows.get(&key).map(|r| &r.judged_against) {
+                    Some(judged) if !judged.is_empty() => judged.clone(),
+                    _ => plan
+                        .specs
+                        .iter()
+                        .find(|s| &s.id == spec)
+                        .map(|s| s.outcomes.clone())
+                        .unwrap_or_default(),
+                };
                 let summary = |answers: &[Answer]| -> String {
                     posted
                         .judgments

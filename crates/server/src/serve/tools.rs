@@ -403,7 +403,7 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
             format!("filled {target}")
         }
         Step::Type { text } => {
-            d.device.type_text(text).await?;
+            d.type_checked(text).await?;
             "typed".into()
         }
         Step::Clear { chars } => {
@@ -584,10 +584,12 @@ impl Tools {
         };
         // Save the evidence now: the next spec's seed wipes the device, and review comes later.
         if claim != Claim::Pass {
-            let files = self.hub.capture(&spec, platform, attempt).await;
+            let files = self.hub.capture(&p.token, &spec, platform, attempt).await;
             let _ = self
                 .hub
                 .with_run(|run, now| run.evidence_captured(now, &spec, platform, attempt, files));
+        } else {
+            self.hub.forget_screen(&p.token);
         }
         // In the background: sampling takes seconds, and the next spec's reset waits for the device anyway.
         let hub = self.hub.clone();
@@ -622,13 +624,16 @@ impl Tools {
                             verify,
                             ..
                         } => {
-                            let outcomes = run
-                                .plan()
-                                .specs
-                                .iter()
-                                .find(|s| s.id == *spec)
-                                .map(|s| s.outcomes.as_slice())
-                                .unwrap_or_default();
+                            let outcomes = if r.judged_against.is_empty() {
+                                run.plan()
+                                    .specs
+                                    .iter()
+                                    .find(|s| s.id == *spec)
+                                    .map(|s| s.outcomes.as_slice())
+                                    .unwrap_or_default()
+                            } else {
+                                r.judged_against.as_slice()
+                            };
                             let judgments: Vec<_> = posted
                                 .judgments
                                 .iter()
@@ -953,11 +958,16 @@ impl Tools {
     async fn see(&self, Parameters(p): Parameters<SeeParams>) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
             let filter = p.filter.as_deref().map(matcher).transpose()?;
-            Ok(d.see(filter.as_ref(), p.all)
+            let lines: Vec<String> = d
+                .see(filter.as_ref(), p.all)
                 .await?
                 .iter()
                 .map(line)
-                .collect::<Vec<_>>())
+                .collect();
+            if filter.is_none() {
+                self.hub.remember_screen(&p.token, lines.clone());
+            }
+            Ok(lines)
         })
         .await
     }
@@ -1115,7 +1125,7 @@ impl Tools {
         Parameters(p): Parameters<TextParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            d.device.type_text(&p.text).await.map(|()| "typed")
+            d.type_checked(&p.text).await.map(|()| "typed")
         })
         .await
     }
@@ -1510,5 +1520,9 @@ impl ServerHandler for Tools {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(INSTRUCTIONS)
+            .with_server_info(rmcp::model::Implementation::new(
+                "soundcheck",
+                crate::VERSION,
+            ))
     }
 }

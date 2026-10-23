@@ -205,12 +205,14 @@ fn run_command(args: RunArgs) -> Result<()> {
         &mut checks,
         format!("the suite lints clean ({} specs)", suite.specs.len()),
     );
+    let said = String::from_utf8_lossy(&guard.stdout).trim().to_string();
     pass(
         &mut checks,
-        format!(
-            "the guard passed: {}",
-            String::from_utf8_lossy(&guard.stdout).trim()
-        ),
+        if said.is_empty() {
+            "the guard passed".into()
+        } else {
+            format!("the guard passed: {said}")
+        },
     );
     // A resumed run keeps how it was started, unless told otherwise.
     let saved = resume
@@ -511,8 +513,8 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
             .error_for_status()?;
         let mut pending = Vec::new();
         let mut out = std::io::stdout();
-        const CLOSED: &str = "the event stream closed: the run's server stopped";
-        while let Some(chunk) = response.chunk().await.context(CLOSED)? {
+        // A stopped server ends the stream mid-chunk, which is how a run ends, not an error.
+        while let Ok(Some(chunk)) = response.chunk().await {
             pending.extend_from_slice(&chunk);
             while let Some(end) = pending.iter().position(|&b| b == b'\n') {
                 let line: Vec<u8> = pending.drain(..=end).collect();
@@ -521,7 +523,8 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
                 out.flush()?;
             }
         }
-        bail!(CLOSED)
+        writeln!(out, "the run's server stopped")?;
+        Ok(())
     })
 }
 

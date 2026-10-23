@@ -25,6 +25,7 @@ pub fn summary(entry: &Entry) -> String {
             posted,
             unprobed,
             find_ids,
+            ..
         } => {
             let outcome = match posted.claim() {
                 Claim::Pass if *unprobed => "PASS without trying its probes: needs review",
@@ -70,10 +71,16 @@ pub fn summary(entry: &Entry) -> String {
             spec,
             platform,
             degraded,
+            busy,
             facts,
             ..
         } => {
-            if degraded.is_empty() {
+            if degraded.is_empty() && !busy.is_empty() {
+                format!(
+                    "{platform} healthy after {spec}, but the Mac is busy ({}): the next spec waits for it",
+                    busy.join(", ")
+                )
+            } else if degraded.is_empty() {
                 format!("{platform} healthy after {spec}: {}", facts.join(", "))
             } else {
                 format!(

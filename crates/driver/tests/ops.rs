@@ -181,6 +181,25 @@ async fn gone_is_exact_by_default() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn type_says_when_keys_were_dropped() {
+    let mut field = el("Search", 0.0);
+    field.role = Some("field".into());
+    field.value = Some(String::new());
+    let driver = Driver::new(Fake::new(vec![vec![field]]));
+    driver.device.typed.lock().unwrap().extend([
+        Some("Bowling For Soup".into()),
+        Some("Boling For Soup".into()),
+    ]);
+    let err = driver
+        .type_checked("Bowling For Soup")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("Search shows \"Boling For Soup\""), "{err}");
+    driver.type_checked("Bowling For Soup").await.unwrap();
+}
+
+#[tokio::test(start_paused = true)]
 async fn fill_retries_when_typing_drops_characters() {
     let mut field = el("Title", 0.0);
     field.role = Some("field".into());

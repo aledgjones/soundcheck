@@ -356,6 +356,81 @@ fn main() -> Result<()> {
         soundcheck::report::run_summary(&run, LABEL).to_string(),
     )?;
     println!("wrote {}", run_dir.display());
+    in_progress(&demo, &suite)
+}
+
+/// A second run, stopped part way: some results in, one spec running, one queued to verify, the rest not run.
+fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
+    let run_dir = demo.join("reports/20261022-091500");
+    let _ = std::fs::remove_dir_all(&run_dir);
+    std::fs::create_dir_all(run_dir.join(EVIDENCE_DIR))?;
+    let platforms = vec![Platform::Android, Platform::Ios];
+    let label = "v3.4.1 · candidate";
+    let info = saved::RunInfo {
+        suite: demo.join("suite"),
+        label: label.into(),
+        platforms: platforms.clone(),
+        scope: vec![],
+    };
+    saved::save(&run_dir, &info, suite)?;
+    let plan = saved::plan_for(suite, &platforms, &[])?;
+    let start = START_MS + 24 * 60 * MIN + 45 * MIN;
+    let mut run = Run::open(plan, &run_dir.join("journal.jsonl"), start)?;
+    let mut t = Clock(start);
+    for (spec, observed) in [
+        (
+            "items/001-add-items",
+            [
+                "Lemons, Rice and Coffee appeared in turn above the checked items.",
+                "The keyboard stayed up and the bar kept focus after each item.",
+            ],
+        ),
+        (
+            "items/002-check-off",
+            [
+                "Eggs and Oat milk were struck through and moved below Rice.",
+                "Eggs went back between Bread and Lemons when unchecked.",
+            ],
+        ),
+    ] {
+        for platform in [Platform::Android, Platform::Ios] {
+            post(&mut run, &mut t, spec, platform, held(&observed), 3)?;
+        }
+    }
+    // A failure the coordinator wants reproduced: queued for its next attempt.
+    let failed = Posted {
+        judgments: vec![
+            judgment(
+                0,
+                Answer::Failed,
+                "Dragging Bread's handle scrolled the list instead of moving the row.",
+                vec![],
+            ),
+            judgment(1, Answer::CouldntCheck, "Bread never moved.", vec![]),
+        ],
+        side_finds: vec![],
+        notes: None,
+        probed: None,
+    };
+    post(&mut run, &mut t, "items/003-reorder", Platform::Android, failed, 4)?;
+    run.review(
+        t.tick(1),
+        "items/003-reorder",
+        Platform::Android,
+        Call::Verify {
+            claim: "Dragging a row's handle scrolls the list instead".into(),
+        },
+        "Seen once: reproduce it on a fresh attempt",
+    )?;
+    // And one running now.
+    run.dispatch(t.tick(0), "items/003-reorder", Platform::Ios, |_, _| {
+        "brief".into()
+    })?;
+    std::fs::write(
+        run_dir.join(SUMMARY_FILE),
+        soundcheck::report::run_summary(&run, label).to_string(),
+    )?;
+    println!("wrote {}", run_dir.display());
     Ok(())
 }
 
