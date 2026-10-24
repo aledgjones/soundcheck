@@ -58,6 +58,31 @@
     applyFilter();
   });
 
+  // Appearance: Auto follows the system; Light or Dark is remembered in this browser.
+  let theme = "auto";
+  try {
+    theme = localStorage.getItem("soundcheck-theme") || "auto";
+  } catch {}
+  function applyTheme() {
+    if (theme === "light" || theme === "dark") {
+      document.documentElement.dataset.theme = theme;
+    } else {
+      delete document.documentElement.dataset.theme;
+    }
+    for (const b of document.querySelectorAll(".theme-choice")) {
+      b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
+    }
+  }
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest(".theme-choice");
+    if (!b) return;
+    theme = b.dataset.themeChoice;
+    try {
+      localStorage.setItem("soundcheck-theme", theme);
+    } catch {}
+    applyTheme();
+  });
+
   // Screenshots open in a lightbox; the arrows step through the row's shots and Esc closes it.
   let box = null;
   let shots = [];
@@ -104,6 +129,7 @@
 
   tick();
   applyFilter();
+  applyTheme();
   setInterval(tick, 1000);
   if (!root || root.dataset.live !== "true") return;
 
@@ -139,6 +165,7 @@
         setTimeout(() => (restoring = false), 0);
         tick();
         applyFilter();
+        applyTheme();
       }
     } catch {}
     refreshing = false;

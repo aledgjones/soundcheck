@@ -5,6 +5,7 @@ pub mod hooks;
 pub mod prompt;
 pub mod reports;
 pub mod tools;
+pub mod viewer;
 
 use crate::report;
 use crate::run::event::RowRef;

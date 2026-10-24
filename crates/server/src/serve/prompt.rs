@@ -46,7 +46,10 @@ pub fn render(
     for (i, outcome) in spec.outcomes.iter().enumerate() {
         let _ = writeln!(out, "{i}. {outcome}");
     }
-    out.push('\n');
+    let _ = writeln!(
+        out,
+        "\n**As you go:** the moment you've seen an outcome hold or fail, record it with `judge`, then carry on. Don't save them for the end: the person watching the run sees your progress only through `judge`.\n"
+    );
     if let Some(pinned) = &spec.pinned {
         let _ = writeln!(
             out,
