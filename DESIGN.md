@@ -59,7 +59,7 @@ How they talk:
 
 - One process listens on localhost over HTTP: MCP (streamable HTTP, `rmcp`), the live page, its WebSocket and the event stream share one port. The plugin's MCP config runs `soundcheck mcp`, a stdio bridge that forwards every agent's tool calls to that URL.
 - **Why not stdio:** Claude Code starts a stdio MCP server once per agent, which would mean several processes fighting over the devices and the journal.
-- **Local callers only, with no secret.** It binds to 127.0.0.1, requires a `Host` of `127.0.0.1:<port>` or `localhost:<port>` (which stops a page whose domain was rebound to 127.0.0.1), and refuses any `Origin` but its own (agents and the CLI send none; the live page sends the server's). A token or fixed secret was dropped: any local process could read it and drive the emulator over adb anyway, and it would stop the plugin's MCP config being a plain fixed URL. `soundcheck view` puts the pages on the network for a phone (Aled, 2026-10-24): a separate listener that passes page requests through to the local server and refuses `/mcp`, opened only with the random key in the link it prints.
+- **Local callers only, with no secret.** It binds to 127.0.0.1, requires a `Host` of `127.0.0.1:<port>` or `localhost:<port>` (which stops a page whose domain was rebound to 127.0.0.1), and refuses any `Origin` but its own (agents and the CLI send none; the live page sends the server's). A token or fixed secret was dropped: any local process could read it and drive the emulator over adb anyway, and it would stop the plugin's MCP config being a plain fixed URL.
 
 ### 3.2 A run
 

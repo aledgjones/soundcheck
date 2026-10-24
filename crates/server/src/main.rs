@@ -45,15 +45,6 @@ enum Command {
         #[arg(long)]
         no_open: bool,
     },
-    /// Show the live run on this Mac's network, read-only, for a phone on the same Wi-Fi: prints a link with a key.
-    View {
-        /// The port the run's server is on.
-        #[arg(long, default_value_t = 7357)]
-        server: u16,
-        /// The port to serve on, at this Mac's network address.
-        #[arg(long, default_value_t = 7358)]
-        port: u16,
-    },
     /// Print one line per run event, replaying from a cursor: run it under a Monitor.
     Events {
         /// The run's folder (holding server.json).
@@ -135,7 +126,6 @@ fn main() -> ExitCode {
             open,
             no_open,
         } => serve_command(&suite, port, open, !no_open),
-        Command::View { server, port } => view_command(server, port),
         Command::Drive {
             platform,
             suite,
@@ -577,8 +567,4 @@ async fn proxy_command(action: &str, root: &Path) -> Result<String> {
             .await
             .unwrap_or_else(|_| "not running".into())),
     }
-}
-
-fn view_command(server: u16, port: u16) -> Result<()> {
-    tokio::runtime::Runtime::new()?.block_on(serve::viewer::view(server, port))
 }
