@@ -37,7 +37,7 @@ The project's regression skill gives you:
 - the **suite folder** (the one with `suite.yaml`);
 - the **platforms** to run;
 - the **scope**: every spec, or a list of spec IDs;
-- how to create tickets in the project's tracker, for triage.
+- with a tracker (`tickets` in suite.yaml), how to search and create its tickets, for triage.
 
 ## 1. Start
 
@@ -109,11 +109,13 @@ To run specs again or add new ones, at any point, call `queue` with spec IDs or 
 Go through the open problems with the person, usually at the end, one at a time: what failed (the outcome, expected versus observed), how sure you are (verified or a single attempt), and your suggestion. They decide; you record it with `triage`:
 
 - **dismiss:** not a bug, or not reproduced;
-- **fix:** create a ticket in the project's tracker. It can only be recorded once the row has passed again on a build with the fix;
-- **defer:** create a ticket; it's accepted for this release;
+- **fix:** it can only be recorded once the row has passed again on a build with the fix;
+- **defer:** it's accepted for this release;
 - **duplicate:** of an earlier problem, which it then follows.
 
-**Existing tickets are matched with the person, never automatically.** Before proposing a new ticket, search the tracker for an open one that covers the problem. If you find one, suggest it with its key and summary, and wait. The person decides:
+How fix and defer are recorded follows the suite. With a tracker (`tickets` in suite.yaml), each needs a ticket, as below. Without one, the report is the record: leave `ticket` out, and make the reason say what was decided and what happens next, since nobody will look anywhere else.
+
+**With a tracker, existing tickets are matched with the person, never automatically.** Before proposing a new ticket, search the tracker for an open one that covers the problem. If you find one, suggest it with its key and summary, and wait. The person decides:
 
 - **the same bug:** record `fix` or `defer` with that ticket;
 - **similar but its own bug:** create a new ticket and link it to the existing one ("relates to"), so the two stay together.

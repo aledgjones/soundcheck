@@ -851,14 +851,27 @@ fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
 
     run.finish(30).unwrap();
     let err = run
-        .triage(31, 1, Decision::Defer { ticket: " ".into() }, "known")
+        .triage(
+            31,
+            1,
+            Decision::Defer {
+                ticket: Some(" ".into()),
+            },
+            "known",
+        )
         .unwrap_err();
-    assert!(err.to_string().contains("need a ticket"));
+    assert!(err.to_string().contains("can't be blank"));
+    run.triage(31, 1, Decision::Defer { ticket: None }, "known, noted here")
+        .unwrap();
+    assert!(matches!(
+        &run.state().problem(1).unwrap().status,
+        Status::Deferred { ticket: None, .. }
+    ));
     run.triage(
         31,
         1,
         Decision::Defer {
-            ticket: "SA-700".into(),
+            ticket: Some("SA-700".into()),
         },
         "rare, ships next release",
     )
@@ -879,7 +892,7 @@ fn fixed_needs_a_later_pass_of_its_row() {
             5,
             1,
             Decision::Fix {
-                ticket: "SA-701".into(),
+                ticket: Some("SA-701".into()),
             },
             "fix landed",
         )
@@ -904,7 +917,7 @@ fn fixed_needs_a_later_pass_of_its_row() {
         20,
         2,
         Decision::Fix {
-            ticket: "SA-702".into(),
+            ticket: Some("SA-702".into()),
         },
         "flicker fixed",
     )
@@ -1002,7 +1015,7 @@ fn triage_survives_a_reopen() {
         5,
         1,
         Decision::Defer {
-            ticket: "SA-703".into(),
+            ticket: Some("SA-703".into()),
         },
         "later",
     )
@@ -1010,7 +1023,7 @@ fn triage_survives_a_reopen() {
     drop(run);
     let run = Run::open(plan(false), &path, 0).unwrap();
     assert!(
-        matches!(&run.state().problem(1).unwrap().status, Status::Deferred { ticket, .. } if ticket == "SA-703")
+        matches!(&run.state().problem(1).unwrap().status, Status::Deferred { ticket, .. } if ticket.as_deref() == Some("SA-703"))
     );
 }
 
@@ -1076,7 +1089,7 @@ fn a_js_fix_reruns_open_problems_and_listed_rows_only() {
         50,
         1,
         Decision::Fix {
-            ticket: "SA-704".into(),
+            ticket: Some("SA-704".into()),
         },
         "undo fixed",
     )

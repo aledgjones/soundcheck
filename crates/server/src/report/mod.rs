@@ -1014,7 +1014,11 @@ fn problems(page: &Page) -> String {
             esc(&feature)
         )
     };
-    let ticket = |t: &str| format!("<span class=\"chip ticket\">{}</span>", esc(t));
+    let ticket = |t: &Option<String>| {
+        t.as_deref().map_or(String::new(), |t| {
+            format!("<span class=\"chip ticket\">{}</span>", esc(t))
+        })
+    };
     let mut out = String::from("<section class=\"block\" id=\"problems\"><h2>Problems</h2>");
     let mut group = |title: &str, items: Vec<String>| {
         if !items.is_empty() {

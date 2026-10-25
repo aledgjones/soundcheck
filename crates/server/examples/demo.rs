@@ -345,7 +345,7 @@ fn main() -> Result<()> {
         t.tick(8),
         finding,
         Decision::Defer {
-            ticket: "LAR-41".into(),
+            ticket: Some("LAR-41".into()),
         },
         "Real, but long lists are rare; accepted for 3.4.0",
     )?;

@@ -834,8 +834,10 @@ impl Run {
             bail!("no problem {problem}");
         };
         match &decision {
-            Decision::Fix { ticket } | Decision::Defer { ticket } if ticket.trim().is_empty() => {
-                bail!("fixed and deferred problems need a ticket")
+            Decision::Fix { ticket: Some(t) } | Decision::Defer { ticket: Some(t) }
+                if t.trim().is_empty() =>
+            {
+                bail!("a ticket can't be blank; leave it out when the report is the only record")
             }
             Decision::Fix { .. } => {
                 let passed_later = matches!(

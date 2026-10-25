@@ -899,12 +899,28 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: record a triage decision the person made: dismiss, fix (ticket; its row must have passed again), defer (ticket) or duplicate of another problem."
+        description = "Coordinator: record a triage decision the person made: dismiss, fix (its row must have passed again), defer, or duplicate of another problem. Fix and defer take the ticket when the suite names a tracker; without one, the reason is the record."
     )]
     async fn triage(
         &self,
         Parameters(p): Parameters<TriageParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let tracked = self
+            .hub
+            .suite()
+            .config
+            .as_ref()
+            .is_some_and(|c| c.tickets.is_some());
+        if tracked
+            && matches!(
+                p.decision,
+                Decision::Fix { ticket: None } | Decision::Defer { ticket: None }
+            )
+        {
+            return reply(Err(anyhow::anyhow!(
+                "this suite tracks findings in a tracker (`tickets` in suite.yaml), so fixed and deferred problems need its ticket"
+            )));
+        }
         reply(self.hub.with_run(|run, now| {
             run.triage(now, p.problem, p.decision, &p.reason)?;
             Ok(json!({ "triaged": p.problem, "verdict": run.verdict() }))

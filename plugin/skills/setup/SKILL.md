@@ -27,7 +27,7 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
 7. **Installing a build** on each device, if soundcheck should do it.
 8. **Data checks** testers may need, e.g. "what's in the database for this account".
 9. **Network:** will specs take the app offline or drop its network? On a device that goes through soundcheck's proxy, so list each local service the app reaches (API, sync, file storage…) with its real port, and pick a port for the proxy to listen on. The project's test builds must point the app at the listen ports, including any URL the backend hands out (signed file URLs). The device's store or other internet services stay outside it. Skip it for a suite with no offline specs.
-10. **Tickets:** the tracker and its link format, for triage.
+10. **Findings:** "How do you want to track findings?" In a tracker (Jira, Linear, GitHub Issues…): its link format goes in `tickets.url`, and how to search and create tickets goes in the regression skill. In the report only: leave `tickets` out, and each triage decision's reason is the record.
 11. **Where things live:** the suite folder (usually the project skill's own folder, with the specs in `suite/`) and where runs are written.
 
 ## 2. Write the suite
@@ -65,7 +65,7 @@ hooks:
 seeds: [empty, one-score]
 specs: suite
 reports: ../../../reports # relative to suite.yaml; runs are written here
-tickets:
+tickets: # only with a tracker; fixed and deferred problems then need its ticket
   url: https://example.atlassian.net/browse/{id}
 network: # only for offline specs: the test build reaches `listen`, `upstream` really serves it
   proxy:
@@ -95,7 +95,7 @@ It holds what's specific to this project, never soundcheck's generic steps:
 - when the project runs a regression, and with what scope. A release process usually chooses the scope and calls this skill;
 - the accounts and how each device is prepared (emulator model, simulator, sign-in);
 - known device quirks and their workarounds;
-- how to create tickets during triage;
+- with a tracker, how to search and create tickets during triage;
 - then: hand the suite folder, platforms and scope to `soundcheck:run`.
 
 ## 4. Allow soundcheck's tools

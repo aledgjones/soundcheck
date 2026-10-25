@@ -86,6 +86,19 @@ async fn call(
 }
 
 #[tokio::test]
+async fn a_suite_with_a_tracker_needs_its_ticket() {
+    let (_server, url) = server().await;
+    let client = client(&url).await;
+    let refused = call(
+        &client,
+        "triage",
+        json!({"problem": 1, "decision": {"decision": "defer"}, "reason": "known"}),
+    )
+    .await;
+    assert!(refused.as_str().unwrap().contains("need its ticket"));
+}
+
+#[tokio::test]
 async fn a_run_in_use_keeps_its_port() {
     let (server, url) = server().await;
     let step_down = || {

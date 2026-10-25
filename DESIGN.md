@@ -99,8 +99,9 @@ Each spec on each platform moves through `not run → running → needs review �
   - All attempts stay in the journal.
 - **Triage** happens in chat: the person with the coordinator, who records each decision through the server and creates the tickets, so the page (read-only) updates live. Matching a problem to an existing ticket is collaborative, never automatic (Aled, 2026-10-21): the coordinator searches the tracker and suggests a ticket; the person says whether it's the same bug (recorded under that ticket) or similar but its own (a new ticket, linked to the existing one). It's usually at the end of the run but possible at any time (a serious problem mid-run may need a fix decision straight away). Each open problem is:
   - **dismissed**: not a bug, or not reproduced;
-  - **fixed**: a ticket is created and the fix lands;
-  - **deferred**: a ticket is created and it's accepted for this release.
+  - **fixed**: the fix lands;
+  - **deferred**: it's accepted for this release.
+  - Tickets are optional (SA-703, 2026-10-25): a suite that names a tracker (`tickets`) needs one for fixed and deferred, and one without keeps findings in the report only, where each decision's reason is the record. One rule, no mode switch, so a project without a tracker can still triage.
 - **Side finds:** a tester that finds a problem outside the spec's outcomes while probing posts it as its own finding, linked to the row. The row keeps its own result, and the finding is reviewed like any non-pass. Its id (for `review_find`) is on the posted event's line and in `status`, beside its summary. Probing near old bugs is where new ones turn up.
   - **A finding's screenshots are on its topic** (Aled, 2026-10-21). They're there to help the person understand the problem, not to prove it: a finding about the eraser slider showed pen marks, which told him nothing. A side find never inherits the server's end-of-spec capture; that stays with failed rows. The tester attaches only shots of the control or screen the problem is about, including when the problem itself isn't visible (a spoken value): the screen may contradict the claim, and that's worth seeing. `review_find` keeps only the on-topic shots, whether they confirm the claim or not, and a finding with none says so on the page.
   - **Evidence on request** (Aled, 2026-10-21). When the person asks in triage for a screenshot of a problem, the coordinator reproduces it on the fly (the seed hook, then `soundcheck drive`) and `add_evidence` puts the shot on the problem, filed under its original attempt. It goes on whether it confirms the claim or contradicts it: a finding said the eraser slider read 102%, and a shot reading 100% is what starts the conversation that the text alone couldn't. No targeted-rerun command: the evidence is what matters, not a new result.
@@ -175,7 +176,7 @@ A run continues across builds. When an urgent fix lands mid-run, the run carries
   - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
   - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
   - **Problem titles are written by the coordinator** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
-  - **One badge per problem, on the left:** an open problem shows **Failure** (red) or **Finding** (amber); a fixed or deferred one shows its ticket; a dismissed one a muted "Dismissed". The right side says only where it happened. "Verified" and "side find" go in the detail. The approved mockup: `design/report-mockup.html` (published at https://claude.ai/artifact/2vwanZhfugrneZJQqJq49Q)
+  - **One badge per problem, on the left:** an open problem shows **Failure** (red) or **Finding** (amber); a fixed or deferred one shows its ticket, or nothing without a tracker; a dismissed one a muted "Dismissed". The right side says only where it happened. "Verified" and "side find" go in the detail. The approved mockup: `design/report-mockup.html` (published at https://claude.ai/artifact/2vwanZhfugrneZJQqJq49Q)
   - **A collapsed timeline** at the bottom tells the run's story from the journal, one readable line per event. It replaces today's run log.
   - **Every run can be looked at, finished or not, without exporting:** a run's server lists all runs at `/runs` and renders each from its folder, and `soundcheck serve <suite> [--open latest]` does the same with no run going ("show me the previous report"). Exports stay single files, for sharing.
 - **The report sections:** verdict rules (section 7), open problems, then triaged ones grouped as Fixed, Deferred or Dismissed, duplicates folded into their original, and time per spec and per run (plus agent cost where the coordinator can report it) so expensive specs stand out; nothing stops on budget; the notes hold harness gaps, device health and which build each row ran on. Ported from Solo Scores' `report.mjs`.
@@ -303,7 +304,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `reports`: where runs are written.
 - `models`: the default tester model (Sonnet).
 - `parallel`: false by default.
-- `tickets`: how to link a ticket ID.
+- `tickets`: how to link a ticket ID, for a project with a tracker; leave it out to keep findings in the report.
 - `network`: optional. `proxy` lists routes, each `{ name, listen, upstream }`: the app's test build reaches `listen`, and `upstream` really serves it. Soundcheck knows ports only; which services exist and why is the project's business. `soundcheck proxy serve` runs the proxies (a run or `soundcheck drive` starts it, detached, when it isn't up, and it keeps running between runs so the test build always reaches its services; one started before the installed soundcheck was built is replaced, so it never lacks a command); `status` and `stop` manage it. Android forwards each `listen` port with `adb reverse` to the same port; the iOS simulator shares the Mac's ports. One proxy serves every platform, so a suite with `network` can't run platforms in parallel.
 
 ### 5.3 Hooks
@@ -400,8 +401,8 @@ The soundcheck repo ships as a Claude Code plugin:
 - **Problems are app bugs and findings only.** Harness gaps and device glitches go in the run's notes.
 - **Triage outcomes** (3.3):
   - **Dismissed:** not a bug, or not reproduced. A problem that only passed on a rerun is Dismissed, never Fixed.
-  - **Fixed:** a fix landed. Needs a ticket.
-  - **Deferred:** accepted for this release. Needs a ticket.
+  - **Fixed:** a fix landed. Needs a ticket when the suite names a tracker.
+  - **Deferred:** accepted for this release. Needs a ticket when the suite names a tracker.
 - **Failure or finding, never a severity** (Aled, 2026-10-21). A **failure** blocks the release until it's triaged: every upheld FAIL, including a test the app stopped. A **finding** doesn't block but still needs a decision: side finds, "not reproduced" ones, UX or accessibility observations. "Not exactly the test case, but something to think about." The kind follows from where the problem came from, so the coordinator never grades it, and a confirmed FAIL can't be labelled anything milder.
 - **Duplicates fold into the original** (`duplicateOf`).
 

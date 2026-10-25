@@ -165,10 +165,18 @@ pub enum Status {
     Open,
     /// Not a bug, or not reproduced.
     Dismissed { reason: String },
-    /// A fix landed, proven by a later pass of its row.
-    Fixed { ticket: String, reason: String },
+    /// A fix landed, proven by a later pass of its row. No ticket when the project tracks findings in the report.
+    Fixed {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+        reason: String,
+    },
     /// Accepted for this release.
-    Deferred { ticket: String, reason: String },
+    Deferred {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+        reason: String,
+    },
     /// Folded into the original: its platform and evidence join it, and the original's status applies.
     Duplicate { of: u32 },
 }
@@ -178,9 +186,18 @@ pub enum Status {
 #[serde(tag = "decision", rename_all = "kebab-case")]
 pub enum Decision {
     Dismiss,
-    Fix { ticket: String },
-    Defer { ticket: String },
-    Duplicate { of: u32 },
+    /// `ticket` is required when the suite names a tracker (`tickets` in suite.yaml).
+    Fix {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+    },
+    Defer {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ticket: Option<String>,
+    },
+    Duplicate {
+        of: u32,
+    },
 }
 
 /// The build installed on a platform, as the project's build-identity hook reports it.
