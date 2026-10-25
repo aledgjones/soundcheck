@@ -56,6 +56,15 @@ enum Command {
         #[arg(long)]
         once: bool,
     },
+    /// Whether a platform can take a spec: exits 0 when it can, else 1 with why it's held (a restart, a busy Mac).
+    Ready {
+        /// The run's folder (holding server.json).
+        run: PathBuf,
+        platform: Platform,
+        /// Ask every 15 s until the platform is free, then exit; for running in the background after a held dispatch.
+        #[arg(long)]
+        wait: bool,
+    },
     /// The plugin's MCP server over stdio: forwards each tool call to the run serving on the port.
     Mcp {
         #[arg(long, default_value_t = 7357)]
@@ -113,6 +122,11 @@ fn main() -> ExitCode {
         Command::Lint { suite } => return lint_command(&suite),
         Command::Run(args) => run_command(args),
         Command::Events { run, after, once } => events_command(&run, after, once),
+        Command::Ready {
+            run,
+            platform,
+            wait,
+        } => ready_command(&run, platform, wait),
         Command::Proxy { action, suite } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(proxy_command(&action, &suite)))
@@ -499,11 +513,7 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
         }
         return Ok(());
     }
-    let info: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(run_dir.join("server.json"))
-            .context("no server.json: is the run started?")?,
-    )?;
-    let url = info["url"].as_str().context("server.json: url")?;
+    let url = server_url(run_dir)?;
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let mut response = reqwest::Client::new()
@@ -525,6 +535,53 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
         }
         writeln!(out, "the run's server stopped")?;
         Ok(())
+    })
+}
+
+fn server_url(run_dir: &Path) -> Result<String> {
+    let info: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(run_dir.join("server.json"))
+            .context("no server.json: is the run started?")?,
+    )?;
+    Ok(info["url"]
+        .as_str()
+        .context("server.json: url")?
+        .to_string())
+}
+
+fn ready_command(run_dir: &Path, platform: Platform, wait: bool) -> Result<()> {
+    let url = format!("{}/ready/{platform}", server_url(run_dir)?);
+    let started = std::time::Instant::now();
+    let mut held = None;
+    tokio::runtime::Runtime::new()?.block_on(async {
+        let client = reqwest::Client::new();
+        loop {
+            // A stopped server is an error, so a background wait never outlives its run.
+            let response = client.get(&url).send().await?;
+            let status = response.status();
+            let text = response.text().await?.trim().to_string();
+            if status.is_success() {
+                match held {
+                    Some(why) => println!(
+                        "{text} after {} s (held: {why})",
+                        started.elapsed().as_secs()
+                    ),
+                    None => println!("{text}"),
+                }
+                return Ok(());
+            }
+
+            if status != reqwest::StatusCode::CONFLICT {
+                bail!("{url}: {status} {text}");
+            }
+
+            if !wait {
+                bail!("{platform} held: {text}");
+            }
+
+            held = Some(text);
+            tokio::time::sleep(std::time::Duration::from_millis(serve::READY_POLL_MS)).await;
+        }
     })
 }
 

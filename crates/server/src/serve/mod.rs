@@ -166,8 +166,10 @@ pub struct Hub {
     restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
     /// When each platform's device was last restarted, so a device that stays degraded isn't rebooted in a loop.
     last_restart: Mutex<std::collections::HashMap<Platform, u64>>,
-    /// Platforms whose dispatches wait, for a restart or a busy host to settle: platform → why.
-    held: Mutex<std::collections::HashMap<Platform, String>>,
+    /// Platforms whose device is restarting, so their dispatches wait: platform → why.
+    restarting: Mutex<std::collections::HashMap<Platform, String>>,
+    /// Each platform's current or just-ended wait for a busy host, until a dispatch journals it.
+    waits: Mutex<std::collections::HashMap<Platform, Wait>>,
     /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
     gave_up: Mutex<std::collections::HashMap<Platform, u64>>,
     /// Each running tester's last full read of the screen and when, saved with a FAIL: by the time it posts, the
@@ -179,8 +181,26 @@ pub struct Hub {
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
 /// How long dispatches wait for a busy host before going ahead; a simulator's boot settled in about four minutes.
 const HOST_WAIT_MAX_MS: u64 = 10 * 60_000;
-const HOST_WAIT_POLL_MS: u64 = 15_000;
+/// How often `soundcheck ready --wait` asks whether a held platform is free.
+pub const READY_POLL_MS: u64 = 15_000;
 pub const START_STALL_MS: u64 = 10 * 60_000;
+
+/// A wait for a busy host: when it started, the latest reading, and when it ended and whether the host settled.
+struct Wait {
+    started: u64,
+    reason: String,
+    ended: Option<(u64, bool)>,
+}
+
+impl Wait {
+    fn new(started: u64) -> Wait {
+        Wait {
+            started,
+            reason: String::new(),
+            ended: None,
+        }
+    }
+}
 
 impl Hub {
     pub fn new(suite: Suite, run: Run, label: String, run_dir: PathBuf, stall_ms: u64) -> Arc<Hub> {
@@ -198,7 +218,8 @@ impl Hub {
             headed: false,
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
-            held: Mutex::new(std::collections::HashMap::new()),
+            restarting: Mutex::new(std::collections::HashMap::new()),
+            waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
         })
@@ -536,15 +557,15 @@ impl Hub {
         Err(last)
     }
 
-    /// Why a dispatch on `platform` must wait, after starting what it waits for: a due restart, or a busy host. The
-    /// dispatch refuses straight away rather than blocking (a tool call times out long before a boot settles), and
-    /// the platform's `ready` event says when to dispatch again.
-    pub async fn hold(self: &Arc<Self>, spec: &str, platform: Platform) -> Option<String> {
+    /// Why `platform` can't take a spec yet, after starting what it waits for: a due restart, or a busy host. It's
+    /// checked on demand, by a dispatch and by `soundcheck ready`, so nothing has to watch for the hold to end. A
+    /// dispatch refuses rather than blocking, since a tool call times out long before a boot settles.
+    pub async fn hold(self: &Arc<Self>, platform: Platform) -> Option<String> {
         if self.without_devices.contains(&platform) {
             return None;
         }
         if let Some(reason) = self
-            .held
+            .restarting
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(&platform)
@@ -559,9 +580,11 @@ impl Hub {
         if let Some((after, reason)) = due {
             let held =
                 format!("restarting the {platform} device, degraded after {after} ({reason})");
-            self.hold_for(platform, &held);
+            self.restarting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(platform, held.clone());
             let hub = self.clone();
-            let spec = spec.to_string();
             tokio::spawn(async move {
                 let restarted = hub
                     .on_device(platform, async |d| d.device.restart().await)
@@ -574,7 +597,10 @@ impl Hub {
                     let _ = hub
                         .with_run(|run, now| run.device_restarted(now, platform, &after, &reason));
                 }
-                hub.watch_host(&spec, platform, "restarted".into()).await;
+                hub.restarting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&platform);
             });
             return Some(held);
         }
@@ -588,22 +614,55 @@ impl Hub {
             return None;
         }
         let busy = self.host_busy(platform).await;
+        let now = now_ms();
+        let mut waits = self.waits.lock().unwrap_or_else(|e| e.into_inner());
         if busy.is_empty() {
+            if let Some(wait) = waits.get_mut(&platform) {
+                wait.ended.get_or_insert((now, true));
+            }
+
             return None;
         }
-        let held = format!("the Mac is busy ({})", busy.join(", "));
-        self.hold_for(platform, &held);
-        let hub = self.clone();
-        let spec = spec.to_string();
-        tokio::spawn(async move { hub.watch_host(&spec, platform, busy.join(", ")).await });
-        Some(held)
+
+        let reason = busy.join(", ");
+        let wait = waits
+            .entry(platform)
+            .and_modify(|w| {
+                if w.ended.is_some() {
+                    *w = Wait::new(now);
+                }
+            })
+            .or_insert_with(|| Wait::new(now));
+        wait.reason = reason.clone();
+        if now.saturating_sub(wait.started) >= HOST_WAIT_MAX_MS {
+            wait.ended = Some((now, false));
+            self.gave_up
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(platform, now);
+            return None;
+        }
+
+        Some(format!("the Mac is busy ({reason})"))
     }
 
-    fn hold_for(&self, platform: Platform, reason: &str) {
-        self.held
+    /// Journals the wait a dispatch on `platform` has just ended, if there was one, against the spec it let through.
+    pub fn end_wait(&self, spec: &str, platform: Platform) {
+        let wait = self
+            .waits
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(platform, reason.to_string());
+            .remove(&platform);
+        if let Some(Wait {
+            started,
+            reason,
+            ended: Some((at, settled)),
+        }) = wait
+        {
+            let waited = at.saturating_sub(started);
+            let _ = self
+                .with_run(|run, now| run.host_busy(now, platform, spec, &reason, waited, settled));
+        }
     }
 
     async fn host_busy(&self, platform: Platform) -> Vec<String> {
@@ -611,36 +670,6 @@ impl Hub {
             .await
             .map(|h| h.busy)
             .unwrap_or_default()
-    }
-
-    /// Waits for the host to settle, up to [`HOST_WAIT_MAX_MS`], then releases the platform and journals its
-    /// `ready` event, which is the coordinator's cue to dispatch again.
-    async fn watch_host(&self, spec: &str, platform: Platform, mut reason: String) {
-        let started = now_ms();
-        let settled = loop {
-            let busy = self.host_busy(platform).await;
-            if busy.is_empty() {
-                break true;
-            }
-            reason = busy.join(", ");
-            // A refused dispatch quotes the latest reading, not the one that started the hold.
-            self.hold_for(platform, &format!("the Mac is busy ({reason})"));
-            if now_ms().saturating_sub(started) >= HOST_WAIT_MAX_MS {
-                self.gave_up
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(platform, now_ms());
-                break false;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(HOST_WAIT_POLL_MS)).await;
-        };
-        self.held
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&platform);
-        let waited = now_ms().saturating_sub(started);
-        let _ =
-            self.with_run(|run, now| run.host_busy(now, platform, spec, &reason, waited, settled));
     }
 
     /// Samples the device's health after an attempt posted and journals it with that attempt. A degraded device is
@@ -954,6 +983,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     let app = axum::Router::new()
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
+        .route("/ready/{platform}", get(ready))
         .route("/", get(page))
         .route("/fragment", get(fragment))
         .route("/download", get(download))
@@ -1086,6 +1116,14 @@ struct EventsQuery {
 
 /// Newline-delimited journal entries after `after`, then each new one as it's written. Replaying from a cursor
 /// means a coordinator whose Monitor lapsed misses nothing.
+/// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
+async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> Response {
+    match hub.hold(platform).await {
+        None => (StatusCode::OK, format!("{platform} ready\n")).into_response(),
+        Some(why) => (StatusCode::CONFLICT, format!("{why}\n")).into_response(),
+    }
+}
+
 async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>) -> Response {
     // Subscribe before reading history, so nothing written in between is lost.
     let mut live = hub.events.subscribe();

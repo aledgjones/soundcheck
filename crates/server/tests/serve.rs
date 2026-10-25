@@ -86,6 +86,16 @@ async fn call(
 }
 
 #[tokio::test]
+async fn ready_answers_whether_a_platform_can_take_a_spec() {
+    let (_server, url) = server().await;
+    let response = reqwest::get(format!("{url}/ready/ios")).await.unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.text().await.unwrap(), "ios ready\n");
+    let unknown = reqwest::get(format!("{url}/ready/desktop")).await.unwrap();
+    assert!(unknown.status().is_client_error());
+}
+
+#[tokio::test]
 async fn only_this_machines_own_callers_are_answered() {
     let (server, url) = server().await;
     let port = server.addr.port();

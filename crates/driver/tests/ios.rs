@@ -49,7 +49,7 @@ async fn the_ios_driver_reads_and_drives_settings() {
     driver.wait(&m("General"), 15_000).await.unwrap();
 
     let health = driver.device.health().await.unwrap();
-    for fact in ["Mac memory", "Mac load", "launch"] {
+    for fact in ["Mac memory", "Mac CPU", "launch"] {
         assert!(
             health.facts.iter().any(|f| f.starts_with(fact)),
             "no {fact} in {:?}",

@@ -107,6 +107,7 @@ Add these rules to the project's `.claude/settings.json` under `permissions.allo
 "Bash(soundcheck lint:*)",
 "Bash(soundcheck run:*)",
 "Bash(soundcheck events:*)",
+"Bash(soundcheck ready:*)",
 "Bash(soundcheck serve:*)",
 "Bash(soundcheck drive:*)"
 ```

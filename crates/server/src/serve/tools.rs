@@ -769,12 +769,14 @@ impl Tools {
         if let Err(e) = hub.with_run(|run, _| run.check_dispatch(&p.spec, p.platform)) {
             return reply(Err(e));
         }
-        if let Some(reason) = hub.hold(&p.spec, p.platform).await {
+        if let Some(reason) = hub.hold(p.platform).await {
             return reply(Err(anyhow::anyhow!(
-                "held: {reason}. Dispatch again after the `{} ready` event",
+                "held: {reason}. Run `soundcheck ready {} {} --wait` in the background, and dispatch again when it exits",
+                hub.run_dir.display(),
                 p.platform
             )));
         }
+        hub.end_wait(&p.spec, p.platform);
         let seeded = match hub.prepare(spec, p.platform).await {
             Ok(context) => context,
             Err(e) => {

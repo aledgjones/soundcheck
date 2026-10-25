@@ -4,6 +4,7 @@ description: "Coordinate a soundcheck regression run: start the server, dispatch
 allowed-tools:
   - Bash(soundcheck run:*)
   - Bash(soundcheck events:*)
+  - Bash(soundcheck ready:*)
   - Bash(soundcheck lint:*)
   - Bash(soundcheck drive:*)
   - Monitor
@@ -51,7 +52,7 @@ The project's regression skill gives you:
 - Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `prompt` as its prompt, **unchanged**, and the token as its description.
 - A tester's final reply is one line (token, claim, side finds). Its judgments and evidence are on the server: read them with `status` when you review, not from the reply.
 - One spec runs at a time unless the suite says `parallel: true`. The server refuses a second dispatch and says why; that's your cue to wait for the next event.
-- A dispatch refused with `held:` means the platform is restarting or the Mac is busy. Wait for its `<platform> ready` event, then dispatch again.
+- A dispatch refused with `held:` means the platform is restarting or the Mac is busy. Run `soundcheck ready <run folder> <platform> --wait` in the background (not under a Monitor): it asks every 15 s and exits once the platform can take a spec, at most about 10 minutes later. Dispatch again when it exits. If it exits with an error, the server has stopped.
 - When a tester posts (`posted … filed` or `needs review`) or stalls (`stalled … queued again`), dispatch the next spec straight away, **before** reviewing anything. Reviews never hold up testing.
 - Queued rows (send-backs, verifications, stalls) go before untested specs.
 - A tester that never starts (the agent failed to launch, or its first call never comes) stalls after 10 minutes on its own. When you know it's gone, `queue` its spec with the reason instead of waiting: the attempt is abandoned and the row is free.

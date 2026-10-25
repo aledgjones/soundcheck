@@ -295,10 +295,10 @@ mod tests {
     #[test]
     fn a_busy_host_isnt_a_degraded_device() {
         let mut health = Health::default();
-        health.host("Mac load 46.2 on 10 cores".into(), true);
+        health.host("Mac CPU 95% busy".into(), true);
         health.measure("launch 1.2 s".into(), false);
         assert!(health.degraded.is_empty());
-        assert_eq!(health.busy, ["Mac load 46.2 on 10 cores"]);
+        assert_eq!(health.busy, ["Mac CPU 95% busy"]);
         assert_eq!(health.facts.len(), 2);
     }
 }

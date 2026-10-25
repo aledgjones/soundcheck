@@ -109,7 +109,7 @@ pub fn summary(entry: &Entry) -> String {
             waited_ms,
             settled,
         } => format!(
-            "{platform} ready: held {} s before {spec} ({reason}){}",
+            "{platform} waited {} s for the Mac before {spec} ({reason}){}",
             waited_ms / 1000,
             if *settled {
                 ""
