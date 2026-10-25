@@ -399,7 +399,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                         .map_err(|e| soundcheck_driver::DriverError::Invalid(e.to_string()))?;
                     d.wait(&m, 30_000).await.map_err(|_| {
                         soundcheck_driver::DriverError::NotFound(format!(
-                            "{label:?} didn't show after launching: is the app signed in and past onboarding?"
+                            "{label:?} didn't show after launching; run `soundcheck drive {platform} see` from the suite folder to see what the screen shows"
                         ))
                     })?;
                 }
