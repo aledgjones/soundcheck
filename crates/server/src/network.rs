@@ -22,13 +22,36 @@ pub fn routes(config: &SuiteConfig) -> Option<Vec<Route>> {
     )
 }
 
-/// The running proxy for these routes, starting it detached when it isn't up.
+/// A proxy started before this soundcheck was built, or too old to say when it started.
+fn stale(started: &str, exe: &Path) -> bool {
+    let built = std::fs::metadata(exe)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_secs());
+    started
+        .parse::<u64>()
+        .map_or(true, |started| started < built)
+}
+
+/// The running proxy for these routes, starting it detached when it isn't up, or replacing it when it's stale.
 pub async fn ensure(suite_root: &Path, routes: &[Route]) -> Result<Network> {
     let socket = proxy::socket_path(routes);
-    if proxy::command(&socket, "status").await.is_ok() {
-        return Ok(Network { socket });
-    }
     let exe = std::env::current_exe().context("finding soundcheck to start the proxy")?;
+    if let Ok(started) = proxy::command(&socket, "started").await {
+        if !stale(&started, &exe) {
+            return Ok(Network { socket });
+        }
+
+        // It outlives installs, so one started before this build may lack its commands.
+        let _ = proxy::command(&socket, "stop").await;
+        for _ in 0..50 {
+            if proxy::command(&socket, "status").await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
     {
         use std::os::unix::process::CommandExt;
         // Its own process group, so it outlives the run or drive command that started it.

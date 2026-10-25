@@ -296,6 +296,22 @@ impl<D: Device> Driver<D> {
         }
     }
 
+    /// Has the suite's proxy answer HTTP requests to `path` (`*` for any one segment) with `status` instead of
+    /// passing them on, until cleared; returns every fault now set. Only the proxy can, so web refuses it.
+    pub async fn fault(&self, path: &str, status: u16) -> Result<String> {
+        match &self.network {
+            Some(n) => n.fault(path, status).await,
+            None => Err(self.device.unsupported("fault")),
+        }
+    }
+
+    pub async fn fault_clear(&self) -> Result<()> {
+        match &self.network {
+            Some(n) => n.fault_clear().await,
+            None => Err(self.device.unsupported("fault")),
+        }
+    }
+
     /// Places with a held touch from `from` (to `to` for a line or stroke), screenshots the preview while held,
     /// releases, screenshots what was saved, and compares the two inside a region around the touch, so a magnifier
     /// above it stays out. With `commit`, nothing is held: the preview is what's on screen now, and tapping `commit`

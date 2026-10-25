@@ -49,7 +49,7 @@ Erase across two strokes at once; change the eraser width first.
 | `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem |
 | `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                              |
 | `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                         |
-| `tools`             | Optional driver tools beyond the basics: `double-tap` (a quick double tap), `network-drop` (the network dies quietly, then comes back), `offline` (airplane mode until brought back) |
+| `tools`             | Optional driver tools beyond the basics: `double-tap` (a quick double tap), `network-drop` (the network dies quietly, then comes back), `offline` (airplane mode until brought back), `fault` (a service answers one request path with an error status until cleared) |
 | `keyboard`          | `software` when an outcome is about the on-screen keyboard; otherwise a hardware keyboard is connected (iOS), so typing is fast            |
 | `past-bugs`         | Tickets this spec guards                                                                                                                   |
 | `proven-failing-on` | Builds where this spec caught a real bug. Only record what actually happened; never fill it in to look trustworthy                         |
@@ -88,6 +88,8 @@ Most specs start this way.
 ## Offline and network specs
 
 `offline` and `network-drop` cut the app's own services through the suite's network proxy (`network` in `suite.yaml`); lint refuses them on a device without it. They don't cut what the device reaches on the internet itself, such as a store: a spec about the store being unreachable needs the device's own airplane mode, which only Android has, so it's Android-only. In the spec, say when to go offline and when to come back; the run brings the network back after the spec anyway. Pick `offline` for "no connection" (the app should say so at once) and `network-drop` for a connection that dies quietly in the background.
+
+`fault <path> <status>` has one of those services refuse one kind of request while everything else works, as when the server fails or turns a request down: `fault /write 503`, or `fault /files/*/upload-url 403` (`*` is any one path segment; the query string doesn't count). It stays until the tester clears it, and the run clears it after the spec. Name the request by its path in the spec's steps, which is the one place a spec mentions one: the path is the project's, and the tester can't find it any other way. Faults need the proxy too, so they're Android and iOS only.
 
 ## Rewording a spec flagged "spec unclear"
 

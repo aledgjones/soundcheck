@@ -118,6 +118,11 @@ pub const TOOLS: &[Tool] = &[
         ALL,
         "take the app offline (connections refused, as in airplane mode) until it is brought back online",
     ),
+    mechanic(
+        "fault",
+        &[Platform::Android, Platform::Ios],
+        "have a service answer requests to one path with an error status, until cleared",
+    ),
 ];
 
 impl Tool {

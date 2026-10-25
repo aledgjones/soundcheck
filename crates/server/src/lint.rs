@@ -22,7 +22,7 @@ fn driver_platform(platform: Platform) -> soundcheck_driver::Platform {
 
 pub const MODELS: &[&str] = &["haiku", "sonnet", "opus", "fable"];
 const TITLE_MAX: usize = 80;
-const NETWORK_TOOLS: &[&str] = &["network-drop", "offline"];
+const NETWORK_TOOLS: &[&str] = &["network-drop", "offline", "fault"];
 
 /// A title is the user's goal in plain words: no tap paths, IDs or commands.
 static TITLE_NOISE: LazyLock<Vec<(Regex, &'static str)>> = LazyLock::new(|| {

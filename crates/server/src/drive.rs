@@ -94,6 +94,14 @@ pub enum Action {
     },
     /// Freeze the network for N seconds (nothing passes, nothing closes), then let new connections through.
     NetworkDrop { seconds: u64 },
+    /// Have a service answer requests to a path (`*` for any one segment) with an error status, through the suite's
+    /// proxy, until `fault clear`.
+    Fault {
+        /// The request path, or `clear` to clear every fault.
+        path: String,
+        /// The HTTP status, 400–599.
+        status: Option<u16>,
+    },
     /// Compare Android's reader with uiautomator on this screen, both the full tree and the screen reader's.
     Parity,
 }
@@ -186,6 +194,14 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             d.network_drop(seconds).await?;
             format!("network down for {seconds} s; it comes back on its own")
         }
+        Action::Fault { path, status } => match (path.as_str(), status) {
+            ("clear", None) => {
+                d.fault_clear().await?;
+                "no faults".to_string()
+            }
+            (path, Some(status)) => d.fault(path, status).await?,
+            (_, None) => bail!("fault takes a path and a status, or `clear`"),
+        },
         Action::Parity => parity(&d.device).await?,
     })
 }

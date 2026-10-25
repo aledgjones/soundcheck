@@ -116,3 +116,255 @@ async fn a_later_command_outlasts_a_drop_timer() {
     );
     proxy::command(&socket, "stop").await.unwrap();
 }
+
+/// An HTTP service that answers each request on a kept-alive connection with 200 and `<path> <body bytes>`.
+async fn http(port: u16) {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        while let Ok((c, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let (r, mut w) = c.into_split();
+                let mut r = tokio::io::BufReader::new(r);
+                while let Some((path, body)) = read_message(&mut r).await {
+                    let text = format!("{path} {}", body.len());
+                    let reply = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{text}",
+                        text.len()
+                    );
+                    if w.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+}
+
+/// One request or response: its first line's second word (the path or status) and its body, length or chunked.
+async fn read_message<R: tokio::io::AsyncBufRead + Unpin>(r: &mut R) -> Option<(String, Vec<u8>)> {
+    use tokio::io::AsyncBufReadExt;
+    let mut first = String::new();
+    if r.read_line(&mut first).await.ok()? == 0 {
+        return None;
+    }
+
+    let word = first.split_whitespace().nth(1)?.to_string();
+    let (mut length, mut chunked) = (0usize, false);
+    loop {
+        let mut line = String::new();
+        r.read_line(&mut line).await.ok()?;
+        let line = line.trim_end().to_ascii_lowercase();
+        if line.is_empty() {
+            break;
+        }
+
+        if let Some(n) = line.strip_prefix("content-length:") {
+            length = n.trim().parse().ok()?;
+        }
+
+        if line == "transfer-encoding: chunked" {
+            chunked = true;
+        }
+    }
+    let mut body = Vec::new();
+    if chunked {
+        loop {
+            let mut size = String::new();
+            r.read_line(&mut size).await.ok()?;
+            let size = usize::from_str_radix(size.trim(), 16).ok()?;
+            let mut chunk = vec![0u8; size + 2];
+            if size == 0 {
+                r.read_line(&mut String::new()).await.ok()?;
+                break;
+            }
+
+            r.read_exact(&mut chunk).await.ok()?;
+            body.extend_from_slice(&chunk[..size]);
+        }
+    } else {
+        body.resize(length, 0);
+        r.read_exact(&mut body).await.ok()?;
+    }
+    Some((word, body))
+}
+
+async fn start_http(listen: u16, upstream: u16) -> std::path::PathBuf {
+    http(upstream).await;
+    let routes = [Route {
+        name: "api".into(),
+        listen,
+        upstream,
+    }];
+    let socket = proxy::socket_path(&routes);
+    tokio::spawn({
+        let socket = socket.clone();
+        async move { proxy::serve(&routes, &socket).await }
+    });
+    for _ in 0..50 {
+        if proxy::command(&socket, "status").await.is_ok() {
+            return socket;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("the proxy didn't start");
+}
+
+/// Sends one request on a kept-alive connection and returns the status and body of its response.
+async fn request(
+    conn: &mut tokio::io::BufReader<TcpStream>,
+    method: &str,
+    path: &str,
+    body: &str,
+    chunked: bool,
+) -> Option<(String, String)> {
+    let framing = if chunked {
+        format!(
+            "transfer-encoding: chunked\r\n\r\n{:x}\r\n{body}\r\n0\r\n\r\n",
+            body.len()
+        )
+    } else {
+        format!("content-length: {}\r\n\r\n{body}", body.len())
+    };
+    let req = format!("{method} {path} HTTP/1.1\r\nhost: localhost\r\n{framing}");
+    conn.get_mut().write_all(req.as_bytes()).await.ok()?;
+    let reply = tokio::time::timeout(Duration::from_secs(1), read_message(conn))
+        .await
+        .ok()??;
+    Some((reply.0, String::from_utf8_lossy(&reply.1).into_owned()))
+}
+
+async fn connect(port: u16) -> tokio::io::BufReader<TcpStream> {
+    tokio::io::BufReader::new(TcpStream::connect(("127.0.0.1", port)).await.unwrap())
+}
+
+#[tokio::test]
+async fn a_fault_answers_its_path_and_lets_the_rest_through() {
+    let socket = start_http(19104, 19004).await;
+    let mut kept = connect(19104).await;
+    assert_eq!(
+        request(&mut kept, "POST", "/write", "{}", false)
+            .await
+            .unwrap(),
+        ("200".into(), "/write 2".into())
+    );
+
+    assert_eq!(
+        proxy::command(&socket, "fault /files/*/upload-url 403")
+            .await
+            .unwrap(),
+        "online; /files/*/upload-url 403"
+    );
+    assert_eq!(
+        proxy::command(&socket, "fault /write 503").await.unwrap(),
+        "online; /files/*/upload-url 403, /write 503"
+    );
+    let (status, body) = request(&mut kept, "POST", "/write?x=1", "{\"op\":1}", false)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "503",
+        "a kept-alive connection's next request wasn't faulted"
+    );
+    assert!(body.contains("soundcheck fault"));
+    assert!(
+        request(&mut kept, "GET", "/health", "", false)
+            .await
+            .is_none(),
+        "the connection stayed open after a fault"
+    );
+
+    let mut fresh = connect(19104).await;
+    assert_eq!(
+        request(&mut fresh, "GET", "/files/p1/download-url", "", false)
+            .await
+            .unwrap()
+            .0,
+        "200"
+    );
+    assert_eq!(
+        request(
+            &mut fresh,
+            "PUT",
+            "/files/p1/upload-url",
+            "chunked body",
+            true
+        )
+        .await
+        .unwrap()
+        .0,
+        "403",
+        "a chunked body wasn't read before the answer"
+    );
+    let mut deeper = connect(19104).await;
+    assert_eq!(
+        request(&mut deeper, "POST", "/files/p1/x/upload-url", "", false)
+            .await
+            .unwrap()
+            .0,
+        "200",
+        "* matched more than one segment"
+    );
+
+    assert_eq!(
+        proxy::command(&socket, "fault clear").await.unwrap(),
+        "online"
+    );
+    let mut cleared = connect(19104).await;
+    assert_eq!(
+        request(&mut cleared, "POST", "/write", "{}", false)
+            .await
+            .unwrap()
+            .0,
+        "200"
+    );
+    assert_eq!(
+        request(&mut cleared, "PUT", "/files/p1/upload-url", "abc", true)
+            .await
+            .unwrap(),
+        ("200".into(), "/files/p1/upload-url 3".into()),
+        "a chunked body didn't pass through whole"
+    );
+    proxy::command(&socket, "stop").await.unwrap();
+}
+
+#[tokio::test]
+async fn reset_brings_the_proxy_online_with_no_faults() {
+    let socket = start_http(19105, 19005).await;
+    proxy::command(&socket, "fault /write 503").await.unwrap();
+    proxy::command(&socket, "offline").await.unwrap();
+    assert_eq!(proxy::command(&socket, "reset").await.unwrap(), "online");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let mut conn = connect(19105).await;
+    assert_eq!(
+        request(&mut conn, "POST", "/write", "", false)
+            .await
+            .unwrap()
+            .0,
+        "200"
+    );
+
+    for bad in [
+        "fault /write 200",
+        "fault /write soon",
+        "fault write 503",
+        "fault /write",
+    ] {
+        assert!(
+            proxy::command(&socket, bad)
+                .await
+                .unwrap()
+                .starts_with("error:"),
+            "{bad} was accepted"
+        );
+    }
+    assert!(
+        proxy::command(&socket, "started")
+            .await
+            .unwrap()
+            .parse::<u64>()
+            .is_ok()
+    );
+    proxy::command(&socket, "stop").await.unwrap();
+}

@@ -496,14 +496,11 @@ impl Hub {
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
             let attempt = async {
-                // Every spec starts online, whatever the last one left; first, since the seed may go through it.
+                // Every spec starts online with no faults, whatever the last one left; first, since the seed may go through it.
                 if let Some(routes) = crate::network::routes(config).filter(|_| {
                     platform != Platform::Web && !self.without_devices.contains(&platform)
                 }) {
-                    crate::network::ensure(root, &routes)
-                        .await?
-                        .offline(false)
-                        .await?;
+                    crate::network::ensure(root, &routes).await?.reset().await?;
                 }
                 hooks::run(root, &config.hooks.guard, hooks::GUARD_TIMEOUT)
                     .await
@@ -654,9 +651,9 @@ impl Hub {
         }
         let Ok(health) = self
             .on_device(platform, async |d| {
-                // An attempt that ended offline mustn't leave the app cut off between specs.
+                // An attempt that ended offline or with a fault mustn't leave the app cut off between specs.
                 if let Some(network) = &d.network {
-                    network.offline(false).await?;
+                    network.reset().await?;
                 }
                 d.device.health().await
             })

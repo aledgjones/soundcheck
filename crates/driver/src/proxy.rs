@@ -1,12 +1,14 @@
 //! TCP proxies between the app and the services it reaches on this machine, so a run can take the network away the
-//! way a phone loses it. The project lists the routes; this module knows ports only.
+//! way a phone loses it, or have a service refuse one kind of request. The project lists the routes; this module
+//! knows ports and HTTP paths only.
 
 use crate::DriverError;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::watch;
 
@@ -38,6 +40,27 @@ impl Mode {
     }
 }
 
+/// HTTP requests to `path` get `status` from the proxy itself, and the service never sees them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fault {
+    path: String,
+    status: u16,
+}
+
+impl Fault {
+    /// Segment by segment, with `*` for any one segment; the query string doesn't count.
+    fn matches(&self, target: &str) -> bool {
+        let path = target.split(['?', '#']).next().unwrap_or("");
+        let want = self.path.trim_end_matches('/').split('/');
+        let have = path.trim_end_matches('/').split('/');
+
+        want.clone().count() == have.clone().count()
+            && want.zip(have).all(|(w, h)| w == "*" || w == h)
+    }
+}
+
+type Faults = Arc<Mutex<Vec<Fault>>>;
+
 /// Where the proxy for these routes takes commands. Under /tmp, not the temp dir: a sandboxed shell has its own.
 pub fn socket_path(routes: &[Route]) -> PathBuf {
     let port = routes.iter().map(|r| r.listen).min().unwrap_or(0);
@@ -46,53 +69,81 @@ pub fn socket_path(routes: &[Route]) -> PathBuf {
 
 /// Runs the proxies and their command socket until a `stop` command.
 pub async fn serve(routes: &[Route], socket: &Path) -> std::io::Result<()> {
+    let started = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
     let (mode, _) = watch::channel(Mode::Online);
     let mode = Arc::new(mode);
+    let faults: Faults = Arc::default();
     for route in routes {
-        let listener = TcpListener::bind(("127.0.0.1", route.listen)).await?;
-        tokio::spawn(accept_loop(route.clone(), listener, mode.clone()));
+        // Retried, since a proxy being replaced may not have let go of its ports yet.
+        let listener = bind(route.listen).await.ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AddrInUse,
+                format!("port {} is taken", route.listen),
+            )
+        })?;
+        tokio::spawn(accept_loop(
+            route.clone(),
+            listener,
+            mode.clone(),
+            faults.clone(),
+        ));
     }
     let _ = std::fs::remove_file(socket);
     let control = UnixListener::bind(socket)?;
     let generation = Arc::new(AtomicU64::new(0));
     loop {
         let (stream, _) = control.accept().await?;
-        if command_line(stream, &mode, &generation).await {
+        if command_line(stream, &mode, &faults, &generation, started).await {
             let _ = std::fs::remove_file(socket);
             return Ok(());
         }
     }
 }
 
-/// Answers one command with the mode it leaves; true when told to stop.
+/// Answers one command with the state it leaves; true when told to stop.
 async fn command_line(
     stream: UnixStream,
     mode: &Arc<watch::Sender<Mode>>,
+    faults: &Faults,
     generation: &Arc<AtomicU64>,
+    started: u64,
 ) -> bool {
     let (read, mut write) = stream.into_split();
     let mut line = String::new();
     if BufReader::new(read).read_line(&mut line).await.is_err() {
         return false;
     }
-    let mut words = line.split_whitespace();
-    let reply = match (words.next(), words.next()) {
-        (Some("status"), None) => Ok(()),
-        (Some("stop"), None) => {
+
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let reply = match words.as_slice() {
+        ["status"] => Ok(()),
+        ["stop"] => {
             let _ = write.write_all(b"stopped\n").await;
             return true;
         }
-        (Some("online"), None) => {
+        ["started"] => {
+            let _ = write.write_all(format!("{started}\n").as_bytes()).await;
+            return false;
+        }
+        ["online"] => {
             generation.fetch_add(1, Ordering::SeqCst);
             mode.send_replace(Mode::Online);
             Ok(())
         }
-        (Some("offline"), None) => {
+        ["offline"] => {
             generation.fetch_add(1, Ordering::SeqCst);
             mode.send_replace(Mode::Offline);
             Ok(())
         }
-        (Some("drop"), Some(seconds)) => match seconds.parse::<u64>() {
+        ["reset"] => {
+            generation.fetch_add(1, Ordering::SeqCst);
+            mode.send_replace(Mode::Online);
+            faults.lock().unwrap().clear();
+            Ok(())
+        }
+        ["drop", seconds] => match seconds.parse::<u64>() {
             Ok(seconds) => {
                 // Back on a timer, so a cancelled call never leaves the app offline; a later command wins.
                 let mine = generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -108,18 +159,57 @@ async fn command_line(
             }
             Err(_) => Err(format!("drop needs whole seconds, not {seconds:?}")),
         },
+        ["fault", "clear"] => {
+            faults.lock().unwrap().clear();
+            Ok(())
+        }
+        ["fault", path, status] => match status.parse::<u16>() {
+            Ok(status) if (400..=599).contains(&status) && path.starts_with('/') => {
+                let mut faults = faults.lock().unwrap();
+                faults.retain(|f| f.path != *path);
+                faults.push(Fault {
+                    path: path.to_string(),
+                    status,
+                });
+                Ok(())
+            }
+            Ok(_) if !path.starts_with('/') => {
+                Err(format!("fault needs a path starting with /, not {path:?}"))
+            }
+            _ => Err(format!(
+                "fault needs a status from 400 to 599, not {status:?}"
+            )),
+        },
         _ => Err(format!("unknown command {:?}", line.trim())),
     };
     let text = match reply {
-        Ok(()) => mode.borrow().name().to_string(),
+        Ok(()) => describe(*mode.borrow(), &faults.lock().unwrap()),
         Err(e) => format!("error: {e}"),
     };
     let _ = write.write_all(format!("{text}\n").as_bytes()).await;
     false
 }
 
+/// The mode, then each fault: `online; /write 503, /files/*/upload-url 403`.
+fn describe(mode: Mode, faults: &[Fault]) -> String {
+    if faults.is_empty() {
+        return mode.name().to_string();
+    }
+
+    let faults: Vec<String> = faults
+        .iter()
+        .map(|f| format!("{} {}", f.path, f.status))
+        .collect();
+    format!("{}; {}", mode.name(), faults.join(", "))
+}
+
 /// Accepts while online or dropped; offline, it stops listening, so connections are refused.
-async fn accept_loop(route: Route, first: TcpListener, mode: Arc<watch::Sender<Mode>>) {
+async fn accept_loop(
+    route: Route,
+    first: TcpListener,
+    mode: Arc<watch::Sender<Mode>>,
+    faults: Faults,
+) {
     let mut listener = Some(first);
     let mut rx = mode.subscribe();
     loop {
@@ -133,7 +223,7 @@ async fn accept_loop(route: Route, first: TcpListener, mode: Arc<watch::Sender<M
         let offline = tokio::select! {
             accepted = open.accept() => {
                 if let Ok((client, _)) = accepted {
-                    tokio::spawn(connection(client, route.upstream, mode.subscribe()));
+                    tokio::spawn(connection(client, route.upstream, mode.subscribe(), faults.clone()));
                 }
                 false
             }
@@ -160,18 +250,37 @@ async fn bind(port: u16) -> Option<TcpListener> {
     None
 }
 
-async fn connection(client: TcpStream, upstream: u16, mut rx: watch::Receiver<Mode>) {
+async fn connection(
+    client: TcpStream,
+    upstream: u16,
+    mut rx: watch::Receiver<Mode>,
+    faults: Faults,
+) {
     let frozen = Arc::new(AtomicBool::new(*rx.borrow() == Mode::Dropped));
     let Ok(server) = TcpStream::connect(("127.0.0.1", upstream)).await else {
         return;
     };
-    let (client_read, client_write) = client.into_split();
+    let (client_read, mut client_write) = client.into_split();
     let (server_read, server_write) = server.into_split();
     let pipes = async {
-        tokio::join!(
-            pipe(client_read, server_write, frozen.clone()),
-            pipe(server_read, client_write, frozen.clone()),
-        )
+        let answer = {
+            let mut responses = Box::pin(pipe(server_read, &mut client_write, frozen.clone()));
+            tokio::select! {
+                ended = requests(BufReader::new(client_read), server_write, frozen.clone(), faults) => match ended {
+                    Ended::Closed => {
+                        responses.await;
+                        None
+                    }
+                    Ended::Fault(answer) => Some(answer),
+                },
+                () = &mut responses => None,
+            }
+        };
+        // Clients don't pipeline, so nothing from the service is on its way when a faulted request is answered.
+        if let Some(answer) = answer {
+            let _ = client_write.write_all(&answer).await;
+            let _ = client_write.shutdown().await;
+        }
     };
     let watch = async {
         while rx.changed().await.is_ok() {
@@ -185,15 +294,291 @@ async fn connection(client: TcpStream, upstream: u16, mut rx: watch::Receiver<Mo
     };
     // Going offline drops both halves, which closes the sockets.
     tokio::select! {
-        _ = pipes => {}
+        () = pipes => {}
         () = watch => {}
     }
 }
 
+enum Ended {
+    Closed,
+    /// The response the proxy gives instead of the service; the connection ends after it.
+    Fault(Vec<u8>),
+}
+
+/// How a request's body is framed, so the next request on a kept-alive connection is found.
+enum Body {
+    None,
+    Length(u64),
+    Chunked,
+}
+
+struct Head {
+    bytes: Vec<u8>,
+    target: String,
+    body: Body,
+    /// After an `Upgrade` (PowerSync's websocket) the connection is no longer HTTP.
+    upgrade: bool,
+    expects_continue: bool,
+}
+
+enum Read {
+    Request(Head),
+    /// Not HTTP: these bytes go through as they are, and so does the rest.
+    Other(Vec<u8>),
+    /// The client closed after these bytes.
+    Eof(Vec<u8>),
+}
+
+const HEAD_MAX: usize = 64 * 1024;
+
+/// Passes the client's requests to the service one at a time, answering any whose path has a fault itself.
+async fn requests(
+    mut from: BufReader<OwnedReadHalf>,
+    mut to: OwnedWriteHalf,
+    frozen: Arc<AtomicBool>,
+    faults: Faults,
+) -> Ended {
+    loop {
+        let head = match read_head(&mut from).await {
+            Read::Request(head) => head,
+            Read::Other(bytes) => {
+                if send(&mut to, &bytes, &frozen).await.is_ok() {
+                    pipe(from, to, frozen).await;
+                }
+                return Ended::Closed;
+            }
+            Read::Eof(bytes) => {
+                if send(&mut to, &bytes, &frozen).await.is_ok() {
+                    finish(to, &frozen).await;
+                }
+                return Ended::Closed;
+            }
+        };
+
+        let status = faults
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|f| f.matches(&head.target))
+            .map(|f| f.status);
+        if let Some(status) = status.filter(|_| !frozen.load(Ordering::SeqCst)) {
+            // Read to the end first: closing with a body unread resets the connection, and the client loses the
+            // answer. A client waiting on 100 Continue sends no body once it has a final status.
+            if !head.expects_continue {
+                let _ = body(&mut from, None, &head.body, &frozen).await;
+            }
+
+            return Ended::Fault(answer(status));
+        }
+
+        if send(&mut to, &head.bytes, &frozen).await.is_err() {
+            return Ended::Closed;
+        }
+
+        if head.upgrade {
+            pipe(from, to, frozen).await;
+            return Ended::Closed;
+        }
+
+        if body(&mut from, Some(&mut to), &head.body, &frozen)
+            .await
+            .is_err()
+        {
+            return Ended::Closed;
+        }
+    }
+}
+
+/// Reads up to the blank line ending a request's head, or as far as shows it isn't HTTP.
+async fn read_head(from: &mut BufReader<OwnedReadHalf>) -> Read {
+    let mut bytes = Vec::new();
+    // A method is capital letters then a space; anything else is some other protocol.
+    loop {
+        let Ok(buf) = from.fill_buf().await else {
+            return Read::Eof(bytes);
+        };
+        if buf.is_empty() {
+            return Read::Eof(bytes);
+        }
+
+        let token = buf.iter().take_while(|b| b.is_ascii_uppercase()).count();
+        bytes.extend_from_slice(&buf[..token]);
+        let next = buf.get(token).copied();
+        from.consume(token);
+        match next {
+            Some(b' ') if !bytes.is_empty() && bytes.len() <= 16 => break,
+            Some(_) => return Read::Other(bytes),
+            None if bytes.len() > 16 => return Read::Other(bytes),
+            None => {}
+        }
+    }
+
+    let start = bytes.len();
+    loop {
+        let before = bytes.len();
+        match from.read_until(b'\n', &mut bytes).await {
+            Ok(0) | Err(_) => return Read::Eof(bytes),
+            Ok(_) => {}
+        }
+
+        let line = &bytes[before..];
+        if line == b"\r\n" || line == b"\n" {
+            break;
+        }
+
+        if bytes.len() > HEAD_MAX {
+            return Read::Other(bytes);
+        }
+    }
+
+    let text = String::from_utf8_lossy(&bytes[start..]).into_owned();
+    let mut lines = text.lines();
+    let target = lines
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .unwrap_or("")
+        .to_string();
+    let mut head = Head {
+        bytes,
+        target,
+        body: Body::None,
+        upgrade: false,
+        expects_continue: false,
+    };
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        let value = value.trim().to_ascii_lowercase();
+        match name.trim().to_ascii_lowercase().as_str() {
+            "transfer-encoding" if value.contains("chunked") => head.body = Body::Chunked,
+            "content-length" if !matches!(head.body, Body::Chunked) => {
+                head.body = value.parse().map_or(Body::None, Body::Length);
+            }
+            "upgrade" => head.upgrade = true,
+            "expect" if value == "100-continue" => head.expects_continue = true,
+            _ => {}
+        }
+    }
+    Read::Request(head)
+}
+
+/// Passes a request's body on, or reads it to the end when there's nowhere to send it.
+async fn body(
+    from: &mut BufReader<OwnedReadHalf>,
+    mut to: Option<&mut OwnedWriteHalf>,
+    framing: &Body,
+    frozen: &AtomicBool,
+) -> std::io::Result<()> {
+    match framing {
+        Body::None => Ok(()),
+        Body::Length(n) => copy_exact(from, to, *n, frozen).await,
+        Body::Chunked => loop {
+            let size = line(from, to.as_deref_mut(), frozen).await?;
+            let size = size.split(';').next().unwrap_or("").trim();
+            let size = u64::from_str_radix(size, 16)
+                .map_err(|_| std::io::Error::other("a bad chunk size"))?;
+            if size == 0 {
+                // Trailers, then the blank line that ends the body.
+                while !line(from, to.as_deref_mut(), frozen).await?.is_empty() {}
+                return Ok(());
+            }
+
+            copy_exact(from, to.as_deref_mut(), size, frozen).await?;
+            line(from, to.as_deref_mut(), frozen).await?;
+        },
+    }
+}
+
+/// One CRLF-ended line of a chunked body, passed on; returns it without the line ending.
+async fn line(
+    from: &mut BufReader<OwnedReadHalf>,
+    to: Option<&mut OwnedWriteHalf>,
+    frozen: &AtomicBool,
+) -> std::io::Result<String> {
+    let mut bytes = Vec::new();
+    if from.read_until(b'\n', &mut bytes).await? == 0 {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
+
+    if let Some(to) = to {
+        send(to, &bytes, frozen).await?;
+    }
+
+    Ok(String::from_utf8_lossy(&bytes).trim_end().to_string())
+}
+
+async fn copy_exact(
+    from: &mut BufReader<OwnedReadHalf>,
+    mut to: Option<&mut OwnedWriteHalf>,
+    mut left: u64,
+    frozen: &AtomicBool,
+) -> std::io::Result<()> {
+    while left > 0 {
+        let buf = from.fill_buf().await?;
+        if buf.is_empty() {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+
+        let n = buf.len().min(usize::try_from(left).unwrap_or(usize::MAX));
+        if let Some(to) = to.as_deref_mut() {
+            send(to, &buf[..n], frozen).await?;
+        }
+
+        from.consume(n);
+        left -= n as u64;
+    }
+    Ok(())
+}
+
+/// Writes unless the connection is frozen, when nothing passes.
+async fn send(to: &mut OwnedWriteHalf, bytes: &[u8], frozen: &AtomicBool) -> std::io::Result<()> {
+    if frozen.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    to.write_all(bytes).await
+}
+
+/// The client closed: tell the service, unless the connection is frozen, which never closes.
+async fn finish(mut to: OwnedWriteHalf, frozen: &AtomicBool) {
+    if frozen.load(Ordering::SeqCst) {
+        std::future::pending::<()>().await;
+    }
+
+    let _ = to.shutdown().await;
+}
+
+/// A response shaped like the service's own errors (Fastify's), so the app treats it as one.
+fn answer(status: u16) -> Vec<u8> {
+    let reason = match status {
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        409 => "Conflict",
+        413 => "Payload Too Large",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "Error",
+    };
+    let body =
+        format!(r#"{{"statusCode":{status},"error":"{reason}","message":"soundcheck fault"}}"#);
+    format!(
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .into_bytes()
+}
+
 /// Copies one direction of a connection until it closes, passing nothing while frozen.
 async fn pipe(
-    mut from: tokio::net::tcp::OwnedReadHalf,
-    mut to: tokio::net::tcp::OwnedWriteHalf,
+    mut from: impl AsyncRead + Unpin,
+    mut to: impl AsyncWrite + Unpin,
     frozen: Arc<AtomicBool>,
 ) {
     let mut buf = vec![0u8; 16 * 1024];
@@ -253,5 +638,19 @@ impl Network {
 
     pub async fn drop_for(&self, seconds: u64) -> Result<(), DriverError> {
         self.send(&format!("drop {seconds}")).await.map(|_| ())
+    }
+
+    /// Requests to `path` (`*` for any one segment) get `status` until cleared; returns every fault now set.
+    pub async fn fault(&self, path: &str, status: u16) -> Result<String, DriverError> {
+        self.send(&format!("fault {path} {status}")).await
+    }
+
+    pub async fn fault_clear(&self) -> Result<(), DriverError> {
+        self.send("fault clear").await.map(|_| ())
+    }
+
+    /// Online with no faults, whatever the last spec left.
+    pub async fn reset(&self) -> Result<(), DriverError> {
+        self.send("reset").await.map(|_| ())
     }
 }

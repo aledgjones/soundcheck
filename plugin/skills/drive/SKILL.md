@@ -30,7 +30,7 @@ allowed-tools:
 | Tap and type | `tap <target> [--last]`, `tap-at <x> <y>`, `fill <target> <text>` (empties the field, types, checks it landed), `type <text>` (appends to the focused field, and says if keys were dropped), `clear` |
 | Gestures | `hold <target> <ms>` (a long press), `touch <stops…>` (one finger along a path: `touch Bread +700 at:980,420` is a drag; `--keep` holds it down, `release --back` lifts it where it began), `swipe <x1> <y1> <x2> <y2> [ms]` (lifts while moving, for scrolling and flings), `press <key>` (`Enter`, `Escape`, `Home`…) |
 | App | `launch` (restarts it and checks it's in front), `push <file> [name]` (onto the device's Downloads or On My iPad, for file pickers) |
-| Environment | `network offline\|online`, `network-drop <seconds>` (both through the suite's proxy), `keyboard hardware\|software` (iOS: whether fields raise the on-screen keyboard) |
+| Environment | `network offline\|online`, `network-drop <seconds>`, `fault <path> <status>` and `fault clear` (all through the suite's proxy), `keyboard hardware\|software` (iOS: whether fields raise the on-screen keyboard) |
 
 ## Rules
 

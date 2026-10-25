@@ -62,7 +62,7 @@ At the end the coordinator goes through the problems with you, one at a time. It
 
 - **The server** holds all state in an append-only journal and serves MCP over local HTTP, the live page and the reports. Nothing lives only in an agent's memory.
 - **The coordinator** dispatches one background tester per spec, reviews results while the next spec runs, and can pause, rerun or add specs at any point (`queue`). A fix build can be installed mid-run, and the rows it could affect rerun on it.
-- **Testers** fetch their brief from the server and drive the device through soundcheck's tools: `see`, `tap`, `fill`, `touch` (one finger along a path), `swipe`, `hold`, `offline`, `network-drop`, `preview-compare` and more. They post one result with a judgment per outcome.
+- **Testers** fetch their brief from the server and drive the device through soundcheck's tools: `see`, `tap`, `fill`, `touch` (one finger along a path), `swipe`, `hold`, `offline`, `network-drop`, `fault`, `preview-compare` and more. They post one result with a judgment per outcome.
 - **Drivers:**
   - **Android:** a persistent reader APK reads the screen and injects input in milliseconds.
   - **iOS:** a persistent simulator reader does the same.

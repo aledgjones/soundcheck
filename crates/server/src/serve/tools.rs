@@ -269,6 +269,18 @@ pub struct SecondsParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct FaultParams {
+    pub token: String,
+    /// The request path to fail, starting with /; `*` matches any one segment. The query string doesn't count.
+    pub path: Option<String>,
+    /// The HTTP status the service answers with, 400–599.
+    pub status: Option<u16>,
+    /// true clears every fault, with no path or status.
+    #[serde(default)]
+    pub clear: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct OfflineParams {
     pub token: String,
     /// true takes the app offline; false brings it back online.
@@ -1517,6 +1529,23 @@ impl Tools {
             d.offline(p.on)
                 .await
                 .map(|()| if p.on { "offline" } else { "online" }.to_string())
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: have a service answer every request to `path` with `status` (400–599) instead of passing it on, as when it fails or refuses; `*` stands for any one path segment (`/files/*/upload-url`). Faults stay until `clear: true`; the run clears them after your spec. Returns the faults now set."
+    )]
+    async fn fault(
+        &self,
+        Parameters(p): Parameters<FaultParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| match (p.clear, &p.path, p.status) {
+            (true, None, None) => d.fault_clear().await.map(|()| "no faults".to_string()),
+            (false, Some(path), Some(status)) => d.fault(path, status).await,
+            _ => Err(soundcheck_driver::DriverError::Invalid(
+                "fault takes a path and a status, or clear: true alone".into(),
+            )),
         })
         .await
     }
