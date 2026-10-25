@@ -80,7 +80,7 @@ Shell commands, run from the folder holding suite.yaml, in any language. Exit 0 
 | --------------------------- | --------------------------------------- | ----------------------------------------------------------- |
 | `guard`                     | At run start, and before every seed     | nothing; exit 1 with a reason to refuse                     |
 | `seed {scenario}`           | Before every spec: the starting state   | optionally `{"context": {...}}` for the tester's brief      |
-| `build-identity {platform}` | At run start and after each install     | `{"commit": "...", "fingerprint": "...", "version": "..."}` |
+| `build-identity {platform}` | At run start and after each install; within 60 s | `{"commit": "...", "fingerprint": "...", "version": "..."}` |
 | `install {platform}`        | When the coordinator installs a build   | nothing                                                     |
 | `check {name} [args]`       | When a tester asks for a data check     | the data, as JSON                                           |
 

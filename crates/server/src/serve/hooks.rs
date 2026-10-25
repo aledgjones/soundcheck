@@ -7,8 +7,30 @@ use std::time::Duration;
 /// A seed can rebuild a whole account; anything slower than this is stuck.
 pub const SEED_TIMEOUT: Duration = Duration::from_secs(300);
 pub const GUARD_TIMEOUT: Duration = Duration::from_secs(30);
+/// Run only once the Mac is calm, so a hook slower than this is stuck, not starved.
+pub const BUILD_IDENTITY_TIMEOUT: Duration = Duration::from_secs(60);
 /// A release build of a mobile app takes several minutes, more with a cold cache.
 pub const INSTALL_TIMEOUT: Duration = Duration::from_secs(45 * 60);
+
+/// A hook that ran out of time, told apart from one that failed.
+#[derive(Debug)]
+pub struct TimedOut {
+    pub command: String,
+    pub after: Duration,
+}
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` took longer than {} s",
+            self.command,
+            self.after.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for TimedOut {}
 
 /// Single-quoted for `sh`, so a scenario or platform name can't become shell syntax.
 fn quote(s: &str) -> String {
@@ -31,7 +53,10 @@ pub async fn run(root: &Path, command: &str, timeout: Duration) -> Result<String
         .output();
     let output = tokio::time::timeout(timeout, child)
         .await
-        .with_context(|| format!("`{command}` took longer than {} s", timeout.as_secs()))?
+        .map_err(|_| TimedOut {
+            command: command.to_string(),
+            after: timeout,
+        })?
         .with_context(|| format!("couldn't run `{command}`"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -148,6 +173,17 @@ mod tests {
             Some("Collection: E2E Seed Library")
         );
         assert!(context("seeded").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_runs_out_of_time_is_told_apart_from_one_that_fails() {
+        let dir = std::env::temp_dir();
+        let slow = run(&dir, "sleep 5", Duration::from_millis(100))
+            .await
+            .unwrap_err();
+        assert!(slow.chain().any(|e| e.is::<TimedOut>()));
+        let failing = run(&dir, "exit 1", GUARD_TIMEOUT).await.unwrap_err();
+        assert!(!failing.chain().any(|e| e.is::<TimedOut>()));
     }
 
     #[tokio::test]

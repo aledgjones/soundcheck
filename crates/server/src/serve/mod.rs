@@ -138,6 +138,49 @@ pub fn now_ms() -> u64 {
         .map_or(0, |d| d.as_millis() as u64)
 }
 
+/// Waits for the Mac to settle before a run reads or builds anything, as a held dispatch does, so a hook that's
+/// slow after this is slow on its own account. Whether the Mac settled: false when it gave up or couldn't tell.
+pub async fn wait_for_calm_host() -> bool {
+    let started = now_ms();
+    let mut told = false;
+    loop {
+        let busy = match soundcheck_driver::host::busy().await {
+            Ok(busy) => busy,
+            Err(e) => {
+                eprintln!(
+                    "soundcheck: the Mac's memory and CPU couldn't be read ({e}); going ahead"
+                );
+                return false;
+            }
+        };
+        let waited = now_ms().saturating_sub(started) / 1000;
+        if busy.is_empty() {
+            if told {
+                println!("the Mac settled after {waited} s");
+            }
+
+            return true;
+        }
+
+        if now_ms().saturating_sub(started) >= HOST_WAIT_MAX_MS {
+            println!(
+                "the Mac is still busy after {waited} s ({}); going ahead",
+                busy.join(", ")
+            );
+            return false;
+        }
+
+        if !told {
+            println!(
+                "waiting for the Mac to settle before building or reading builds: {}",
+                busy.join(", ")
+            );
+            told = true;
+        }
+        tokio::time::sleep(Duration::from_millis(READY_POLL_MS)).await;
+    }
+}
+
 /// What `queue` did: rows that joined the run, and rows queued again with what each was.
 pub struct Queued {
     pub added: Vec<(String, Platform)>,
@@ -757,7 +800,7 @@ impl Hub {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let command = hooks::fill(&config.hooks.build_identity, "", &platform.to_string());
-        let out = hooks::run(&suite.root, &command, hooks::GUARD_TIMEOUT).await?;
+        let out = hooks::run(&suite.root, &command, hooks::BUILD_IDENTITY_TIMEOUT).await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
             format!(
                 "the build-identity hook should print {{\"commit\": ...}}, but printed {:?}",

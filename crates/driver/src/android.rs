@@ -750,6 +750,10 @@ impl Device for Android {
                 busy > MAX_CPU_BUSY,
             );
         }
+        // An emulator shares the Mac, as the simulator does; a phone has its own.
+        if self.serial.starts_with("emulator-") {
+            crate::host::sample(&mut health).await?;
+        }
         // The log is cleared at each launch, so these are since this spec's launch.
         let log = self.adb(&["logcat", "-d", "-v", "brief"]).await?;
         let mut seen = Vec::new();

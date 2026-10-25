@@ -374,10 +374,23 @@ fn run_command(args: RunArgs) -> Result<()> {
             only.headed = headed;
             only.start_ms = first_call_seconds * 1000;
         }
+        let settled = serve::wait_for_calm_host().await;
         // Results count only for an identified build, so a platform without one is built before anything runs.
         let has_install_hook = config_has_install;
         for &platform in &platforms {
             let unknown = hub.read_build(platform).await.err();
+            if let Some(why) = &unknown
+                && why.chain().any(|e| e.is::<serve::hooks::TimedOut>())
+            {
+                if settled {
+                    bail!(
+                        "{platform}: {why:#} on a settled Mac, so the hook itself is stuck; fix it rather than rebuilding"
+                    );
+                }
+                bail!(
+                    "{platform}: {why:#} while the Mac was still busy; start the run again once it has settled"
+                );
+            }
             if !(install || unknown.is_some() && has_install_hook) {
                 continue;
             }
