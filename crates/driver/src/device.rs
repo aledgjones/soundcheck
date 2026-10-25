@@ -16,6 +16,9 @@ pub enum DriverError {
     Invalid(String),
     #[error("device: {0}")]
     Device(String),
+    /// Soundcheck restarted the device mid-call to mend it, so the app's state is gone: never retried quietly.
+    #[error("harness: {0}")]
+    Restarted(String),
 }
 
 pub type Result<T> = std::result::Result<T, DriverError>;

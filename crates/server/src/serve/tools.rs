@@ -1599,17 +1599,28 @@ impl Tools {
         token: &str,
         op: impl AsyncFnOnce(&Driver<AnyDevice>) -> Result<T, DriverError>,
     ) -> Result<CallToolResult, ErrorData> {
-        let platform = match self.hub.with_run(|run, now| {
-            let (_, platform) = run.running(token)?;
+        let (spec, platform) = match self.hub.with_run(|run, now| {
+            let (spec, platform) = run.running(token)?;
             run.call_started(now, token);
-            Ok(platform)
+            Ok((spec, platform))
         }) {
             Ok(p) => p,
             Err(e) => return reply(Err(e)),
         };
         let result = self.hub.on_device(platform, op).await;
+        let restarted = match &result {
+            Err(e) => match e.downcast_ref::<DriverError>() {
+                Some(DriverError::Restarted(why)) => Some(why.clone()),
+                _ => None,
+            },
+            Ok(_) => None,
+        };
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, token);
+            // The run's own record of it, so a reboot is never mistaken for the app leaving the foreground.
+            if let Some(why) = &restarted {
+                run.device_restarted(now, platform, &spec, why)?;
+            }
             Ok(())
         });
         reply(result.and_then(|v| Ok(serde_json::to_value(v)?)))

@@ -603,9 +603,9 @@ impl Ios {
                 self.note_restart(format!(
                     "restarted the simulator: the reader lost its channel ({cause})"
                 ));
-                device(format!(
-                    "harness: the reader lost its channel to the simulator ({cause}), so soundcheck restarted the \
-                     simulator and its reader; the app's state went with it, so this spec needs a rerun"
+                DriverError::Restarted(format!(
+                    "the reader lost its channel to the simulator ({cause}), so soundcheck restarted the simulator \
+                     and its reader; the app's state went with it, so this spec needs a rerun"
                 ))
             }
             Err(e) => {
@@ -613,9 +613,9 @@ impl Ios {
                     "restarted the simulator: the reader lost its channel ({cause}), and a fresh reader still can't \
                      read ({e})"
                 ));
-                device(format!(
-                    "harness: the reader lost its channel to the simulator ({cause}); restarting the simulator didn't \
-                     mend it ({e})"
+                DriverError::Restarted(format!(
+                    "the reader lost its channel to the simulator ({cause}); restarting the simulator didn't mend \
+                     it ({e})"
                 ))
             }
         }

@@ -413,9 +413,12 @@ impl<D: Device> Driver<D> {
     async fn wait_for(&self, target: &Matcher, timeout_ms: u64, last: bool) -> Result<Element> {
         let end = Instant::now() + Duration::from_millis(timeout_ms);
         loop {
-            // A read can fail for a moment while an animation runs; keep trying until the deadline.
-            if let Ok(Some(e)) = self.find(target, last).await {
-                return Ok(e);
+            // A read can fail for a moment while an animation runs; keep trying until the deadline. A restart can't
+            // be waited out: the app's state went with it.
+            match self.find(target, last).await {
+                Ok(Some(e)) => return Ok(e),
+                Err(e @ DriverError::Restarted(_)) => return Err(e),
+                _ => {}
             }
             if Instant::now() >= end {
                 return Err(DriverError::NotFound(target.to_string()));
