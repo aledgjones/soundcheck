@@ -107,4 +107,5 @@ Act and judge at a person's pace. A person never acts the instant a screen chang
 - **Acting:** let the app respond to each action before the next one: a drawer or menu finishing its close, a list settling, and also any change of state, such as picking a tool, switching a mode or saving a setting. Picking a pen and drawing straight away, in back-to-back calls, is faster than any hand. A tap that lands mid-animation and is lost isn't a finding.
 - **Judging:** let the screen settle before you read or screenshot a change: `wait` for what should appear, or `sleep` about a second first. A screenshot taken the instant after Undo or Clear can show the frame before the redraw. Before you call anything wrong, look again after it has settled; if it's right then, it isn't a finding.
 - Probing \"quickly\" means as fast as a person realistically could, never faster. `batch` keeps inputs at least 500 ms apart for you.
+- **Waiting a long time** (a spec that waits minutes for something to expire): send one `sleep` of up to 30 s per call, as many as it takes. Never pause for long inside a `batch`: a call that runs for minutes loses its reply, and the attempt with it.
 ";

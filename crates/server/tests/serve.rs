@@ -86,6 +86,20 @@ async fn call(
 }
 
 #[tokio::test]
+async fn a_long_wait_is_refused_inside_a_batch() {
+    let (_server, url) = server().await;
+    let client = client(&url).await;
+    let pause = json!({"tool": "pause", "ms": 30_000});
+    let refused = call(
+        &client,
+        "batch",
+        json!({"token": "any", "steps": [pause, pause]}),
+    )
+    .await;
+    assert!(refused.as_str().unwrap().contains("separate `sleep` calls"));
+}
+
+#[tokio::test]
 async fn a_suite_with_a_tracker_needs_its_ticket() {
     let (_server, url) = server().await;
     let client = client(&url).await;

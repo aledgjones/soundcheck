@@ -1416,6 +1416,20 @@ impl Tools {
         &self,
         Parameters(p): Parameters<BatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // A long wait in one call outlives the tester's MCP session, and its reply never arrives (SA-761).
+        let paused: u64 = p
+            .steps
+            .iter()
+            .map(|s| match s {
+                Step::Pause { ms } => *ms,
+                _ => 0,
+            })
+            .sum();
+        if paused > MAX_PAUSE_MS {
+            return reply(Err(anyhow::anyhow!(
+                "the batch's pauses add up to {paused} ms, over the {MAX_PAUSE_MS} one wait allows: wait out a long time with separate `sleep` calls"
+            )));
+        }
         self.device(&p.token, async |d| {
             let mut done = Vec::new();
             let mut last_input: Option<tokio::time::Instant> = None;
