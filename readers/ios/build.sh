@@ -11,13 +11,18 @@ command -v xcodegen >/dev/null || {
 IDB_REF=604c51013438f0c3603b720a05a44b7c5b8f286d
 IDB=build/idb
 FW=build/Frameworks
+# Bootstraps simulator accessibility once per simulator instead of before every read: each bootstrap leaves a
+# listener in the simulator's testmanagerd, which refuses the reader's channel after a few hundred (SA-762).
+PATCH=idb-bootstrap-once.patch
+IDB_STAMP="$IDB_REF $(shasum -a 256 "$PATCH" | cut -c1-12)"
 mkdir -p build
 if [ ! -d "$IDB/PrivateHeaders" ] || [ "$(git -C "$IDB" rev-parse HEAD)" != "$IDB_REF" ]; then
   rm -rf "$IDB" && mkdir -p "$IDB"
   (cd "$IDB" && git init -q && git remote add origin https://github.com/cameroncooke/idb.git &&
     git fetch -q --depth 1 origin "$IDB_REF" && git checkout -q FETCH_HEAD)
 fi
-if [ "$(cat "$FW/.idb-ref" 2>/dev/null)" != "$IDB_REF" ]; then
+if [ "$(cat "$FW/.idb-ref" 2>/dev/null)" != "$IDB_STAMP" ]; then
+  git -C "$IDB" checkout -q -- . && git -C "$IDB" apply "$(pwd)/$PATCH"
   (cd "$IDB" && xcodegen generate --quiet)
   for scheme in FBControlCore XCTestBootstrap FBSimulatorControl; do
     echo "building $scheme"
@@ -32,10 +37,10 @@ if [ "$(cat "$FW/.idb-ref" 2>/dev/null)" != "$IDB_REF" ]; then
   done
   rm -rf "$FW" && mkdir -p "$FW"
   cp -R build/derived/Build/Products/Release/*.framework "$FW/"
-  echo "$IDB_REF" >"$FW/.idb-ref"
+  echo "$IDB_STAMP" >"$FW/.idb-ref"
 fi
 # The reader reports this on /ping and the driver compares it with reader.build-id, so an older one is replaced.
-BUILD_ID=$({ cat Reader.swift; echo "$IDB_REF"; } | shasum -a 256 | cut -c1-12)
+BUILD_ID=$({ cat Reader.swift "$PATCH"; echo "$IDB_REF"; } | shasum -a 256 | cut -c1-12)
 echo "let readerBuildID = \"$BUILD_ID\"" >build/BuildID.swift
 H="$IDB/PrivateHeaders"
 swiftc -O -swift-version 5 -parse-as-library -target arm64-apple-macos14 \

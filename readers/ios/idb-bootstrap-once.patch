@@ -1,0 +1,48 @@
+diff --git a/FBSimulatorControl/Commands/FBSimulatorAccessibilityCommands.swift b/FBSimulatorControl/Commands/FBSimulatorAccessibilityCommands.swift
+index db91112..f716859 100644
+--- a/FBSimulatorControl/Commands/FBSimulatorAccessibilityCommands.swift
++++ b/FBSimulatorControl/Commands/FBSimulatorAccessibilityCommands.swift
+@@ -120,15 +120,37 @@ public final class FBSimulatorAccessibilityCommands: NSObject, AsyncAccessibilit
+       throw FBAccessibilityError.accessibilityUnavailable
+     }
+     try FBSimulatorControlFrameworkLoader.accessibilityFrameworks.loadPrivateFrameworks(simulator.logger)
+-    if Self.requiresAccessibilityBootstrap(for: simulator.osVersion.version) {
+-      try FBSimulatorControlFrameworkLoader.bootstrapAccessibility(
+-        forSimulatorDevice: simulator.device,
+-        timeout: 5,
+-        logger: simulator.logger
+-      )
++    // soundcheck: each bootstrap leaves a listener in the simulator's testmanagerd, which refuses new channels
++    // after a few hundred, so bootstrap once per simulator for this process.
++    if Self.requiresAccessibilityBootstrap(for: simulator.osVersion.version), Self.claimBootstrap(simulator.udid) {
++      do {
++        try FBSimulatorControlFrameworkLoader.bootstrapAccessibility(
++          forSimulatorDevice: simulator.device,
++          timeout: 5,
++          logger: simulator.logger
++        )
++      } catch {
++        Self.releaseBootstrap(simulator.udid)
++        throw error
++      }
+     }
+   }
+ 
++  private static let bootstrapLock = NSLock()
++  private static var bootstrapped = Set<String>()
++
++  private static func claimBootstrap(_ udid: String) -> Bool {
++    bootstrapLock.lock()
++    defer { bootstrapLock.unlock() }
++    return bootstrapped.insert(udid).inserted
++  }
++
++  private static func releaseBootstrap(_ udid: String) {
++    bootstrapLock.lock()
++    defer { bootstrapLock.unlock() }
++    bootstrapped.remove(udid)
++  }
++
+   // Returns an FBAccessibilityElement wrapping the platform element for the given request.
+   // The handle owns the request's token and pops it on close.
+   //
