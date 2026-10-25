@@ -21,7 +21,7 @@ use axum::extract::{Path, Query, Request, State};
 use axum::http::{StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
 use serde::Deserialize;
@@ -218,7 +218,14 @@ pub struct Hub {
     /// Each running tester's last full read of the screen and when, saved with a FAIL: by the time it posts, the
     /// screen has often moved on from the moment it judged.
     seen: Mutex<std::collections::HashMap<String, (u64, Vec<String>)>>,
+    /// When an agent last called a tool, so a finished run still being triaged isn't taken over.
+    last_call: std::sync::atomic::AtomicU64,
+    /// Stops the server, when a new run takes the port.
+    stop: CancellationToken,
 }
+
+/// How long a finished run must go without a tool call before a new run may take its port.
+const STEP_DOWN_IDLE_MS: u64 = 5 * 60_000;
 
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
@@ -265,6 +272,8 @@ impl Hub {
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
+            last_call: std::sync::atomic::AtomicU64::new(now_ms()),
+            stop: CancellationToken::new(),
         })
     }
 
@@ -990,9 +999,18 @@ pub async fn start_reports(dir: PathBuf, port: u16) -> Result<Server> {
             async move { axum::response::Html(report::index(&reports::list(&reports), "")) }
         }
     };
+    let step_down = {
+        let shutdown = shutdown.clone();
+        // Only for looking at runs, so it always makes way for a new one.
+        move || async move {
+            shutdown.cancel();
+            "the reports server stepped down\n"
+        }
+    };
     let app = axum::Router::new()
         .route("/", get(index.clone()))
         .route("/runs", get(index))
+        .route("/step-down", post(step_down))
         .merge(reports::router(reports))
         .layer(middleware::from_fn_with_state(addr.port(), local_only));
     let handle = tokio::spawn({
@@ -1012,7 +1030,7 @@ pub async fn start_reports(dir: PathBuf, port: u16) -> Result<Server> {
 
 /// Binds to 127.0.0.1 only; port 0 picks a free one.
 pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
-    let shutdown = CancellationToken::new();
+    let shutdown = hub.stop.clone();
     let mcp: StreamableHttpService<tools::Tools, LocalSessionManager> = StreamableHttpService::new(
         {
             let hub = hub.clone();
@@ -1032,8 +1050,10 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/download", get(download))
         .route("/files/evidence/{name}", get(evidence_file))
         .route("/runs", get(runs_index))
+        .route("/step-down", post(step_down))
         .with_state(hub.clone())
         .merge(reports::router(hub.reports()))
+        .layer(middleware::from_fn_with_state(hub.clone(), note_call))
         .layer(middleware::from_fn_with_state(addr.port(), local_only));
 
     let ticker = {
@@ -1159,6 +1179,53 @@ struct EventsQuery {
 
 /// Newline-delimited journal entries after `after`, then each new one as it's written. Replaying from a cursor
 /// means a coordinator whose Monitor lapsed misses nothing.
+/// Tool calls are POSTs to `/mcp`; the live page's polling isn't anyone using the run.
+async fn note_call(State(hub): State<Arc<Hub>>, request: Request, next: Next) -> Response {
+    if request.method() == axum::http::Method::POST && request.uri().path().starts_with("/mcp") {
+        hub.last_call
+            .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+    }
+    next.run(request).await
+}
+
+/// Makes way for a new run, but only from a finished run nobody has used for a while; otherwise 409 says what it's
+/// doing and how to stop it.
+async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
+    let finished = hub
+        .with_run(|run, _| Ok(run.state().finished))
+        .unwrap_or(false);
+    let idle = now_ms().saturating_sub(hub.last_call.load(std::sync::atomic::Ordering::Relaxed));
+    let folder = hub.run_dir.display();
+    let pid = std::process::id();
+    if !finished {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "run {folder} is still going; carry it on, resume it later with `soundcheck run <suite> --resume {folder}`, or stop its server (`kill {pid}`) first\n"
+            ),
+        )
+            .into_response();
+    }
+
+    if idle < STEP_DOWN_IDLE_MS {
+        return (
+            StatusCode::CONFLICT,
+            format!(
+                "run {folder} has finished but was used {} s ago, so its triage may be under way; stop its server (`kill {pid}`) once it's done with\n",
+                idle / 1000
+            ),
+        )
+            .into_response();
+    }
+
+    hub.stop.cancel();
+    (
+        StatusCode::OK,
+        format!("run {folder} stepped down; its report stays at /runs\n"),
+    )
+        .into_response()
+}
+
 /// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
 async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> Response {
     match hub.hold(platform).await {

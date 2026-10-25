@@ -86,6 +86,49 @@ async fn call(
 }
 
 #[tokio::test]
+async fn a_run_in_use_keeps_its_port() {
+    let (server, url) = server().await;
+    let step_down = || {
+        reqwest::Client::new()
+            .post(format!("{url}/step-down"))
+            .send()
+    };
+    let going = step_down().await.unwrap();
+    assert_eq!(going.status().as_u16(), 409);
+    assert!(going.text().await.unwrap().contains("still going"));
+
+    let client = client(&url).await;
+    call(&client, "finish", json!({})).await;
+    let just_used = step_down().await.unwrap();
+    assert_eq!(just_used.status().as_u16(), 409);
+    assert!(
+        just_used
+            .text()
+            .await
+            .unwrap()
+            .contains("triage may be under way")
+    );
+    assert!(!server.shutdown.is_cancelled());
+}
+
+#[tokio::test]
+async fn a_reports_server_makes_way_for_a_run() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-reports-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let server = serve::start_reports(dir, 0).await.unwrap();
+    let answer = reqwest::Client::new()
+        .post(format!("http://{}/step-down", server.addr))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(answer.status().as_u16(), 200);
+    tokio::time::timeout(std::time::Duration::from_secs(5), server.handle)
+        .await
+        .expect("the reports server stops")
+        .unwrap();
+}
+
+#[tokio::test]
 async fn ready_answers_whether_a_platform_can_take_a_spec() {
     let (_server, url) = server().await;
     let response = reqwest::get(format!("{url}/ready/ios")).await.unwrap();

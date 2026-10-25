@@ -439,6 +439,7 @@ Built against Solo Scores, which proves the concept; there's no separate demo ap
 
 - **Licence:** MIT (decided 2026-10-21, `LICENSE`); the iOS reader follows AXe's MIT code.
 - **Port:** 7357 by default. The plugin's MCP server is `soundcheck mcp`, a stdio bridge that lists the tools from the start and forwards each call to the run serving on the port, so a session opened before `soundcheck run` needs no reconnect (decided 2026-10-21, after the first run).
+- **One server holds the port** (SA-697, Aled 2026-10-25). A finished run's server stays up, so its page and triage keep working, until a new run needs the port. A new run asks first, before any hook: a finished run with no tool call for 5 minutes, or a `soundcheck serve` reports server, steps down, and its report stays under `/runs`. An unfinished run, or a finished one used in the last 5 minutes (triage may be under way), keeps the port, and the new run refuses with its folder and how to resume or stop it. Before this, a second run found the port taken only after its builds.
 - **The tester's silence timeout** before a running spec is treated as stopped.
 - **Web start hook:** a local dev server or a preview build, and how its build identity is read.
 - **Android overlay gap** (answered 2026-10-21): neither timing nor the long-lived connection. The controls are drawn outside their parent's bounds, so Android reports them invisible with an empty frame to uiautomator as well; an app fix (4.2).

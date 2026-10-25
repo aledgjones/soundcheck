@@ -215,6 +215,9 @@ fn run_command(args: RunArgs) -> Result<()> {
     }
     // Preflight: every check passes before anything runs, or the run refuses with the reason.
     let mut checks = Vec::new();
+    if let Some(note) = take_port(port)? {
+        pass(&mut checks, note);
+    }
     pass(
         &mut checks,
         format!("the suite lints clean ({} specs)", suite.specs.len()),
@@ -462,7 +465,10 @@ fn run_command(args: RunArgs) -> Result<()> {
                 .arg(format!("{url}/"))
                 .spawn();
         }
-        tokio::signal::ctrl_c().await?;
+        tokio::select! {
+            stopped = tokio::signal::ctrl_c() => stopped?,
+            _ = server.shutdown.cancelled() => println!("stepped down for a new run on the port"),
+        }
         server.shutdown.cancel();
         let _ = server.handle.await;
         Ok(())
@@ -506,7 +512,10 @@ fn serve_command(root: &Path, port: u16, open: Option<String>, open_page: bool) 
         if open_page {
             let _ = std::process::Command::new("open").arg(&url).spawn();
         }
-        tokio::signal::ctrl_c().await?;
+        tokio::select! {
+            stopped = tokio::signal::ctrl_c() => stopped?,
+            _ = server.shutdown.cancelled() => println!("stepped down for a new run on the port"),
+        }
         server.shutdown.cancel();
         let _ = server.handle.await;
         Ok(())
@@ -549,6 +558,48 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
         writeln!(out, "the run's server stopped")?;
         Ok(())
     })
+}
+
+/// Frees the port before anything slow happens: a finished run nobody is using, or a reports server, steps down;
+/// anything else refuses the run with what holds the port.
+fn take_port(port: u16) -> Result<Option<String>> {
+    let taken = |port| std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+    if !taken(port) {
+        return Ok(None);
+    }
+
+    let response = tokio::runtime::Runtime::new()?.block_on(async {
+        let response = reqwest::Client::new()
+            .post(format!("http://127.0.0.1:{port}/step-down"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
+            .await?;
+        let status = response.status();
+        anyhow::Ok((status, response.text().await?.trim().to_string()))
+    });
+    let (status, text) = match response {
+        Ok(answer) => answer,
+        Err(_) => bail!(
+            "port {port} is in use by something other than soundcheck; stop it or pass --port"
+        ),
+    };
+    if status == reqwest::StatusCode::CONFLICT {
+        bail!("port {port} is held by another run: {text}");
+    }
+
+    if !status.is_success() {
+        bail!(
+            "port {port} is in use by something other than this soundcheck (an older version's server?); stop it or pass --port"
+        );
+    }
+
+    for _ in 0..50 {
+        if !taken(port) {
+            return Ok(Some(text));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    bail!("{text}, but port {port} is still in use after 10 s")
 }
 
 fn server_url(run_dir: &Path) -> Result<String> {
