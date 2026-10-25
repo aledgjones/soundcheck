@@ -59,7 +59,8 @@ impl Fault {
     }
 }
 
-type Faults = Arc<Mutex<Vec<Fault>>>;
+/// Connections watch it, so a new fault ends the requests it matches that are still open.
+type Faults = Arc<watch::Sender<Vec<Fault>>>;
 
 /// Where the proxy for these routes takes commands. Under /tmp, not the temp dir: a sandboxed shell has its own.
 pub fn socket_path(routes: &[Route]) -> PathBuf {
@@ -74,7 +75,7 @@ pub async fn serve(routes: &[Route], socket: &Path) -> std::io::Result<()> {
         .map_or(0, |d| d.as_secs());
     let (mode, _) = watch::channel(Mode::Online);
     let mode = Arc::new(mode);
-    let faults: Faults = Arc::default();
+    let faults: Faults = Arc::new(watch::channel(Vec::new()).0);
     for route in routes {
         // Retried, since a proxy being replaced may not have let go of its ports yet.
         let listener = bind(route.listen).await.ok_or_else(|| {
@@ -140,7 +141,7 @@ async fn command_line(
         ["reset"] => {
             generation.fetch_add(1, Ordering::SeqCst);
             mode.send_replace(Mode::Online);
-            faults.lock().unwrap().clear();
+            faults.send_replace(Vec::new());
             Ok(())
         }
         ["drop", seconds] => match seconds.parse::<u64>() {
@@ -160,16 +161,17 @@ async fn command_line(
             Err(_) => Err(format!("drop needs whole seconds, not {seconds:?}")),
         },
         ["fault", "clear"] => {
-            faults.lock().unwrap().clear();
+            faults.send_replace(Vec::new());
             Ok(())
         }
         ["fault", path, status] => match status.parse::<u16>() {
             Ok(status) if (400..=599).contains(&status) && path.starts_with('/') => {
-                let mut faults = faults.lock().unwrap();
-                faults.retain(|f| f.path != *path);
-                faults.push(Fault {
-                    path: path.to_string(),
-                    status,
+                faults.send_modify(|faults| {
+                    faults.retain(|f| f.path != *path);
+                    faults.push(Fault {
+                        path: path.to_string(),
+                        status,
+                    });
                 });
                 Ok(())
             }
@@ -183,7 +185,7 @@ async fn command_line(
         _ => Err(format!("unknown command {:?}", line.trim())),
     };
     let text = match reply {
-        Ok(()) => describe(*mode.borrow(), &faults.lock().unwrap()),
+        Ok(()) => describe(*mode.borrow(), &faults.borrow()),
         Err(e) => format!("error: {e}"),
     };
     let _ = write.write_all(format!("{text}\n").as_bytes()).await;
@@ -262,11 +264,20 @@ async fn connection(
     };
     let (client_read, mut client_write) = client.into_split();
     let (server_read, server_write) = server.into_split();
+    let target = Arc::new(Mutex::new(String::new()));
+    let mut faulted = faults.subscribe();
     let pipes = async {
         let answer = {
             let mut responses = Box::pin(pipe(server_read, &mut client_write, frozen.clone()));
+            let requests = requests(
+                BufReader::new(client_read),
+                server_write,
+                frozen.clone(),
+                faults,
+                target.clone(),
+            );
             tokio::select! {
-                ended = requests(BufReader::new(client_read), server_write, frozen.clone(), faults) => match ended {
+                ended = requests => match ended {
                     Ended::Closed => {
                         responses.await;
                         None
@@ -283,16 +294,35 @@ async fn connection(
         }
     };
     let watch = async {
-        while rx.changed().await.is_ok() {
-            match *rx.borrow() {
-                Mode::Dropped => frozen.store(true, Ordering::SeqCst),
-                Mode::Offline => return,
-                Mode::Online => {}
+        loop {
+            tokio::select! {
+                changed = rx.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+
+                    match *rx.borrow() {
+                        Mode::Dropped => frozen.store(true, Ordering::SeqCst),
+                        Mode::Offline => return,
+                        Mode::Online => {}
+                    }
+                }
+                changed = faulted.changed() => {
+                    if changed.is_err() {
+                        break;
+                    }
+
+                    // A failing service drops what it was in the middle of, such as a long-lived stream.
+                    let target = target.lock().unwrap().clone();
+                    if faulted.borrow().iter().any(|f| f.matches(&target)) {
+                        return;
+                    }
+                }
             }
         }
         std::future::pending::<()>().await;
     };
-    // Going offline drops both halves, which closes the sockets.
+    // Going offline, or a fault on the request in flight, drops both halves, which closes the sockets.
     tokio::select! {
         () = pipes => {}
         () = watch => {}
@@ -337,6 +367,7 @@ async fn requests(
     mut to: OwnedWriteHalf,
     frozen: Arc<AtomicBool>,
     faults: Faults,
+    target: Arc<Mutex<String>>,
 ) -> Ended {
     loop {
         let head = match read_head(&mut from).await {
@@ -355,9 +386,9 @@ async fn requests(
             }
         };
 
+        target.lock().unwrap().clone_from(&head.target);
         let status = faults
-            .lock()
-            .unwrap()
+            .borrow()
             .iter()
             .find(|f| f.matches(&head.target))
             .map(|f| f.status);

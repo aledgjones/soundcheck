@@ -128,6 +128,13 @@ async fn http(port: u16) {
                 let (r, mut w) = c.into_split();
                 let mut r = tokio::io::BufReader::new(r);
                 while let Some((path, body)) = read_message(&mut r).await {
+                    if path == "/stream" {
+                        let _ = w
+                            .write_all(b"HTTP/1.1 200 OK\r\ntransfer-encoding: chunked\r\n\r\n5\r\nhello\r\n")
+                            .await;
+                        std::future::pending::<()>().await;
+                    }
+
                     let text = format!("{path} {}", body.len());
                     let reply = format!(
                         "HTTP/1.1 200 OK\r\ncontent-length: {}\r\n\r\n{text}",
@@ -244,10 +251,10 @@ async fn a_fault_answers_its_path_and_lets_the_rest_through() {
     let socket = start_http(19104, 19004).await;
     let mut kept = connect(19104).await;
     assert_eq!(
-        request(&mut kept, "POST", "/write", "{}", false)
+        request(&mut kept, "GET", "/health", "", false)
             .await
             .unwrap(),
-        ("200".into(), "/write 2".into())
+        ("200".into(), "/health 0".into())
     );
 
     assert_eq!(
@@ -365,6 +372,47 @@ async fn reset_brings_the_proxy_online_with_no_faults() {
             .unwrap()
             .parse::<u64>()
             .is_ok()
+    );
+    proxy::command(&socket, "stop").await.unwrap();
+}
+
+#[tokio::test]
+async fn a_new_fault_ends_an_open_stream_to_its_path() {
+    let socket = start_http(19106, 19006).await;
+    let mut stream = connect(19106).await;
+    stream
+        .get_mut()
+        .write_all(b"POST /stream HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    let mut seen = vec![0u8; 256];
+    let n = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut seen))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&seen[..n]).contains("hello"));
+    let mut other = connect(19106).await;
+    assert_eq!(
+        request(&mut other, "GET", "/health", "", false)
+            .await
+            .unwrap()
+            .0,
+        "200"
+    );
+
+    proxy::command(&socket, "fault /stream 503").await.unwrap();
+    let closed = tokio::time::timeout(Duration::from_secs(1), stream.read(&mut seen)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0) | Err(_))),
+        "the open stream outlived its fault"
+    );
+    assert_eq!(
+        request(&mut other, "GET", "/health", "", false)
+            .await
+            .unwrap()
+            .0,
+        "200",
+        "a connection to another path was dropped"
     );
     proxy::command(&socket, "stop").await.unwrap();
 }
