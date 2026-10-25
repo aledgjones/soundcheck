@@ -7,7 +7,7 @@ description: "Set a project up for soundcheck, or bring an existing suite up to 
 
 A project brings three things: a **suite** (specs, `suite.yaml`, hook scripts), a **regression skill** of its own (when and how to run, accounts, device quirks), and a **permission rule** so unattended runs never stop at a prompt. Soundcheck brings everything else. This skill sets those three up, or migrates them.
 
-**Only touch soundcheck's own files:** the suite folder, the project's regression skill, and the permission rule in `.claude/settings.json`. Reading the app's code to learn its screens is fine; changing it isn't. "Lint" in these skills means `soundcheck lint`: never run the project's own linters or formatters across the repo, and if the project formats files, format only the ones you wrote.
+**Only touch soundcheck's own files:** the suite folder, the project's regression skill, and the permission rules in `.claude/settings.json`. Reading the app's code to learn its screens is fine; changing it isn't. "Lint" in these skills means `soundcheck lint`: never run the project's own linters or formatters across the repo, and if the project formats files, format only the ones you wrote.
 
 ## Is it a new project or a migration?
 
@@ -100,13 +100,18 @@ It holds what's specific to this project, never soundcheck's generic steps:
 
 ## 4. Allow soundcheck's tools
 
-Add this rule to the project's `.claude/settings.json` under `permissions.allow`, so background testers never stop at a permission prompt:
+Add these rules to the project's `.claude/settings.json` under `permissions.allow`, so background testers never stop at a permission prompt and auto mode doesn't block the coordinator's commands as self-modification:
 
 ```json
-"mcp__plugin_soundcheck_soundcheck__*"
+"mcp__plugin_soundcheck_soundcheck__*",
+"Bash(soundcheck lint:*)",
+"Bash(soundcheck run:*)",
+"Bash(soundcheck events:*)",
+"Bash(soundcheck serve:*)",
+"Bash(soundcheck drive:*)"
 ```
 
-It's safe because the tester agent's only tools are soundcheck's own and Read. Show the person the change before writing it.
+They're safe because the tester agent's only tools are soundcheck's own and Read, and each command only reads the suite, drives the test devices or writes the suite's reports. Keep any rules already there, and show the person the change before writing it.
 
 ## 5. First spec and lint
 
@@ -116,4 +121,5 @@ Write one real spec with `create-test`, then run `soundcheck lint <suite>`. It m
 
 1. Read the suite's pin (`soundcheck:` in `suite.yaml`) and the installed version (`soundcheck --version`).
 2. Read the plugin's `MIGRATIONS.md` and apply every entry newer than the pin, oldest first.
-3. Bump the pin, run `soundcheck lint`, and show the person the whole diff for review. Never migrate mid-release: results must stay comparable within a release.
+3. Whatever the pin, check that the project's `.claude/settings.json` has every rule in section 4, and add any missing.
+4. Bump the pin, run `soundcheck lint`, and show the person the whole diff for review. Never migrate mid-release: results must stay comparable within a release.

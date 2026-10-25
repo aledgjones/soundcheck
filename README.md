@@ -110,7 +110,7 @@ Bump the version in `Cargo.toml` and `plugin/.claude-plugin/plugin.json` togethe
 
 ## Use
 
-1. **Set a project up** with the plugin's `setup` skill. It writes `suite.yaml`, hook stubs, a draft regression skill for the project, and the permission rule that stops background testers prompting.
+1. **Set a project up** with the plugin's `setup` skill. It writes `suite.yaml`, hook stubs, a draft regression skill for the project, and the permission rules that stop background testers and soundcheck's commands prompting.
 2. **Write specs** with `create-test`, then check them with `soundcheck lint <suite>`.
 3. **Run:** the project's regression skill hands a scope to the plugin's `run` skill. That skill starts the server (`soundcheck run <suite> --scope <features or specs> --label "v1.2.3 · candidate"`), which opens the live page and serves MCP at `http://127.0.0.1:7357/mcp`. The plugin reaches it through `soundcheck mcp`, a stdio bridge, so a Claude Code session started before the server needs no reconnect.
 
