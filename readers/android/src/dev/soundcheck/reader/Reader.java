@@ -250,9 +250,34 @@ public class Reader extends Instrumentation {
     return touchscreenId;
   }
 
+  // Modifiers held with `kd` apply to the keys after them, as a hardware keyboard's do; without the meta state, ctrl
+  // then A types an "a" instead of selecting all.
+  private int meta;
+
   private void key(int action, int code) {
+    int bit = metaBit(code);
+    if (action == KeyEvent.ACTION_DOWN) {
+      meta |= bit;
+    }
     long now = SystemClock.uptimeMillis();
-    automation.injectInputEvent(new KeyEvent(now, now, action, code, 0), true);
+    automation.injectInputEvent(new KeyEvent(now, now, action, code, 0, meta), true);
+    if (action == KeyEvent.ACTION_UP) {
+      meta &= ~bit;
+    }
+  }
+
+  private static int metaBit(int code) {
+    return switch (code) {
+      case KeyEvent.KEYCODE_CTRL_LEFT -> KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_LEFT_ON;
+      case KeyEvent.KEYCODE_CTRL_RIGHT -> KeyEvent.META_CTRL_ON | KeyEvent.META_CTRL_RIGHT_ON;
+      case KeyEvent.KEYCODE_SHIFT_LEFT -> KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_LEFT_ON;
+      case KeyEvent.KEYCODE_SHIFT_RIGHT -> KeyEvent.META_SHIFT_ON | KeyEvent.META_SHIFT_RIGHT_ON;
+      case KeyEvent.KEYCODE_ALT_LEFT -> KeyEvent.META_ALT_ON | KeyEvent.META_ALT_LEFT_ON;
+      case KeyEvent.KEYCODE_ALT_RIGHT -> KeyEvent.META_ALT_ON | KeyEvent.META_ALT_RIGHT_ON;
+      case KeyEvent.KEYCODE_META_LEFT -> KeyEvent.META_META_ON | KeyEvent.META_META_LEFT_ON;
+      case KeyEvent.KEYCODE_META_RIGHT -> KeyEvent.META_META_ON | KeyEvent.META_META_RIGHT_ON;
+      default -> 0;
+    };
   }
 
   // Each character as the keys that type it (shift included), from the device's own key map. Keys sent back to back
