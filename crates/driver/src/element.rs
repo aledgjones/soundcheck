@@ -28,6 +28,8 @@ pub struct Element {
     pub selected: Option<bool>,
     pub expanded: Option<bool>,
     pub focused: bool,
+    /// The visible area of the scroll view that clips it out of view, when it's scrolled out: a tap scrolls it in.
+    pub scroll: Option<Rect>,
 }
 
 impl Element {
@@ -65,6 +67,9 @@ impl Element {
         }
         if self.focused {
             states.push("focused");
+        }
+        if self.scroll.is_some() {
+            states.push("off view: a tap scrolls to it");
         }
         if !states.is_empty() {
             line.push_str(&format!(" ({})", states.join(", ")));

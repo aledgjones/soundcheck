@@ -89,16 +89,11 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
             (None, true) if !id.is_empty() => id,
             _ => continue,
         };
-        let Some(b) = BOUNDS.captures(get("bounds")) else {
+        let Some(frame) = bounds(get("bounds")) else {
             continue;
         };
-        let n = |i: usize| b.get(i).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
-        let frame = Rect {
-            x: n(1),
-            y: n(2),
-            width: n(3) - n(1),
-            height: n(4) - n(2),
-        };
+        // The reader's mark for a node scrolled out of view: the scroll view's visible area.
+        let scroll = bounds(get("off-view"));
         if frame.width <= 0.0 || frame.height <= 0.0 {
             continue;
         }
@@ -117,9 +112,23 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
             selected: flag("selected").then_some(true),
             expanded: None,
             focused: flag("focused"),
+            scroll,
         });
     }
     out
+}
+
+/// `[left,top][right,bottom]`, as the reader writes bounds; `None` when absent or empty.
+fn bounds(s: &str) -> Option<Rect> {
+    let b = BOUNDS.captures(s)?;
+    let n = |i: usize| b.get(i).unwrap().as_str().parse::<f64>().unwrap_or(0.0);
+    let r = Rect {
+        x: n(1),
+        y: n(2),
+        width: n(3) - n(1),
+        height: n(4) - n(2),
+    };
+    (r.width > 0.0 && r.height > 0.0).then_some(r)
 }
 
 /// The app an "ANR in" log line names: ActivityManager writes `ANR in com.app (…)`, WindowManager
@@ -879,6 +888,22 @@ mod tests {
     fn a_single_quoted_value_keeps_its_double_quotes() {
         let xml = r#"<node index="0" text='Delete "Strings"?' resource-id="android:id/message" content-desc="" bounds="[0,0][10,10]" />"#;
         assert_eq!(parse(xml, false)[0].label, r#"Delete "Strings"?"#);
+    }
+
+    #[test]
+    fn a_node_scrolled_out_of_view_keeps_its_scroll_area() {
+        let xml = r#"<node index="0" text="" content-desc="Crotchet" off-view="[432,1165][1168,1525]" bounds="[1184,1165][1185,1274]" />"#;
+        let crotchet = &parse(xml, false)[0];
+        assert_eq!(
+            crotchet.scroll,
+            Some(Rect {
+                x: 432.0,
+                y: 1165.0,
+                width: 736.0,
+                height: 360.0
+            })
+        );
+        assert!(crotchet.line().ends_with("(off view: a tap scrolls to it)"));
     }
 
     #[test]

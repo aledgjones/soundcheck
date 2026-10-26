@@ -333,7 +333,7 @@ public class Reader extends Instrumentation {
     xml.append("<hierarchy rotation=\"").append(rotation).append("\">");
     if (root != null) {
       display = new Rect(0, 0, metrics.width(), metrics.height());
-      node(xml, root, 0, display);
+      node(xml, root, 0, display, null, null);
     }
     xml.append("</hierarchy>");
     return xml.toString();
@@ -341,14 +341,30 @@ public class Reader extends Instrumentation {
 
   private Rect display = new Rect();
 
-  private void node(StringBuilder xml, AccessibilityNodeInfo n, int index, Rect parentVisible) {
+  // `scrollArea` is the visible area of the nearest scroll view around the node, or null; `offView` is that area when
+  // the node is scrolled out of it, or null for a node that shows.
+  private void node(
+      StringBuilder xml,
+      AccessibilityNodeInfo n,
+      int index,
+      Rect parentVisible,
+      Rect scrollArea,
+      Rect offView) {
     Rect bounds = new Rect();
     n.getBoundsInScreen(bounds);
     // uiautomator reports bounds clipped to what is on screen; a tap at the centre must land on the node.
-    if (!bounds.intersect(parentVisible)) {
+    if (offView == null && !bounds.intersect(parentVisible)) {
       bounds.setEmpty();
     }
     xml.append("<node index=\"").append(index).append('"');
+    if (offView != null) {
+      // Android clamps an out-of-view node's far edges to the scroll view's, leaving its near corner true: enough to
+      // know which way to scroll, and it's read again once in view.
+      bounds.right = Math.max(bounds.right, bounds.left + 1);
+      bounds.bottom = Math.max(bounds.bottom, bounds.top + 1);
+      xml.append(" off-view=\"[").append(offView.left).append(',').append(offView.top).append("][")
+          .append(offView.right).append(',').append(offView.bottom).append("]\"");
+    }
     attr(xml, "text", n.getText());
     attr(xml, "resource-id", n.getViewIdResourceName());
     attr(xml, "class", n.getClassName());
@@ -366,16 +382,42 @@ public class Reader extends Instrumentation {
     flag(xml, "selected", n.isSelected());
     xml.append(" bounds=\"[").append(bounds.left).append(',').append(bounds.top).append("][")
         .append(bounds.right).append(',').append(bounds.bottom).append("]\">");
+    // The visible area of the nearest scroll view around the children: their own parent rarely scrolls itself.
+    Rect area = offView == null && n.isScrollable() ? new Rect(bounds) : scrollArea;
     int childIndex = 0;
     for (int i = 0; i < n.getChildCount(); i++) {
       AccessibilityNodeInfo child = n.getChild(i);
       // uiautomator skips children that aren't visible to the user, even in a full dump. A control drawn outside its
       // parent's bounds counts as invisible, as it does for TalkBack (the annotation text box's Done, 2026-10-21).
-      if (child != null && child.isVisibleToUser()) {
-        node(xml, child, childIndex++, bounds);
+      if (child == null) {
+        continue;
+      }
+      if (offView != null) {
+        node(xml, child, childIndex++, bounds, area, offView);
+      } else if (child.isVisibleToUser()) {
+        node(xml, child, childIndex++, bounds, area, null);
+      } else if (area != null && nextPage(child, area)) {
+        // Scrolled out of view, as a paging grid's second page is: TalkBack scrolls to it, so a tap can too.
+        node(xml, child, childIndex++, bounds, area, area);
       }
     }
     xml.append("</node>");
+  }
+
+  // Within one scroll area of what shows, so one swipe brings it in; anything further would flood a long list's dump.
+  private static boolean nextPage(AccessibilityNodeInfo child, Rect area) {
+    if (area.isEmpty()) {
+      return false;
+    }
+    Rect b = new Rect();
+    child.getBoundsInScreen(b);
+    Rect near =
+        new Rect(
+            area.left - area.width(),
+            area.top - area.height(),
+            area.right + area.width(),
+            area.bottom + area.height());
+    return near.contains(b.centerX(), b.centerY());
   }
 
   private static void attr(StringBuilder xml, String name, CharSequence value) {

@@ -315,6 +315,7 @@ impl Device for Web {
                 selected: flag(AxPropertyName::Selected),
                 expanded: flag(AxPropertyName::Expanded),
                 focused: flag(AxPropertyName::Focused) == Some(true),
+                scroll: None,
             };
             // A text node repeats its parent's name in the same place: keep one.
             let duplicate = elements.iter().any(|e| {

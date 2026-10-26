@@ -38,12 +38,20 @@ pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
     };
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    let mut stack: Vec<&Value> = roots.iter().rev().collect();
-    while let Some(node) = stack.pop() {
-        if let Some(children) = node.get("children").and_then(Value::as_array) {
-            stack.extend(children.iter().rev());
-        }
+    // Each node with the visible area of the scroll views around it: a scroll view reports every child where its
+    // content lays it out, even those scrolled out of view (a paging grid's second page).
+    let mut stack: Vec<(&Value, Option<Rect>)> = roots.iter().rev().map(|r| (r, None)).collect();
+    while let Some((node, clip)) = stack.pop() {
         let role = text(node, "type");
+        if let Some(children) = node.get("children").and_then(Value::as_array) {
+            let inner = if role.as_deref() == Some("ScrollArea") {
+                let area = frame(node);
+                Some(clip.and_then(|c| intersect(&c, &area)).unwrap_or(area))
+            } else {
+                clip
+            };
+            stack.extend(children.iter().rev().map(|c| (c, inner)));
+        }
         if role.as_deref() == Some("Application") {
             continue;
         }
@@ -57,19 +65,16 @@ pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
             (None, true) if id.is_some() => id.clone().unwrap_or_default(),
             _ => continue,
         };
-        // Clipped to the screen: a row scrolled half off is still there for a person, and a tap lands on what shows.
+        // Clipped to what shows: a row scrolled half off is still there for a person, and a tap lands on what shows.
+        // Wholly scrolled out of its scroll view is kept, marked off view, when one swipe brings it in.
         let whole = frame(node);
-        let (left, top) = (whole.x.max(screen.x), whole.y.max(screen.y));
-        let right = (whole.x + whole.width).min(screen.x + screen.width);
-        let bottom = (whole.y + whole.height).min(screen.y + screen.height);
-        if right <= left || bottom <= top {
-            continue;
-        }
-        let f = Rect {
-            x: left,
-            y: top,
-            width: right - left,
-            height: bottom - top,
+        let visible = clip.map_or(Some(screen), |area| intersect(&screen, &area));
+        let (f, scroll) = match visible.and_then(|v| intersect(&whole, &v)) {
+            Some(shown) => (shown, None),
+            None => match clip {
+                Some(area) if next_page(&area, &whole) => (whole, Some(area)),
+                _ => continue,
+            },
         };
         let (cx, cy) = f.centre();
         if !seen.insert(format!("{cx:.0},{cy:.0}|{label:?}|{value:?}|{id:?}")) {
@@ -92,9 +97,31 @@ pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
             enabled: node.get("enabled").and_then(Value::as_bool) != Some(false),
             expanded: None,
             focused: false,
+            scroll,
         });
     }
     Ok(out)
+}
+
+/// Within one scroll area of what shows, so one swipe brings it in; anything further would flood a long list's read.
+fn next_page(area: &Rect, r: &Rect) -> bool {
+    let (cx, cy) = r.centre();
+    cx >= area.x - area.width
+        && cx <= area.x + 2.0 * area.width
+        && cy >= area.y - area.height
+        && cy <= area.y + 2.0 * area.height
+}
+
+fn intersect(a: &Rect, b: &Rect) -> Option<Rect> {
+    let (left, top) = (a.x.max(b.x), a.y.max(b.y));
+    let right = (a.x + a.width).min(b.x + b.width);
+    let bottom = (a.y + a.height).min(b.y + b.height);
+    (right > left && bottom > top).then_some(Rect {
+        x: left,
+        y: top,
+        width: right - left,
+        height: bottom - top,
+    })
 }
 
 fn frame(node: &Value) -> Rect {
@@ -1013,6 +1040,28 @@ impl Device for Ios {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_scroll_area_marks_what_it_scrolls_out_of_view() {
+        let button = |label: &str, x: f64| {
+            serde_json::json!({"type": "Button", "AXLabel": label,
+                "frame": {"x": x, "y": 630.0, "width": 54.0, "height": 54.0}})
+        };
+        let tree = serde_json::json!([{"type": "Application",
+            "frame": {"x": 0.0, "y": 0.0, "width": 1032.0, "height": 1376.0},
+            "children": [{"type": "ScrollArea",
+                "frame": {"x": 332.0, "y": 630.0, "width": 368.0, "height": 180.0},
+                "children": [button("Down bow", 332.0), button("Crotchet", 708.0), button("Far", 2000.0)]}]}]);
+        let seen = parse(&tree.to_string(), false).unwrap();
+        let labels: Vec<_> = seen.iter().map(|e| e.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Down bow", "Crotchet"],
+            "beyond the next page is left out"
+        );
+        assert_eq!(seen[0].scroll, None);
+        assert_eq!(seen[1].scroll.map(|a| a.x), Some(332.0));
+    }
 
     #[test]
     fn ps_elapsed_times_parse_to_seconds() {

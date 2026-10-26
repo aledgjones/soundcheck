@@ -130,6 +130,32 @@ fn a_point_needs_two_numbers() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn tap_scrolls_an_element_out_of_view_into_it_first() {
+    let area = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 100.0,
+        height: 50.0,
+    };
+    let off = Element {
+        scroll: Some(area),
+        ..el("Crotchet", 150.0)
+    };
+    // Still gliding on the first read after the swipe, then still.
+    let driver = Driver::new(Fake::new(vec![
+        vec![off],
+        vec![el("Crotchet", 40.0)],
+        vec![el("Crotchet", 20.0)],
+    ]));
+    let tapped = driver.tap(&m("Crotchet"), false).await.unwrap();
+    assert_eq!(tapped.frame.x, 20.0);
+    assert_eq!(
+        *driver.device.actions.lock().unwrap(),
+        ["swipe (80.0, 25.0) (20.0, 25.0) 300", "tap 25,5"]
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn tap_waits_for_the_element_then_taps_its_centre() {
     let driver = Driver::new(Fake::new(vec![vec![], vec![], vec![el("Save", 100.0)]]));
     let tapped = driver.tap(&m("Save"), false).await.unwrap();

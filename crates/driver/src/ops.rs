@@ -14,6 +14,10 @@ pub const GESTURE_MAX_MS: u64 = 10_000;
 pub const TOUCH_MAX_STOPS: u64 = 20;
 pub const NETWORK_DROP_MAX_S: u64 = 300;
 const POLL_MS: u64 = 250;
+/// Bringing an element scrolled out of view into it: at most this many swipes, each a person's page turn.
+const SCROLL_PAGES_MAX: u32 = 5;
+const SCROLL_SWIPE_MS: u64 = 300;
+const SCROLL_SETTLE_READS: u32 = 12;
 const FILL_TRIES: u32 = 3;
 
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
@@ -148,7 +152,49 @@ impl<D: Device> Driver<D> {
                 ..Default::default()
             });
         }
-        self.wait_for(target, TAP_WAIT_MS, last).await
+        let mut e = self.wait_for(target, TAP_WAIT_MS, last).await?;
+        // Scrolled out of view: swipe its scroll view toward it a page at a time, as VoiceOver does, then touch it.
+        for _ in 0..SCROLL_PAGES_MAX {
+            let Some(area) = e.scroll else {
+                return Ok(e);
+            };
+            let (ex, ey) = e.frame.centre();
+            let (ax, ay) = area.centre();
+            let (near, far) = (0.2, 0.8);
+            let (from, to) = if (ex - ax).abs() >= (ey - ay).abs() {
+                let (a, b) = (area.x + area.width * near, area.x + area.width * far);
+                if ex > ax {
+                    ((b, ay), (a, ay))
+                } else {
+                    ((a, ay), (b, ay))
+                }
+            } else {
+                let (a, b) = (area.y + area.height * near, area.y + area.height * far);
+                if ey > ay {
+                    ((ax, b), (ax, a))
+                } else {
+                    ((ax, a), (ax, b))
+                }
+            };
+            self.device.swipe(from, to, SCROLL_SWIPE_MS).await?;
+            // A tap on a list still gliding only stops it: wait until the element holds still.
+            e = self.wait_for(target, TAP_WAIT_MS, last).await?;
+            for _ in 0..SCROLL_SETTLE_READS {
+                sleep(Duration::from_millis(POLL_MS)).await;
+                let now = self.wait_for(target, TAP_WAIT_MS, last).await?;
+                let still = now.frame == e.frame;
+                e = now;
+                if still {
+                    break;
+                }
+            }
+        }
+        if e.scroll.is_some() {
+            return Err(DriverError::Invalid(format!(
+                "{target} stayed out of view after {SCROLL_PAGES_MAX} swipes of its scroll view"
+            )));
+        }
+        Ok(e)
     }
 
     /// One finger through `path`, each stop an element or a point with how long to rest there: down at the first,
