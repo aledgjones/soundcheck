@@ -66,8 +66,11 @@ How they talk:
 1. **`soundcheck run <suite>`** (the coordinator starts it) runs a **preflight**: a fixed checklist, printed as each step passes, journalled for the timeline, and refusing to start at the first failure with what to fix. Deterministic on purpose: preparation is never an agent's judgement call.
    - lint the suite and check its pinned version;
    - run the project's `guard` hook (the project decides what "safe and up" means, e.g. local only, backend answering);
+   - take the port (SA-697);
+   - connect every device before anything is built: one emulator on API 34 or newer, one booted simulator, Chrome (SA-705), so a device problem shows in seconds rather than after a build;
+   - wait for a settled Mac (SA-699);
    - read each platform's build identity; build and install with the `install` hook where it's unknown (every platform with `--install`), and refuse if it's still unknown;
-   - connect each device, launch the app and wait for the platform's `ready` labels from `suite.yaml` (signed in, past onboarding);
+   - launch the app on each device and wait for the platform's `ready` labels from `suite.yaml` (signed in, past onboarding);
    - then open the live page.
 
    The project supplies every specific (hooks, `ready` labels); soundcheck supplies the sequence and the generic checks, so it stays project-agnostic.

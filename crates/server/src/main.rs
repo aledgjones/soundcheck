@@ -377,6 +377,17 @@ fn run_command(args: RunArgs) -> Result<()> {
             only.headed = headed;
             only.start_ms = first_call_seconds * 1000;
         }
+        // Every device answers before anything is built, so a missing emulator or one too old shows in seconds, not
+        // after a build. What needs the app (its ready labels) waits for the install.
+        for &platform in &platforms {
+            hub.on_device(platform, async |_| Ok(()))
+                .await
+                .with_context(|| format!("{platform} isn't ready to test"))?;
+            pass(
+                &mut checks,
+                format!("{platform}: the device is there and soundcheck can drive it"),
+            );
+        }
         let settled = serve::wait_for_calm_host().await;
         // Results count only for an identified build, so a platform without one is built before anything runs.
         let has_install_hook = config_has_install;
