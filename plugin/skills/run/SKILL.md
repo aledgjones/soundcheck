@@ -49,6 +49,7 @@ The project's regression skill gives you:
 ## 2. Dispatch
 
 - Call `dispatch` with the next spec in scope and its platform. It returns a `token`, the spec's `model`, the `agent` type and a short `prompt`. The brief itself isn't in it: the tester fetches it from the server with `brief`, so it never passes through your context.
+- Pass `done` on that `dispatch` (or on `finish`) for every tester whose completion notice has arrived since you last did: its `token` and the total tokens the notice gives. That is the run's only record of what testers cost.
 - Start a **background** Agent with `subagent_type` set to the `agent` it returned (`soundcheck-tester`, or `soundcheck-tester-mechanics` for a spec that lists driver tools), the `model` if one is given, and the `prompt` as its prompt, **unchanged**, and the token as its description.
 - A tester's final reply is one line (token, claim, side finds). Its judgments and evidence are on the server: read them with `status` when you review, not from the reply.
 - One spec runs at a time unless the suite says `parallel: true`. The server refuses a second dispatch and says why; that's your cue to wait for the next event.

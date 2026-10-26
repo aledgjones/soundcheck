@@ -4,6 +4,7 @@ pub mod event;
 pub mod journal;
 pub mod model;
 pub mod saved;
+pub mod usage;
 pub mod verdict;
 
 use crate::suite::config::Platform;
@@ -147,12 +148,16 @@ pub struct State {
     next_id: u32,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct Activity {
     last: u64,
     in_call: u32,
     /// Whether the tester has made its first tool call; until then the longer start limit applies.
     started: bool,
+    /// When this attempt's first call began, for its duration. None on a resumed run, whose calls weren't counted.
+    first: Option<u64>,
+    /// Calls this attempt made, by tool.
+    calls: BTreeMap<String, u32>,
 }
 
 pub struct Run {
@@ -188,6 +193,8 @@ impl Run {
                         last: now,
                         in_call: 0,
                         started: true,
+                        first: None,
+                        calls: BTreeMap::new(),
                     },
                 );
             }
@@ -263,6 +270,8 @@ impl Run {
                 last: now,
                 in_call: 0,
                 started: false,
+                first: None,
+                calls: BTreeMap::new(),
             },
         );
         Ok(token)
@@ -398,7 +407,7 @@ impl Run {
                 find_ids,
             },
         )?;
-        self.activity.remove(token);
+        self.end_activity(now, token)?;
         Ok(claim)
     }
 
@@ -757,12 +766,53 @@ impl Run {
     }
 
     /// A tester's tool call began; time inside a call never counts towards a stall.
-    pub fn call_started(&mut self, now: u64, token: &str) {
+    pub fn call_started(&mut self, now: u64, token: &str, tool: &str) {
         if let Some(a) = self.activity.get_mut(token) {
             a.in_call += 1;
             a.last = now;
+            if !a.started {
+                a.first = Some(now);
+            }
             a.started = true;
+            *a.calls.entry(tool.to_string()).or_default() += 1;
         }
+    }
+
+    /// The attempt is over: forget its liveness and journal what it did, if its calls were counted.
+    fn end_activity(&mut self, now: u64, token: &str) -> Result<()> {
+        let Some(a) = self.activity.remove(token) else {
+            return Ok(());
+        };
+        let Some(first) = a.first else {
+            return Ok(());
+        };
+        self.commit(
+            now,
+            Event::Usage {
+                token: token.into(),
+                calls: a.calls,
+                duration_ms: a.last.saturating_sub(first),
+            },
+        )
+    }
+
+    /// The token total the coordinator read from a tester's completion notice. Allowed after the run has finished,
+    /// since the last testers' notices come after their posts.
+    pub fn tokens(&mut self, now: u64, token: &str, tokens: u64) -> Result<()> {
+        let dispatched = self
+            .entries
+            .iter()
+            .any(|e| matches!(&e.event, Event::Dispatched { token: t, .. } if t == token));
+        if !dispatched {
+            bail!("no attempt with token {token}");
+        }
+        self.commit(
+            now,
+            Event::Tokens {
+                token: token.into(),
+                tokens,
+            },
+        )
     }
 
     pub fn call_finished(&mut self, now: u64, token: &str) {
@@ -803,7 +853,7 @@ impl Run {
                 reason: reason.into(),
             },
         )?;
-        self.activity.remove(token);
+        self.end_activity(now, token)?;
         Ok(())
     }
 
@@ -830,7 +880,7 @@ impl Run {
                     token: token.clone(),
                 },
             )?;
-            self.activity.remove(token);
+            self.end_activity(now, token)?;
         }
         Ok(tokens.len())
     }
@@ -1006,7 +1056,7 @@ impl Run {
             },
         )?;
         for token in abandoned {
-            self.activity.remove(&token);
+            self.end_activity(now, &token)?;
         }
         Ok(was)
     }
@@ -1698,7 +1748,7 @@ impl State {
                 ),
             }),
             // A record for the timeline; nothing about the rows changes.
-            Event::Preflight { .. } => {}
+            Event::Preflight { .. } | Event::Usage { .. } | Event::Tokens { .. } => {}
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
             Event::Relabelled { label, .. } => self.label = Some(label.clone()),

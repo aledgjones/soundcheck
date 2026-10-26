@@ -31,6 +31,14 @@ fn reply(result: anyhow::Result<serde_json::Value>) -> Result<CallToolResult, Er
     })
 }
 
+fn record_done(run: &mut crate::run::Run, now: u64, done: &[Done]) -> anyhow::Result<()> {
+    for d in done {
+        run.tokens(now, &d.token, d.tokens)?;
+    }
+
+    Ok(())
+}
+
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct PostResultParams {
     /// Your spec token, from your brief.
@@ -58,6 +66,24 @@ pub struct DispatchParams {
     /// Spec ID, e.g. `annotations/001-draw`.
     pub spec: String,
     pub platform: Platform,
+    /// Testers that have finished since you last reported any.
+    #[serde(default)]
+    pub done: Vec<Done>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct FinishParams {
+    /// Testers that have finished since you last reported any.
+    #[serde(default)]
+    pub done: Vec<Done>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
+pub struct Done {
+    /// The tester's spec token.
+    pub token: String,
+    /// The total tokens its completion notice gives.
+    pub tokens: u64,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -614,6 +640,8 @@ impl Tools {
             )));
         }
         reply(self.hub.with_run(|run, now| {
+            run.call_started(now, &p.token, "judge");
+            run.call_finished(now, &p.token);
             let judged = run.judge(now, &p.token, p.judgment)?;
             Ok(json!({ "judged": judged }))
         }))
@@ -664,10 +692,11 @@ impl Tools {
             .specs
             .iter()
             .any(|s| s.id == spec && s.probe.is_some());
-        let claim = match self
-            .hub
-            .with_run(|run, now| run.post_probed(now, &p.token, posted, has_probes))
-        {
+        let claim = match self.hub.with_run(|run, now| {
+            run.call_started(now, &p.token, "post_result");
+            run.call_finished(now, &p.token);
+            run.post_probed(now, &p.token, posted, has_probes)
+        }) {
             Ok(claim) => claim,
             Err(e) => return reply(Err(e)),
         };
@@ -791,13 +820,16 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
+        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`. Pass `done` for every tester that has finished since you last did, with the total tokens from its completion notice."
     )]
     async fn dispatch(
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
+        if let Err(e) = hub.with_run(|run, now| record_done(run, now, &p.done)) {
+            return reply(Err(e));
+        }
         let suite = hub.suite();
         let Some(spec) = suite.specs.iter().find(|s| s.id == p.spec) else {
             return reply(Err(anyhow::anyhow!("no spec {} in the suite", p.spec)));
@@ -877,7 +909,7 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         let brief = self.hub.with_run(|run, now| {
             let brief = run.brief(&p.token)?;
-            run.call_started(now, &p.token);
+            run.call_started(now, &p.token, "brief");
             run.call_finished(now, &p.token);
             Ok(brief)
         });
@@ -1059,11 +1091,15 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it."
+        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it. Pass `done` for the testers not yet reported."
     )]
-    async fn finish(&self) -> Result<CallToolResult, ErrorData> {
+    async fn finish(
+        &self,
+        Parameters(p): Parameters<FinishParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
         reply(self.hub.with_run(|run, now| {
+            record_done(run, now, &p.done)?;
             let counts = run.finish(now)?;
             let report = hub.export(run, now)?;
             Ok(json!({ "results": counts, "verdict": run.verdict(), "report": report }))
@@ -1085,7 +1121,7 @@ impl Tools {
         description = "Tester: what's on screen, as a screen reader gets it: one line per element, `x,y<TAB>label = value (states)`. `filter` narrows it; `all` includes what a screen reader skips."
     )]
     async fn see(&self, Parameters(p): Parameters<SeeParams>) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("see", &p.token, async |d| {
             let filter = p.filter.as_deref().map(matcher).transpose()?;
             let lines: Vec<String> = d
                 .see(filter.as_ref(), p.all)
@@ -1108,7 +1144,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<ExpectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("expect", &p.token, async |d| {
             Ok(line(
                 &d.expect_within(&matcher(&p.target)?, p.timeout_ms).await?,
             ))
@@ -1123,7 +1159,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<ExpectParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("gone", &p.token, async |d| {
             d.gone_within(&matcher(&p.target)?, p.timeout_ms)
                 .await
                 .map(|()| "gone")
@@ -1138,7 +1174,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<CheckParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("check", &p.token, async |d| {
             Ok(d.check_within(&p.assertions, p.timeout_ms)
                 .await?
                 .into_iter()
@@ -1155,7 +1191,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<WaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("wait", &p.token, async |d| {
             Ok(line(&d.wait(&matcher(&p.target)?, p.timeout_ms).await?))
         })
         .await
@@ -1170,7 +1206,7 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         let checked = self.hub.with_run(|run, now| {
             run.running(&p.token)?;
-            run.call_started(now, &p.token);
+            run.call_started(now, &p.token, "sleep");
             Ok(())
         });
         if let Err(e) = checked {
@@ -1202,7 +1238,7 @@ impl Tools {
         };
         // One evidence folder serves every spec, platform and attempt, so a shot's name carries its row.
         let name = report::shot_file(&report::evidence_base(&spec, attempt, platform), &p.name);
-        self.device(&p.token, async |d| {
+        self.device("shot", &p.token, async |d| {
             if !report::safe_name(&name) {
                 return Err(DriverError::Invalid(format!(
                     "{}: use letters, digits, - and _ only",
@@ -1225,7 +1261,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| d.device.errors().await)
+        self.device("errors", &p.token, async |d| d.device.errors().await)
             .await
     }
 
@@ -1234,7 +1270,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("tap", &p.token, async |d| {
             Ok(line(&d.tap(&matcher(&p.target)?, p.last).await?))
         })
         .await
@@ -1247,7 +1283,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<FillParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("fill", &p.token, async |d| {
             d.fill(&matcher(&p.target)?, &p.text)
                 .await
                 .map(|()| "filled")
@@ -1263,7 +1299,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TextParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("type", &p.token, async |d| {
             d.type_checked(&p.text).await.map(|()| "typed")
         })
         .await
@@ -1274,7 +1310,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<ClearParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("clear", &p.token, async |d| {
             d.device
                 .clear(p.chars.unwrap_or(60))
                 .await
@@ -1288,7 +1324,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<GestureParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("swipe", &p.token, async |d| {
             d.swipe((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms)
                 .await
                 .map(|()| "swiped")
@@ -1307,7 +1343,8 @@ impl Tools {
             path: p.path,
             keep: p.keep,
         };
-        self.device(&p.token, async |d| step(d, &s).await).await
+        self.device("touch", &p.token, async |d| step(d, &s).await)
+            .await
     }
 
     #[tool(
@@ -1318,7 +1355,8 @@ impl Tools {
         Parameters(p): Parameters<ReleaseParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let s = Step::Release { back: p.back };
-        self.device(&p.token, async |d| step(d, &s).await).await
+        self.device("release", &p.token, async |d| step(d, &s).await)
+            .await
     }
 
     #[tool(description = "Tester: press and hold an element for `ms` milliseconds.")]
@@ -1326,7 +1364,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<HoldParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("hold", &p.token, async |d| {
             Ok(line(&d.hold(&matcher(&p.target)?, p.ms).await?))
         })
         .await
@@ -1339,7 +1377,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TextParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("press", &p.token, async |d| {
             d.device.press(&p.text).await.map(|()| "pressed")
         })
         .await
@@ -1350,8 +1388,10 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| d.device.keyboard_shown().await)
-            .await
+        self.device("keyboard", &p.token, async |d| {
+            d.device.keyboard_shown().await
+        })
+        .await
     }
 
     #[tool(description = "Tester: restart the app.")]
@@ -1359,7 +1399,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("launch", &p.token, async |d| {
             d.device.launch().await.map(|()| "launched")
         })
         .await
@@ -1370,7 +1410,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("hover", &p.token, async |d| {
             let e = d.expect(&matcher(&p.target)?).await?;
             let (x, y) = e.tap_point();
             d.device.hover_at(x, y).await?;
@@ -1384,7 +1424,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<GotoParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("goto", &p.token, async |d| {
             d.device.goto(&p.url).await.map(|()| "opened")
         })
         .await
@@ -1395,7 +1435,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<ViewportParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("viewport", &p.token, async |d| {
             d.device
                 .viewport(p.width, p.height)
                 .await
@@ -1413,7 +1453,7 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         let name = p.as_name.clone().unwrap_or_else(|| p.file.clone());
         let fixtures = self.hub.fixtures_dir();
-        self.device(&p.token, async |d| {
+        self.device("push", &p.token, async |d| {
             if !report::safe_name(&p.file) || !report::safe_name(&name) {
                 return Err(DriverError::Invalid(
                     "file names only: letters, digits, - _ and .".into(),
@@ -1441,7 +1481,7 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         let checked = self.hub.with_run(|run, now| {
             run.running(&p.token)?;
-            run.call_started(now, &p.token);
+            run.call_started(now, &p.token, "act");
             Ok(())
         });
         if let Err(e) = checked {
@@ -1464,7 +1504,7 @@ impl Tools {
     ) -> Result<CallToolResult, ErrorData> {
         let checked = self.hub.with_run(|run, now| {
             run.running(&p.token)?;
-            run.call_started(now, &p.token);
+            run.call_started(now, &p.token, "check_data");
             Ok(())
         });
         if let Err(e) = checked {
@@ -1499,7 +1539,7 @@ impl Tools {
                 "the batch's pauses add up to {paused} ms, over the {MAX_PAUSE_MS} one wait allows: wait out a long time with separate `sleep` calls"
             )));
         }
-        self.device(&p.token, async |d| {
+        self.device("batch", &p.token, async |d| {
             let mut done = Vec::new();
             let mut last_input: Option<tokio::time::Instant> = None;
             for (i, s) in p.steps.iter().enumerate() {
@@ -1556,7 +1596,7 @@ impl Tools {
             report::evidence_base(&spec, attempt, platform),
             p.name
         );
-        self.device(&p.token, async |d| {
+        self.device("preview_compare", &p.token, async |d| {
             if !report::safe_name(&p.name) {
                 return Err(DriverError::Invalid(
                     "name: letters, digits, - and _ only".into(),
@@ -1605,7 +1645,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("double_tap", &p.token, async |d| {
             Ok(line(&d.double_tap(&matcher(&p.target)?, p.last).await?))
         })
         .await
@@ -1626,7 +1666,7 @@ impl Tools {
                 p.seconds
             )));
         }
-        self.device(&p.token, async |d| {
+        self.device("network_drop", &p.token, async |d| {
             d.network_drop(p.seconds).await?;
             if !p.wait {
                 return Ok(format!(
@@ -1649,7 +1689,7 @@ impl Tools {
         &self,
         Parameters(p): Parameters<OfflineParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
+        self.device("offline", &p.token, async |d| {
             d.offline(p.on)
                 .await
                 .map(|()| if p.on { "offline" } else { "online" }.to_string())
@@ -1664,12 +1704,14 @@ impl Tools {
         &self,
         Parameters(p): Parameters<FaultParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| match (p.clear, &p.path, p.status) {
-            (true, None, None) => d.fault_clear().await.map(|()| "no faults".to_string()),
-            (false, Some(path), Some(status)) => d.fault(path, status).await,
-            _ => Err(soundcheck_driver::DriverError::Invalid(
-                "fault takes a path and a status, or clear: true alone".into(),
-            )),
+        self.device("fault", &p.token, async |d| {
+            match (p.clear, &p.path, p.status) {
+                (true, None, None) => d.fault_clear().await.map(|()| "no faults".to_string()),
+                (false, Some(path), Some(status)) => d.fault(path, status).await,
+                _ => Err(soundcheck_driver::DriverError::Invalid(
+                    "fault takes a path and a status, or clear: true alone".into(),
+                )),
+            }
         })
         .await
     }
@@ -1688,12 +1730,13 @@ impl Tools {
     /// Runs a device operation for the platform the token's spec is on, counting it as the tester's activity.
     async fn device<T: Serialize>(
         &self,
+        tool: &str,
         token: &str,
         op: impl AsyncFnOnce(&Driver<AnyDevice>) -> Result<T, DriverError>,
     ) -> Result<CallToolResult, ErrorData> {
         let (spec, platform) = match self.hub.with_run(|run, now| {
             let (spec, platform) = run.running(token)?;
-            run.call_started(now, token);
+            run.call_started(now, token, tool);
             Ok((spec, platform))
         }) {
             Ok(p) => p,

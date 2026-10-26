@@ -2,6 +2,7 @@
 
 use crate::run::journal::Entry;
 use crate::run::model::{Answer, Call, Final, Posted, ProblemKind, ProblemSource, Status};
+use crate::run::usage;
 use crate::run::verdict::{Verdict, VerdictStatus, verdict};
 use crate::run::{Row, RowRecord, Run};
 use crate::serve::events;
@@ -201,6 +202,17 @@ pub fn active_ms(entries: &[Entry]) -> u64 {
         .sum()
 }
 
+/// 724k, 1.2M: a header fact, where the exact count is noise.
+pub fn thousands(n: u64) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{}k", n / 1_000)
+    } else {
+        n.to_string()
+    }
+}
+
 fn now_bar(page: &Page) -> String {
     let state = page.run.state();
     let entries = page.run.entries_after(0);
@@ -265,10 +277,20 @@ fn header(page: &Page) -> String {
     if let Some(first) = entries.first() {
         facts.push(format!("<span>Started {}</span>", time(first.at)));
     }
-    if let Some(last) = entries.last() {
-        facts.push(format!("<span>Updated {}</span>", time(last.at)));
-    }
-    let minutes = active_ms(entries) / 60_000;
+    let attempts = usage::attempts(entries);
+    // A run from before usage was recorded falls back to the time between its journal entries.
+    let (active, active_title) = if attempts.iter().any(|a| a.duration_ms.is_some()) {
+        (
+            attempts.iter().filter_map(|a| a.duration_ms).sum(),
+            "Testers' working time, added up across attempts and platforms",
+        )
+    } else {
+        (
+            active_ms(entries),
+            "Time the run spent working, without the gaps between sessions",
+        )
+    };
+    let minutes = active / 60_000;
     if minutes > 0 {
         let took = if minutes < 60 {
             format!("{minutes} min")
@@ -276,7 +298,14 @@ fn header(page: &Page) -> String {
             format!("{} h {} min", minutes / 60, minutes % 60)
         };
         facts.push(format!(
-            "<span title=\"Time the run spent working, without the gaps between sessions\">Active {took}</span>"
+            "<span title=\"{active_title}\">Active {took}</span>"
+        ));
+    }
+    let tokens: u64 = attempts.iter().filter_map(|a| a.tokens).sum();
+    if tokens > 0 {
+        facts.push(format!(
+            "<span title=\"Testers' tokens, added up across attempts\">Tokens {}</span>",
+            thousands(tokens)
         ));
     }
     if let Some(export) = page.export {

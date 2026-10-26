@@ -1,6 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use soundcheck::run::Run;
+use soundcheck::run::event::Event;
 use soundcheck::suite::config::Platform;
 use soundcheck::{VERSION, lint, serve, suite};
 use std::io::Write;
@@ -31,6 +32,17 @@ enum Command {
         suite: PathBuf,
         #[command(subcommand)]
         action: soundcheck::drive::Action,
+    },
+    /// What each tester attempt in a run cost: tokens, calls by tool and working time, with totals.
+    Usage {
+        /// The run's folder.
+        run: PathBuf,
+        /// Another run's folder: pairs each spec on each platform with its last attempt there, and shows the change.
+        #[arg(long)]
+        compare: Option<PathBuf>,
+        /// Add usage from a TSV (token, tokens, calls, duration_ms) to a run recorded before soundcheck kept it.
+        #[arg(long, conflicts_with = "compare")]
+        import: Option<PathBuf>,
     },
     /// Show the suite's runs in the browser, finished or not, without a run going: `--open latest` opens the newest.
     Serve {
@@ -134,6 +146,14 @@ fn main() -> ExitCode {
         Command::Mcp { port } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(soundcheck::bridge::bridge(port))),
+        Command::Usage {
+            run,
+            compare,
+            import,
+        } => match import {
+            Some(tsv) => import_usage(&run, &tsv),
+            None => usage_command(&run, compare.as_deref()),
+        },
         Command::Serve {
             suite,
             port,
@@ -623,6 +643,212 @@ fn take_port(port: u16) -> Result<Option<String>> {
         std::thread::sleep(std::time::Duration::from_millis(200));
     }
     bail!("{text}, but port {port} is still in use after 10 s")
+}
+
+fn read_attempts(run_dir: &Path) -> Result<Vec<soundcheck::run::usage::AttemptUsage>> {
+    let path = run_dir.join(soundcheck::run::saved::JOURNAL_FILE);
+    let journal = std::fs::read_to_string(&path)
+        .with_context(|| format!("no {}: is this a run folder?", path.display()))?;
+    let mut entries = Vec::new();
+    for line in journal.lines().filter(|l| !l.trim().is_empty()) {
+        entries.push(serde_json::from_str(line)?);
+    }
+
+    Ok(soundcheck::run::usage::attempts(&entries))
+}
+
+fn duration(ms: Option<u64>) -> String {
+    match ms {
+        Some(ms) => format!("{}m{:02}s", ms / 60_000, ms / 1000 % 60),
+        None => "-".into(),
+    }
+}
+
+fn opt(n: Option<u64>) -> String {
+    n.map_or("-".into(), |n| n.to_string())
+}
+
+fn usage_command(run_dir: &Path, compare: Option<&Path>) -> Result<()> {
+    let attempts = read_attempts(run_dir)?;
+    if attempts.is_empty() {
+        bail!("{} has no usage recorded", run_dir.display());
+    }
+
+    match compare {
+        None => print_usage(&attempts),
+        Some(other) => print_comparison(&read_attempts(other)?, &attempts),
+    }
+
+    Ok(())
+}
+
+fn print_usage(attempts: &[soundcheck::run::usage::AttemptUsage]) {
+    let width = attempts.iter().map(|a| a.token.len()).max().unwrap_or(0);
+    println!(
+        "{:width$}  {:>7}  {:>5}  {:>6}  top tools",
+        "attempt", "tokens", "calls", "time"
+    );
+    for a in attempts {
+        let mut tools: Vec<(&String, &u32)> = a.calls.iter().collect();
+        tools.sort_by(|x, y| y.1.cmp(x.1).then(x.0.cmp(y.0)));
+        let top: Vec<String> = tools
+            .iter()
+            .take(4)
+            .map(|(t, n)| format!("{t} {n}"))
+            .collect();
+        println!(
+            "{:width$}  {:>7}  {:>5}  {:>6}  {}",
+            a.token,
+            opt(a.tokens),
+            a.total_calls(),
+            duration(a.duration_ms),
+            top.join(", ")
+        );
+    }
+
+    let n = attempts.len() as u64;
+    let tokens: u64 = attempts.iter().filter_map(|a| a.tokens).sum();
+    let calls: u64 = attempts.iter().map(|a| u64::from(a.total_calls())).sum();
+    let ms: u64 = attempts.iter().filter_map(|a| a.duration_ms).sum();
+    println!(
+        "{} attempts: {tokens} tokens, {calls} calls, {} (average {} tokens, {} calls, {})",
+        n,
+        duration(Some(ms)),
+        tokens / n,
+        calls / n,
+        duration(Some(ms / n))
+    );
+}
+
+/// `before` and `after` paired by spec and platform, each side's last attempt; a row in only one run is left out.
+fn print_comparison(
+    before: &[soundcheck::run::usage::AttemptUsage],
+    after: &[soundcheck::run::usage::AttemptUsage],
+) {
+    let last = |attempts: &[soundcheck::run::usage::AttemptUsage]| {
+        attempts
+            .iter()
+            .map(|a| (a.row(), a.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let (before, after) = (last(before), last(after));
+    let pairs: Vec<_> = after
+        .iter()
+        .filter_map(|(row, a)| before.get(row).map(|b| (row, b, a)))
+        .collect();
+    if pairs.is_empty() {
+        println!("no spec ran on the same platform in both runs");
+        return;
+    }
+
+    let change = |b: Option<u64>, a: Option<u64>| match (b, a) {
+        (Some(b), Some(a)) if b > 0 => {
+            format!(
+                "{b} → {a} ({:+}%)",
+                (a as f64 / b as f64 * 100.0 - 100.0).round()
+            )
+        }
+        _ => format!("{} → {}", opt(b), opt(a)),
+    };
+    let width = pairs.iter().map(|(r, ..)| r.len()).max().unwrap_or(0);
+    println!("{:width$}  tokens / calls / time", "spec");
+    let (mut tb, mut ta, mut cb, mut ca, mut db, mut da) = (0, 0, 0, 0, 0, 0);
+    for (row, b, a) in &pairs {
+        println!(
+            "{row:width$}  {} / {} / {} → {}",
+            change(b.tokens, a.tokens),
+            change(Some(b.total_calls().into()), Some(a.total_calls().into())),
+            duration(b.duration_ms),
+            duration(a.duration_ms)
+        );
+        tb += b.tokens.unwrap_or(0);
+        ta += a.tokens.unwrap_or(0);
+        cb += u64::from(b.total_calls());
+        ca += u64::from(a.total_calls());
+        db += b.duration_ms.unwrap_or(0);
+        da += a.duration_ms.unwrap_or(0);
+    }
+
+    println!(
+        "{} pairs: {} tokens / {} calls / {} → {}",
+        pairs.len(),
+        change(Some(tb), Some(ta)),
+        change(Some(cb), Some(ca)),
+        duration(Some(db)),
+        duration(Some(da))
+    );
+}
+
+/// Usage for a run from before soundcheck recorded it. The TSV has calls only as a total, so they go under `?`.
+fn import_usage(run_dir: &Path, tsv: &Path) -> Result<()> {
+    if let Ok(url) = server_url(run_dir)
+        && tokio::runtime::Runtime::new()?
+            .block_on(reqwest::get(&url))
+            .is_ok()
+    {
+        bail!(
+            "the run is being served at {url}: stop it first, since the server writes the journal"
+        );
+    }
+
+    let path = run_dir.join(soundcheck::run::saved::JOURNAL_FILE);
+    let (mut journal, entries) = soundcheck::run::journal::Journal::open(&path)?;
+    let has_usage = soundcheck::run::usage::attempts(&entries);
+    let dispatched: std::collections::BTreeSet<String> = entries
+        .iter()
+        .filter_map(|e| match &e.event {
+            Event::Dispatched { token, .. } => Some(token.clone()),
+            _ => None,
+        })
+        .collect();
+    let text =
+        std::fs::read_to_string(tsv).with_context(|| format!("can't read {}", tsv.display()))?;
+    let mut events = Vec::new();
+    for (n, line) in text.lines().enumerate().skip(1) {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let cols: Vec<&str> = line.split('\t').collect();
+        let [token, tokens, calls, duration_ms] = cols[..] else {
+            bail!("{}:{}: expected 4 columns", tsv.display(), n + 1);
+        };
+        if !dispatched.contains(token) {
+            bail!(
+                "{}:{}: no attempt {token} in this run",
+                tsv.display(),
+                n + 1
+            );
+        }
+
+        if has_usage.iter().any(|a| a.token == token) {
+            bail!("{token} already has usage recorded");
+        }
+
+        let parse = |s: &str| {
+            s.trim()
+                .parse::<u64>()
+                .with_context(|| format!("{}:{}: not a number: {s}", tsv.display(), n + 1))
+        };
+        events.push(Event::Usage {
+            token: token.into(),
+            calls: [("?".to_string(), parse(calls)? as u32)].into(),
+            duration_ms: parse(duration_ms)?,
+        });
+        events.push(Event::Tokens {
+            token: token.into(),
+            tokens: parse(tokens)?,
+        });
+    }
+
+    let now = serve::now_ms();
+    let count = events.len() / 2;
+    for event in events {
+        journal.append(now, event)?;
+    }
+
+    println!("added usage for {count} attempts");
+    Ok(())
 }
 
 fn server_url(run_dir: &Path) -> Result<String> {

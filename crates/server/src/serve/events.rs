@@ -187,6 +187,16 @@ pub fn summary(entry: &Entry) -> String {
             "finished: {} PASS, {} FAIL, {} BLOCKED, {} not run",
             c.pass, c.fail, c.blocked, c.not_run
         ),
+        Event::Usage {
+            token,
+            calls,
+            duration_ms,
+        } => format!(
+            "{token} used {} calls in {}s",
+            calls.values().sum::<u32>(),
+            duration_ms / 1000
+        ),
+        Event::Tokens { token, tokens } => format!("{token} used {tokens} tokens"),
     };
     format!("#{} {what}", entry.seq)
 }

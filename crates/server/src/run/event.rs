@@ -1,6 +1,7 @@
 use super::model::{Build, Call, Decision, Final, Judgment, Posted, Rerun};
 use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// Everything that happens in a run, in the order it happened. State is rebuilt by replaying these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -162,6 +163,18 @@ pub enum Event {
     },
     Finished {
         result_counts: ResultCounts,
+    },
+    /// What an attempt's tester did, counted by the server from its calls and written as the attempt ended.
+    Usage {
+        token: String,
+        calls: BTreeMap<String, u32>,
+        /// From its first call to its last.
+        duration_ms: u64,
+    },
+    /// A tester's token total, which only its completion notice carries, so the coordinator reports it.
+    Tokens {
+        token: String,
+        tokens: u64,
     },
 }
 

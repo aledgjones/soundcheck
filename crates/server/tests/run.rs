@@ -1,5 +1,6 @@
 use soundcheck::run::event::RowRef;
 use soundcheck::run::model::*;
+use soundcheck::run::usage;
 use soundcheck::run::{MAX_ATTEMPTS, Plan, PlannedSpec, Row, Run};
 use soundcheck::suite::config::Platform::{self, Android, Ios};
 use std::path::PathBuf;
@@ -452,7 +453,7 @@ fn three_attempts_at_most() {
 fn only_silence_between_calls_counts_as_a_stall() {
     let (mut run, _) = open("stall");
     let t = run.dispatch(0, DRAW, Android, brief).unwrap();
-    run.call_started(10_000, &t);
+    run.call_started(10_000, &t, "see");
     assert!(
         run.stalled(500_000, 120_000, 600_000).is_empty(),
         "a long seed or wait isn't a stall"
@@ -482,7 +483,7 @@ fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
         "a slow first call isn't a stall"
     );
     assert!(!run.started(&t));
-    run.call_started(300_000, &t);
+    run.call_started(300_000, &t, "see");
     run.call_finished(301_000, &t);
     assert!(run.started(&t));
     assert!(run.stalled(420_000, 120_000, 600_000).is_empty());
@@ -493,6 +494,52 @@ fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
     let silent = run.dispatch(500_000, BACK, Android, brief).unwrap();
     assert!(run.stalled(1_099_000, 120_000, 600_000).is_empty());
     assert_eq!(run.stalled(1_100_000, 120_000, 600_000), vec![silent]);
+}
+
+#[test]
+fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
+    let (mut run, _) = open("usage");
+    let posted = run.dispatch(0, DRAW, Android, brief).unwrap();
+    run.call_started(5_000, &posted, "brief");
+    run.call_finished(5_000, &posted);
+    for at in [6_000, 8_000] {
+        run.call_started(at, &posted, "tap");
+        run.call_finished(at + 500, &posted);
+    }
+    run.call_started(9_000, &posted, "see");
+    run.call_finished(65_000, &posted);
+    run.post(65_000, &posted, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+
+    let stalled = run.dispatch(70_000, BACK, Android, brief).unwrap();
+    run.call_started(80_000, &stalled, "brief");
+    run.call_finished(80_000, &stalled);
+    run.stall(300_000, &stalled, "quiet").unwrap();
+
+    let silent = run.dispatch(310_000, BACK, Android, brief).unwrap();
+    run.stall(1_000_000, &silent, "never started").unwrap();
+
+    run.tokens(1_000_001, &posted, 42_000).unwrap();
+    assert!(run.tokens(1_000_002, "nope#1@android", 1).is_err());
+
+    let attempts = usage::attempts(run.entries_after(0));
+    assert_eq!(
+        attempts.len(),
+        2,
+        "an attempt that never called has no usage"
+    );
+    assert_eq!(attempts[0].token, posted);
+    assert_eq!(attempts[0].tokens, Some(42_000));
+    assert_eq!(attempts[0].total_calls(), 4);
+    assert_eq!(attempts[0].calls["tap"], 2);
+    assert_eq!(attempts[0].duration_ms, Some(60_000));
+    assert_eq!(attempts[0].row(), format!("{DRAW}@android"));
+    assert_eq!(
+        attempts[1].duration_ms,
+        Some(0),
+        "a stall's silence isn't working time"
+    );
+    assert_eq!(attempts[1].tokens, None);
 }
 
 #[test]
