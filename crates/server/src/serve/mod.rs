@@ -1256,7 +1256,13 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
             }
         }
         loop {
-            match live.recv().await {
+            // A stream never ends on its own, and graceful shutdown waits for it: an open live page kept Ctrl-C and
+            // stepping down for a new run waiting for ever (2026-10-26).
+            let received = tokio::select! {
+                _ = hub.stop.cancelled() => return,
+                received = live.recv() => received,
+            };
+            match received {
                 Ok(entry) if entry.seq > last => {
                     last = entry.seq;
                     if tx.send(Ok(line(&entry))).await.is_err() {

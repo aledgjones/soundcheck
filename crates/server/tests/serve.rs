@@ -139,6 +139,20 @@ async fn a_run_in_use_keeps_its_port() {
 }
 
 #[tokio::test]
+async fn an_open_event_stream_doesnt_keep_the_server_up() {
+    let (server, url) = server().await;
+    // As the live page does: follow the stream and never close it.
+    let stream = reqwest::get(format!("{url}/events")).await.unwrap();
+    assert_eq!(stream.status().as_u16(), 200);
+    server.shutdown.cancel();
+    tokio::time::timeout(std::time::Duration::from_secs(5), server.handle)
+        .await
+        .expect("the server stops with a stream open")
+        .unwrap();
+    drop(stream);
+}
+
+#[tokio::test]
 async fn a_reports_server_makes_way_for_a_run() {
     let dir = std::env::temp_dir().join(format!("soundcheck-reports-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
