@@ -15,6 +15,9 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verify: Option<String>,
         prompt: String,
+        /// How long the seed, relaunch and starts-on check took; the entry is written as they finish.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reset_ms: Option<u64>,
     },
     /// A tester settled one outcome before posting, so the page can show progress. Provisional: a later judgment of
     /// the same outcome replaces it, and the post files them all.

@@ -1,4 +1,4 @@
-//! Drives the running Android emulator with Android's own Settings app. Skips where no emulator is running.
+//! Drives the running Android emulator with Android's own Settings app. Runs only with `SOUNDCHECK_DEVICE_TESTS=1`, and skips where no emulator is running.
 
 use soundcheck_driver::android::Android;
 use soundcheck_driver::proxy::{self, Route};
@@ -9,12 +9,24 @@ use std::path::Path;
 /// One emulator: the tests take turns on it.
 static EMULATOR: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// These drive whatever emulator is running, which may be a live run's: they run only when asked for.
+fn device_tests() -> bool {
+    let on = std::env::var_os("SOUNDCHECK_DEVICE_TESTS").is_some_and(|v| v == "1");
+    if !on {
+        eprintln!("skipping: set SOUNDCHECK_DEVICE_TESTS=1 to drive the emulator");
+    }
+    on
+}
+
 fn m(target: &str) -> Matcher {
     Matcher::parse(target).unwrap()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_android_driver_reads_and_drives_settings() {
+    if !device_tests() {
+        return;
+    }
     let _turn = EMULATOR.lock().await;
     let apk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/android/build/reader.apk");
     let android = match Android::connect("com.android.settings", Some(apk)).await {
@@ -106,6 +118,9 @@ fn echo_from_device() -> String {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline() {
+    if !device_tests() {
+        return;
+    }
     let _turn = EMULATOR.lock().await;
     let android = match Android::connect("com.android.settings", None).await {
         Ok(a) => a,
@@ -151,6 +166,9 @@ async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn health_measures_the_emulator_and_puts_back_a_lost_forward() {
+    if !device_tests() {
+        return;
+    }
     let _turn = EMULATOR.lock().await;
     adb(&["reverse", "tcp:18998", "tcp:18998"]);
     let android = match Android::connect("com.android.settings", None).await {
@@ -181,10 +199,13 @@ async fn health_measures_the_emulator_and_puts_back_a_lost_forward() {
     eprintln!("{health:?}");
 }
 
-/// Reboots the emulator: run by hand with `--ignored`.
+/// Reboots the emulator: run by hand with `--ignored` and `SOUNDCHECK_DEVICE_TESTS=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn restart_reboots_the_emulator_and_keeps_its_forwards() {
+    if !device_tests() {
+        return;
+    }
     let _turn = EMULATOR.lock().await;
     let before = adb(&["reverse", "--list"]);
     let android = Android::connect("com.android.settings", None)

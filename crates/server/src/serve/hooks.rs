@@ -88,7 +88,8 @@ pub fn context(stdout: &str) -> Option<String> {
     let context = value.get("context")?;
     Some(match context {
         serde_json::Value::String(s) => s.clone(),
-        other => serde_json::to_string_pretty(other).ok()?,
+        // Compact: the brief is read on every turn of the tester's, and indentation was most of a big seed's size.
+        other => serde_json::to_string(other).ok()?,
     })
 }
 
@@ -173,6 +174,11 @@ mod tests {
             Some("Collection: E2E Seed Library")
         );
         assert!(context("seeded").is_none());
+        assert_eq!(
+            context(r#"{"context": {"scores": [{"title": "Elgar", "parts": 2}]}}"#).as_deref(),
+            Some(r#"{"scores":[{"parts":2,"title":"Elgar"}]}"#),
+            "all of it, compact"
+        );
     }
 
     #[tokio::test]

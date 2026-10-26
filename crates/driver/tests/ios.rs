@@ -1,9 +1,18 @@
-//! Drives the booted iOS simulator with its own Settings app. Skips where no simulator is booted or the reader isn't built.
+//! Drives the booted iOS simulator with its own Settings app. Runs only with `SOUNDCHECK_DEVICE_TESTS=1`, and skips where no simulator is booted or the reader isn't built.
 
 use soundcheck_driver::ios::Ios;
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::collections::BTreeSet;
 use std::path::Path;
+
+/// These drive whatever simulator is running, which may be a live run's: they run only when asked for.
+fn device_tests() -> bool {
+    let on = std::env::var_os("SOUNDCHECK_DEVICE_TESTS").is_some_and(|v| v == "1");
+    if !on {
+        eprintln!("skipping: set SOUNDCHECK_DEVICE_TESTS=1 to drive the simulator");
+    }
+    on
+}
 
 fn m(target: &str) -> Matcher {
     Matcher::parse(target).unwrap()
@@ -11,6 +20,9 @@ fn m(target: &str) -> Matcher {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_ios_driver_reads_and_drives_settings() {
+    if !device_tests() {
+        return;
+    }
     let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/reader");
     if !reader.exists() {
         eprintln!("skipping: no iOS reader built (readers/ios/build.sh)");
@@ -65,10 +77,13 @@ async fn the_ios_driver_reads_and_drives_settings() {
     assert!(std::fs::metadata(&shot).unwrap().len() > 1000);
 }
 
-/// Reboots the simulator: run by hand with `--ignored`.
+/// Reboots the simulator: run by hand with `--ignored` and `SOUNDCHECK_DEVICE_TESTS=1`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn restart_reboots_the_simulator_and_reads_again() {
+    if !device_tests() {
+        return;
+    }
     let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/reader");
     let ios = Ios::connect("com.apple.Preferences", reader.exists().then_some(reader))
         .await

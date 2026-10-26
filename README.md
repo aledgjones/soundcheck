@@ -124,7 +124,8 @@ Runs are written beside the suite in `reports/<run>/`: the journal, a summary, e
 ## Develop
 
 ```sh
-cargo test                  # device tests skip where Chrome, an emulator or a booted simulator isn't there
+cargo test                  # web tests skip where Chrome isn't there; emulator and simulator tests never run
+SOUNDCHECK_DEVICE_TESTS=1 cargo test   # also drive the running emulator and booted simulator (never during a run)
 cargo clippy --all-targets -- -D warnings
 cargo fmt
 ```

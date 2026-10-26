@@ -76,6 +76,19 @@ pub fn render(
     out
 }
 
+/// The tester agent type for a spec. Only specs that list driver tools get the one with the mechanics: their schemas
+/// are sent on every turn, and most specs never use them.
+pub fn agent(spec: &Spec) -> &'static str {
+    if spec.front.tools.is_empty() {
+        TESTER
+    } else {
+        MECHANICS_TESTER
+    }
+}
+
+pub const TESTER: &str = "soundcheck-tester";
+pub const MECHANICS_TESTER: &str = "soundcheck-tester-mechanics";
+
 /// What the coordinator passes to the tester agent: the brief itself travels by `brief`, outside the coordinator.
 pub fn handoff(token: &str) -> String {
     format!(
@@ -107,7 +120,16 @@ A reply that starts `harness:` means soundcheck restarted the device under you: 
 Act and judge at a person's pace. A person never acts the instant a screen changes, and never judges from the first frame after an action.
 
 - **Acting:** let the app respond to each action before the next one: a drawer or menu finishing its close, a list settling, and also any change of state, such as picking a tool, switching a mode or saving a setting. Picking a pen and drawing straight away, in back-to-back calls, is faster than any hand. A tap that lands mid-animation and is lost isn't a finding.
-- **Judging:** let the screen settle before you read or screenshot a change: `wait` for what should appear, or `sleep` about a second first. A screenshot taken the instant after Undo or Clear can show the frame before the redraw. Before you call anything wrong, look again after it has settled; if it's right then, it isn't a finding.
+- **Judging:** let the screen settle before you read or screenshot a change. To wait for it, give `expect`, `gone` or `check` a `timeout_ms` (or use `wait`): they read again until it holds and return as soon as it does, so UI that comes late needs no pause first. A screenshot taken the instant after Undo or Clear can show the frame before the redraw. Before you call anything wrong, look again after it has settled; if it's right then, it isn't a finding.
+- **`sleep` only when elapsed time is what's under test:** a network drop's length, a session expiring. Everywhere else, wait for what should change, as above.
 - Probing \"quickly\" means as fast as a person realistically could, never faster. `batch` keeps inputs at least 500 ms apart for you.
 - **Waiting a long time** (a spec that waits minutes for something to expire): send one `sleep` of up to 30 s per call, as many as it takes. Never pause for long inside a `batch`: a call that runs for minutes loses its reply, and the attempt with it.
+
+## Fewer calls
+
+Every call re-reads this whole conversation, so fewer calls make a faster, cheaper run.
+
+- **When you already know the next few steps** (open a menu, choose an item, confirm), send them as one `batch`. It stops at the first step that fails, says which and what ran before it, and returns the screen as it is then, so you lose nothing over single calls.
+- **Keep the checks you judge an outcome on as their own calls,** after the batch, so what you saw is plain.
+- `tap` waits up to 5 s for its target, so a tap needs no `see` or `wait` before it when you know the label.
 ";

@@ -154,6 +154,16 @@ pub struct TargetParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct ExpectParams {
+    pub token: String,
+    /// An element's label, value or `see` line; exact unless it starts with `prefix:` or `re:`.
+    pub target: String,
+    /// Keep reading for up to this many milliseconds (at most 120000) until it holds, for UI that comes or goes late.
+    #[serde(default)]
+    pub timeout_ms: u64,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct SeeParams {
     pub token: String,
     /// Only elements matching this (exact, `prefix:` or `re:`).
@@ -168,6 +178,9 @@ pub struct CheckParams {
     pub token: String,
     /// Each must be on screen; prefix one with `!` for "must not be".
     pub assertions: Vec<String>,
+    /// Keep reading for up to this many milliseconds (at most 120000) until all hold, for UI that comes or goes late.
+    #[serde(default)]
+    pub timeout_ms: u64,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -271,9 +284,12 @@ pub struct ViewportParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct SecondsParams {
+pub struct NetworkDropParams {
     pub token: String,
     pub seconds: u64,
+    /// Return only once the network is back (drops of up to 30 s), rather than as soon as it's down.
+    #[serde(default)]
+    pub wait: bool,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -359,9 +375,13 @@ pub enum Step {
     },
     Expect {
         target: String,
+        #[serde(default)]
+        timeout_ms: u64,
     },
     Gone {
         target: String,
+        #[serde(default)]
+        timeout_ms: u64,
     },
     Wait {
         target: String,
@@ -369,6 +389,8 @@ pub enum Step {
     },
     Check {
         assertions: Vec<String>,
+        #[serde(default)]
+        timeout_ms: u64,
     },
     Hold {
         target: String,
@@ -438,9 +460,12 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
             d.device.clear(chars.unwrap_or(60)).await?;
             "cleared".into()
         }
-        Step::Expect { target } => format!("found {}", line(&d.expect(&matcher(target)?).await?)),
-        Step::Gone { target } => {
-            d.gone(&matcher(target)?).await?;
+        Step::Expect { target, timeout_ms } => format!(
+            "found {}",
+            line(&d.expect_within(&matcher(target)?, *timeout_ms).await?)
+        ),
+        Step::Gone { target, timeout_ms } => {
+            d.gone_within(&matcher(target)?, *timeout_ms).await?;
             format!("gone {target}")
         }
         Step::Wait { target, timeout_ms } => {
@@ -449,8 +474,11 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
                 line(&d.wait(&matcher(target)?, *timeout_ms).await?)
             )
         }
-        Step::Check { assertions } => {
-            let lines = d.check(assertions).await?;
+        Step::Check {
+            assertions,
+            timeout_ms,
+        } => {
+            let lines = d.check_within(assertions, *timeout_ms).await?;
             if let Some(bad) = lines.iter().find(|l| !l.ok) {
                 return Err(DriverError::Invalid(format!(
                     "check failed: {}",
@@ -521,6 +549,7 @@ async fn pause(ms: u64) -> Result<(), DriverError> {
 }
 
 const MAX_PAUSE_MS: u64 = 30_000;
+const NETWORK_BACK_MARGIN: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn matcher(target: &str) -> Result<Matcher, DriverError> {
     Matcher::parse(target).map_err(|e| DriverError::Invalid(format!("{target}: {e}")))
@@ -762,7 +791,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model and a short prompt: pass the prompt unchanged to a background soundcheck-tester agent, which fetches its brief with `brief`."
+        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
     )]
     async fn dispatch(
         &self,
@@ -785,6 +814,7 @@ impl Tools {
             )));
         }
         hub.end_wait(&p.spec, p.platform);
+        let reset_started = std::time::Instant::now();
         let seeded = match hub.prepare(spec, p.platform).await {
             Ok(context) => context,
             Err(e) => {
@@ -809,22 +839,30 @@ impl Tools {
                 .rows
                 .get(&(p.spec.clone(), p.platform))
                 .and_then(|r| r.rerun_note.clone());
-            let token = run.dispatch(now, &p.spec, p.platform, |token, verify| {
-                prompt::render(
-                    spec,
-                    context,
-                    p.platform,
-                    token,
-                    verify,
-                    rerun.as_deref(),
-                    seeded.as_deref(),
-                )
-            })?;
+            let reset_ms = reset_started.elapsed().as_millis() as u64;
+            let token = run.dispatch_after_reset(
+                now,
+                &p.spec,
+                p.platform,
+                Some(reset_ms),
+                |token, verify| {
+                    prompt::render(
+                        spec,
+                        context,
+                        p.platform,
+                        token,
+                        verify,
+                        rerun.as_deref(),
+                        seeded.as_deref(),
+                    )
+                },
+            )?;
             Ok(json!({
                 "token": token,
                 "model": spec.front.model.clone().or_else(|| {
                     suite.config.as_ref().map(|c| c.models.default.clone())
                 }),
+                "agent": prompt::agent(spec),
                 "prompt": prompt::handoff(&token),
             }))
         }))
@@ -1063,37 +1101,45 @@ impl Tools {
         .await
     }
 
-    #[tool(description = "Tester: fails unless the element is on screen now.")]
+    #[tool(
+        description = "Tester: fails unless the element is on screen; with `timeout_ms`, reads again until it is or time runs out."
+    )]
     async fn expect(
         &self,
-        Parameters(p): Parameters<TargetParams>,
+        Parameters(p): Parameters<ExpectParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            Ok(line(&d.expect(&matcher(&p.target)?).await?))
-        })
-        .await
-    }
-
-    #[tool(description = "Tester: fails if the element is on screen now.")]
-    async fn gone(
-        &self,
-        Parameters(p): Parameters<TargetParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        self.device(&p.token, async |d| {
-            d.gone(&matcher(&p.target)?).await.map(|()| "gone")
+            Ok(line(
+                &d.expect_within(&matcher(&p.target)?, p.timeout_ms).await?,
+            ))
         })
         .await
     }
 
     #[tool(
-        description = "Tester: several assertions on one read of the screen: `A` must be on screen, `!A` must not."
+        description = "Tester: fails if the element is on screen; with `timeout_ms`, reads again until it's gone or time runs out."
+    )]
+    async fn gone(
+        &self,
+        Parameters(p): Parameters<ExpectParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device(&p.token, async |d| {
+            d.gone_within(&matcher(&p.target)?, p.timeout_ms)
+                .await
+                .map(|()| "gone")
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Tester: several assertions on one read of the screen: `A` must be on screen, `!A` must not. With `timeout_ms`, reads again until all hold or time runs out, and returns the last read's."
     )]
     async fn check(
         &self,
         Parameters(p): Parameters<CheckParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device(&p.token, async |d| {
-            Ok(d.check(&p.assertions)
+            Ok(d.check_within(&p.assertions, p.timeout_ms)
                 .await?
                 .into_iter()
                 .map(|l| json!({ "assertion": l.assertion, "ok": l.ok }))
@@ -1102,7 +1148,9 @@ impl Tools {
         .await
     }
 
-    #[tool(description = "Tester: wait up to timeout_ms (milliseconds) for an element to appear.")]
+    #[tool(
+        description = "Tester: wait up to timeout_ms (milliseconds) for an element to appear, reading the screen again until it does."
+    )]
     async fn wait(
         &self,
         Parameters(p): Parameters<WaitParams>,
@@ -1114,7 +1162,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: do nothing for `ms` milliseconds (at most 30000), e.g. to let an animation or a sync settle before you look. To wait for something to appear, use wait."
+        description = "Tester: do nothing for `ms` milliseconds (at most 30000). Only when elapsed time is what's under test (a session expiring, a network drop's length). To wait for the screen to change, use `wait`, or `expect`, `gone` or `check` with `timeout_ms`: they return as soon as it has."
     )]
     async fn sleep(
         &self,
@@ -1431,7 +1479,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, touch, release, hover, goto, press, pause), stopping at the first that fails; pause steps keep a sequence's timing on the device. Inputs start at least 500 ms after the last one ended, as a person's would. Returns what each step did."
+        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, touch, release, hover, goto, press, pause), for a run of steps whose course you already know (open a menu, choose, confirm). It stops at the first that fails and says which, what ran before it, and what's on screen now. Pause steps keep a sequence's timing on the device. Inputs start at least 500 ms after the last one ended, as a person's would. Returns what each step did."
     )]
     async fn batch(
         &self,
@@ -1466,10 +1514,17 @@ impl Tools {
                 }
                 match result {
                     Ok(what) => done.push(what),
+                    Err(e @ DriverError::Restarted(_)) => return Err(e),
                     Err(e) => {
+                        // The screen as the step left it, so the tester can carry on without a `see` of its own.
+                        let screen = match d.see(None, false).await {
+                            Ok(elements) => elements.iter().map(line).collect::<Vec<_>>().join("\n"),
+                            Err(read) => format!("(couldn't read it: {read})"),
+                        };
                         return Err(DriverError::Invalid(format!(
-                            "step {} failed ({e}); done before it: {}",
+                            "stopped at step {} of {}, which failed ({e}); done before it: {}; nothing after it ran.\nScreen now:\n{screen}",
                             i + 1,
+                            p.steps.len(),
                             if done.is_empty() {
                                 "nothing".into()
                             } else {
@@ -1557,16 +1612,32 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: cut the device's network for `seconds`. Returns once it's down; it comes back on its own after `seconds`, so `sleep` to wait it out."
+        description = "Tester: cut the device's network for `seconds`. Returns once it's down, and it comes back on its own after `seconds`; with `wait` (drops of up to 30 s), returns only once it's back."
     )]
     async fn network_drop(
         &self,
-        Parameters(p): Parameters<SecondsParams>,
+        Parameters(p): Parameters<NetworkDropParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // A long wait in one call outlives the tester's MCP session, and its reply never arrives (SA-761).
+        if p.wait && p.seconds.saturating_mul(1000) > MAX_PAUSE_MS {
+            return reply(Err(anyhow::anyhow!(
+                "wait covers drops of up to {} s: drop for {} s without it, and wait it out with separate `sleep` calls",
+                MAX_PAUSE_MS / 1000,
+                p.seconds
+            )));
+        }
         self.device(&p.token, async |d| {
-            d.network_drop(p.seconds)
-                .await
-                .map(|()| format!("network down for {} s; it comes back on its own", p.seconds))
+            d.network_drop(p.seconds).await?;
+            if !p.wait {
+                return Ok(format!(
+                    "network down for {} s; it comes back on its own",
+                    p.seconds
+                ));
+            }
+            // The network comes back on a timer started as the drop began; a moment more lets it land.
+            tokio::time::sleep(std::time::Duration::from_secs(p.seconds) + NETWORK_BACK_MARGIN)
+                .await;
+            Ok(format!("network was down for {} s and is back", p.seconds))
         })
         .await
     }

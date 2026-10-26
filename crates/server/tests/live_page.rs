@@ -263,6 +263,10 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     )
     .await;
     let token = web["token"].as_str().unwrap().to_string();
+    assert_eq!(
+        web["agent"], "soundcheck-tester",
+        "a spec with no driver tools"
+    );
     let seen = client
         .call_tool(
             CallToolRequestParams::new("see")
@@ -306,7 +310,10 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         .unwrap();
     let text = stopped.content[0].as_text().unwrap().text.clone();
     assert!(
-        text.contains("step 2 failed") && text.contains("done before it: found"),
+        text.contains("stopped at step 2 of 3")
+            && text.contains("done before it: found")
+            && text.contains("Screen now:")
+            && text.contains("Saved"),
         "{text}"
     );
     let shot = call(&client, "shot", json!({ "token": token, "name": "saved" })).await;

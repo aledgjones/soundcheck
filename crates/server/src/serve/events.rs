@@ -11,14 +11,19 @@ pub fn summary(entry: &Entry) -> String {
             platform,
             attempt,
             verify,
+            reset_ms,
             ..
         } => format!(
-            "dispatched {spec} on {platform} (attempt {attempt}{})",
+            "dispatched {spec} on {platform} (attempt {attempt}{}{})",
             if verify.is_some() {
                 ", verification"
             } else {
                 ""
-            }
+            },
+            reset_ms.map_or(String::new(), |ms| format!(
+                ", after a {:.1} s reset",
+                ms as f64 / 1000.0
+            ))
         ),
         Event::Judged { token, judgment } => format!(
             "{token} judged outcome {}: {}",

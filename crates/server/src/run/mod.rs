@@ -230,6 +230,19 @@ impl Run {
         platform: Platform,
         brief: impl FnOnce(&str, Option<&str>) -> String,
     ) -> Result<String> {
+        self.dispatch_after_reset(now, spec, platform, None, brief)
+    }
+
+    /// [`Run::dispatch`], recording how long the reset before it took, so the gap after the last post splits into
+    /// the reset and the coordinator's own lag.
+    pub fn dispatch_after_reset(
+        &mut self,
+        now: u64,
+        spec: &str,
+        platform: Platform,
+        reset_ms: Option<u64>,
+        brief: impl FnOnce(&str, Option<&str>) -> String,
+    ) -> Result<String> {
         let (attempt, verify) = self.check_dispatch(spec, platform)?;
         let token = format!("{spec}#{attempt}@{platform}");
         self.commit(
@@ -241,6 +254,7 @@ impl Run {
                 token: token.clone(),
                 prompt: brief(&token, verify.as_deref()),
                 verify,
+                reset_ms,
             },
         )?;
         self.activity.insert(

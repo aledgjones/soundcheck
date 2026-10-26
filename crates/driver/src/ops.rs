@@ -121,6 +121,55 @@ impl<D: Device> Driver<D> {
         self.wait_for(target, timeout_ms, false).await
     }
 
+    /// [`Driver::expect`], read again until it holds or `timeout_ms` runs out.
+    pub async fn expect_within(&self, target: &Matcher, timeout_ms: u64) -> Result<Element> {
+        within("expect", timeout_ms, 0, WAIT_MAX_MS, "milliseconds")?;
+        if timeout_ms == 0 {
+            return self.expect(target).await;
+        }
+        self.wait_for(target, timeout_ms, false).await
+    }
+
+    /// [`Driver::gone`], read again until it holds or `timeout_ms` runs out.
+    pub async fn gone_within(&self, target: &Matcher, timeout_ms: u64) -> Result<()> {
+        within("gone", timeout_ms, 0, WAIT_MAX_MS, "milliseconds")?;
+        let end = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            match self.gone(target).await {
+                Ok(()) => return Ok(()),
+                Err(e) if matches!(e, DriverError::Restarted(_)) || Instant::now() >= end => {
+                    return Err(e);
+                }
+                Err(_) => {}
+            }
+            sleep(Duration::from_millis(POLL_MS)).await;
+        }
+    }
+
+    /// [`Driver::check`], read again until every assertion holds or `timeout_ms` runs out; returns the last read's.
+    pub async fn check_within(
+        &self,
+        assertions: &[String],
+        timeout_ms: u64,
+    ) -> Result<Vec<CheckLine>> {
+        within("check", timeout_ms, 0, WAIT_MAX_MS, "milliseconds")?;
+        let end = Instant::now() + Duration::from_millis(timeout_ms);
+        loop {
+            let lines = match self.check(assertions).await {
+                Ok(lines) => Some(lines),
+                Err(e @ (DriverError::Restarted(_) | DriverError::Invalid(_))) => return Err(e),
+                Err(e) if Instant::now() >= end => return Err(e),
+                Err(_) => None,
+            };
+            if let Some(lines) = lines
+                && (lines.iter().all(|l| l.ok) || Instant::now() >= end)
+            {
+                return Ok(lines);
+            }
+            sleep(Duration::from_millis(POLL_MS)).await;
+        }
+    }
+
     /// Waits up to 5 s for the element, then taps its centre. `last` takes the last match: a system alert's button
     /// can share its label with the row that opened it.
     pub async fn tap(&self, target: &Matcher, last: bool) -> Result<Element> {

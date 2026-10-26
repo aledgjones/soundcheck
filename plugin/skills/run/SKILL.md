@@ -48,8 +48,8 @@ The project's regression skill gives you:
 
 ## 2. Dispatch
 
-- Call `dispatch` with the next spec in scope and its platform. It returns a `token`, the spec's `model` and a short `prompt`. The brief itself isn't in it: the tester fetches it from the server with `brief`, so it never passes through your context.
-- Start a **background** Agent with `subagent_type: soundcheck-tester`, the `model` if one is given, and the `prompt` as its prompt, **unchanged**, and the token as its description.
+- Call `dispatch` with the next spec in scope and its platform. It returns a `token`, the spec's `model`, the `agent` type and a short `prompt`. The brief itself isn't in it: the tester fetches it from the server with `brief`, so it never passes through your context.
+- Start a **background** Agent with `subagent_type` set to the `agent` it returned (`soundcheck-tester`, or `soundcheck-tester-mechanics` for a spec that lists driver tools), the `model` if one is given, and the `prompt` as its prompt, **unchanged**, and the token as its description.
 - A tester's final reply is one line (token, claim, side finds). Its judgments and evidence are on the server: read them with `status` when you review, not from the reply.
 - One spec runs at a time unless the suite says `parallel: true`. The server refuses a second dispatch and says why; that's your cue to wait for the next event.
 - A dispatch refused with `held:` means the platform is restarting or the Mac is busy. Run `soundcheck ready <run folder> <platform> --wait` in the background (not under a Monitor): it asks every 15 s and exits once the platform can take a spec, at most about 10 minutes later. Dispatch again when it exits. If it exits with an error, the server has stopped.

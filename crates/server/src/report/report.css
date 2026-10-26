@@ -214,6 +214,7 @@ footer{margin-top:48px;font-size:13px;color:var(--label3);text-align:center}
 
 /* The live page swaps its content in place; these keep the swap and the filter quiet. */
 .attn-only .check:not([data-attn]){display:none}
+.attn-only .section:not(:has(.check[data-attn])){display:none}
 .nowbar .warn,.ago.warn{color:var(--partial);font-weight:600}
 .empty{padding:20px 28px;color:var(--label2);font-size:15px}
 /* The runs index */

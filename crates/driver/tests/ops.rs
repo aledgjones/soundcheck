@@ -200,6 +200,66 @@ async fn check_reads_once_for_every_assertion() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn expect_with_a_timeout_waits_for_late_ui() {
+    let late = || Fake::new(vec![vec![], vec![], vec![el("Saved", 0.0)]]);
+    assert!(
+        Driver::new(late())
+            .expect_within(&m("Saved"), 0)
+            .await
+            .is_err()
+    );
+    let found = Driver::new(late())
+        .expect_within(&m("Saved"), 2_000)
+        .await
+        .unwrap();
+    assert_eq!(found.label, "Saved");
+    assert!(
+        Driver::new(late())
+            .expect_within(&m("Saved"), 999_999)
+            .await
+            .is_err(),
+        "timeouts are capped"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn gone_with_a_timeout_waits_for_it_to_leave() {
+    let leaving = || Fake::new(vec![vec![el("Syncing", 0.0)], vec![]]);
+    assert!(
+        Driver::new(leaving())
+            .gone_within(&m("Syncing"), 0)
+            .await
+            .is_err()
+    );
+    Driver::new(leaving())
+        .gone_within(&m("Syncing"), 2_000)
+        .await
+        .unwrap();
+    let stuck = Driver::new(Fake::new(vec![vec![el("Syncing", 0.0)]]));
+    assert!(stuck.gone_within(&m("Syncing"), 2_000).await.is_err());
+}
+
+#[tokio::test(start_paused = true)]
+async fn check_with_a_timeout_reads_until_all_hold() {
+    let driver = Driver::new(Fake::new(vec![
+        vec![el("Undo", 0.0)],
+        vec![el("Undo", 0.0), el("Redo", 0.0)],
+    ]));
+    let lines = driver
+        .check_within(&["Undo".into(), "Redo".into()], 2_000)
+        .await
+        .unwrap();
+    assert!(lines.iter().all(|l| l.ok));
+    let never = Driver::new(Fake::new(vec![vec![el("Undo", 0.0)]]));
+    let lines = never
+        .check_within(&["Undo".into(), "Redo".into()], 1_000)
+        .await
+        .unwrap();
+    let oks: Vec<bool> = lines.iter().map(|l| l.ok).collect();
+    assert_eq!(oks, [true, false], "the last read's, once time runs out");
+}
+
+#[tokio::test(start_paused = true)]
 async fn gone_is_exact_by_default() {
     let driver = Driver::new(Fake::new(vec![vec![el("Shuffle Order…", 0.0)]]));
     driver.gone(&m("Shuffle Order")).await.unwrap();

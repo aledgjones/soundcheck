@@ -134,8 +134,20 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             format!("tapped {x:.0},{y:.0}")
         }
         Action::Wait { target, timeout_ms } => as_step(Step::Wait { target, timeout_ms }).await?,
-        Action::Expect { target } => as_step(Step::Expect { target }).await?,
-        Action::Gone { target } => as_step(Step::Gone { target }).await?,
+        Action::Expect { target } => {
+            as_step(Step::Expect {
+                target,
+                timeout_ms: 0,
+            })
+            .await?
+        }
+        Action::Gone { target } => {
+            as_step(Step::Gone {
+                target,
+                timeout_ms: 0,
+            })
+            .await?
+        }
         Action::Fill { target, text } => as_step(Step::Fill { target, text }).await?,
         Action::Type { text } => as_step(Step::Type { text }).await?,
         Action::Clear { chars } => as_step(Step::Clear { chars }).await?,

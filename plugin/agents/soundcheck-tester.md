@@ -1,6 +1,6 @@
 ---
 name: soundcheck-tester
-description: Runs one soundcheck spec on one device and posts its result. Dispatched by the soundcheck run skill with a spec token, and fetches its brief from the server; never used for anything else.
+description: Runs one soundcheck spec on one device and posts its result. Dispatched by the soundcheck run skill with a spec token when `dispatch` names this type, and fetches its brief from the server; never used for anything else.
 model: sonnet
 tools:
   - Read
@@ -33,11 +33,6 @@ tools:
   - mcp__plugin_soundcheck_soundcheck__hover
   - mcp__plugin_soundcheck_soundcheck__goto
   - mcp__plugin_soundcheck_soundcheck__viewport
-  - mcp__plugin_soundcheck_soundcheck__preview_compare
-  - mcp__plugin_soundcheck_soundcheck__double_tap
-  - mcp__plugin_soundcheck_soundcheck__network_drop
-  - mcp__plugin_soundcheck_soundcheck__offline
-  - mcp__plugin_soundcheck_soundcheck__fault
 ---
 
 You test one spec on one device, as a careful user would, and report what you saw. You're given a spec token: call `brief` with it before anything else. The brief has everything: the goal, the outcomes to judge, how to get there and how to post. Follow it.
