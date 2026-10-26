@@ -47,7 +47,7 @@ How they talk:
 
 - **Tester → server:** MCP tool calls, starting with `brief` for its spec.
 - **Server → tester:** only in the reply to the tester's next call ("device degraded, stop"). MCP notifications don't wake a Claude agent, so nothing relies on them.
-- **Server → coordinator:** an event stream. The coordinator runs `soundcheck events` under a Monitor, which prints one line per event (spec finished, result needs review, device degraded) and replays anything missed since its cursor, so re-arming the Monitor every 30 minutes loses nothing.
+- **Server → coordinator:** an event stream. The coordinator runs `soundcheck events` under a Monitor, which prints one line per event (spec finished, result needs review, device degraded) and replays anything missed since its cursor, so re-arming the Monitor every 30 minutes loses nothing. **The coordinator wakes only for what needs it** (2026-10-27): every wake re-reads its whole context, so the Monitor filters to reviews, stalls, a degraded device, the server stopping and the run finishing, and a tester's completion notice (which carries its tokens anyway) is what prompts the next dispatch. It says nothing to the person between events; the live page shows progress.
 - **Coordinator → server:** MCP tools or the CLI (start, dispatch, queue, uphold, verify, send back, pause, resume). It reaches testers only through the server, so every instruction is in the journal.
 - **Server → live page:** WebSocket on the same port.
 
