@@ -616,6 +616,27 @@ fn a_reset_failure_is_blocked_without_using_an_attempt() {
 }
 
 #[test]
+fn a_relabel_is_kept_in_the_journal_and_outlasts_the_server() {
+    let (mut run, path) = open("relabel");
+    assert_eq!(run.state().label, None);
+    assert!(run.relabel(1, "  ", "why").is_err());
+    assert!(run.relabel(1, "v2.17.0 · candidate", " ").is_err());
+    run.relabel(
+        2,
+        "v2.17.0 · candidate",
+        "extended into the release regression",
+    )
+    .unwrap();
+    assert_eq!(run.state().label.as_deref(), Some("v2.17.0 · candidate"));
+    drop(run);
+    let reopened = Run::open(plan(false), &path, 3).unwrap();
+    assert_eq!(
+        reopened.state().label.as_deref(),
+        Some("v2.17.0 · candidate")
+    );
+}
+
+#[test]
 fn pause_stops_dispatch_until_resumed() {
     let (mut run, _) = open("pause");
     run.pause(1, "Aled: fix the undo bug first").unwrap();

@@ -141,6 +141,8 @@ pub struct State {
     /// The build installed on each platform now.
     pub builds: BTreeMap<Platform, Build>,
     pub paused: bool,
+    /// The label given mid-run, which replaces the one it started with.
+    pub label: Option<String>,
     pub finished: bool,
     next_id: u32,
 }
@@ -1004,6 +1006,24 @@ impl Run {
         self.commit(now, Event::SpecChanged { spec: spec.into() })
     }
 
+    /// Gives the run a new label, kept in the journal with why. Works after finishing, as triage does.
+    pub fn relabel(&mut self, now: u64, label: &str, reason: &str) -> Result<()> {
+        let label = label.trim();
+        if label.is_empty() {
+            bail!("a label can't be blank");
+        }
+        if reason.trim().is_empty() {
+            bail!("a relabel needs a reason");
+        }
+        self.commit(
+            now,
+            Event::Relabelled {
+                label: label.into(),
+                reason: reason.into(),
+            },
+        )
+    }
+
     pub fn pause(&mut self, now: u64, reason: &str) -> Result<()> {
         self.open_for_commands()?;
         if self.state.paused {
@@ -1667,6 +1687,7 @@ impl State {
             Event::Preflight { .. } => {}
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
+            Event::Relabelled { label, .. } => self.label = Some(label.clone()),
             Event::Finished { .. } => self.finished = true,
             // The rows themselves come from the plan, which already has the platforms and specs.
             Event::PlatformsAdded { .. } | Event::SpecsAdded { .. } => self.finished = false,

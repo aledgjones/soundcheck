@@ -250,6 +250,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         "pause",
         "resume",
         "finish",
+        "relabel",
     ] {
         assert!(
             names.contains(&want.to_string()),

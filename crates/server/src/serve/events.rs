@@ -176,6 +176,7 @@ pub fn summary(entry: &Entry) -> String {
             format!("{spec} changed since the run started: reread from disk")
         }
         Event::Paused { reason } => format!("paused: {reason}"),
+        Event::Relabelled { label, reason } => format!("relabelled \"{label}\": {reason}"),
         Event::Resumed => "resumed".into(),
         Event::Finished { result_counts: c } => format!(
             "finished: {} PASS, {} FAIL, {} BLOCKED, {} not run",

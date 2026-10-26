@@ -303,7 +303,7 @@ impl Hub {
         if !fresh.is_empty() {
             let _ = std::fs::write(
                 self.run_dir.join(SUMMARY_FILE),
-                report::run_summary(&run, &self.label).to_string(),
+                report::run_summary(&run, self.label_of(&run)).to_string(),
             );
         }
         result
@@ -524,6 +524,11 @@ impl Hub {
         self.with_run(|run, now| run.add_specs(now, planned))
     }
 
+    /// The run's label: the latest one given mid-run, else the one it started with.
+    pub fn label_of<'a>(&'a self, run: &'a Run) -> &'a str {
+        run.state().label.as_deref().unwrap_or(&self.label)
+    }
+
     fn page<'a>(
         &'a self,
         suite: &'a Suite,
@@ -533,7 +538,7 @@ impl Hub {
         report::Page {
             suite,
             run,
-            label: &self.label,
+            label: self.label_of(run),
             live: export.is_none(),
             run_dir: Some(&self.run_dir),
             export,
@@ -1164,7 +1169,7 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
     // The current run comes from memory: before its first event it has no summary on disk.
     runs.retain(|(name, _, _)| *name != current);
     let live = hub
-        .with_run(|run, _| Ok(report::run_summary(run, &hub.label)))
+        .with_run(|run, _| Ok(report::run_summary(run, hub.label_of(run))))
         .unwrap_or_default();
     runs.push((current.clone(), live, None));
     runs.sort_by(|a, b| b.0.cmp(&a.0));

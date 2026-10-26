@@ -267,6 +267,9 @@ fn run_command(args: RunArgs) -> Result<()> {
             scope.to_vec(),
         ),
     };
+    // A label given on resume is a relabel, journalled once the run is open, so it outlasts this server.
+    let relabel_to = label.clone().filter(|_| resume.is_some());
+    let saved_label = saved.as_ref().map(|i| i.label.clone());
     let label = label.or_else(|| saved.as_ref().map(|i| i.label.clone()));
     let resuming = resume.is_some();
     let run_dir = match resume {
@@ -376,6 +379,15 @@ fn run_command(args: RunArgs) -> Result<()> {
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
             only.start_ms = first_call_seconds * 1000;
+        }
+        if let Some(new) = relabel_to {
+            hub.with_run(|run, now| {
+                let current = run.state().label.clone().or(saved_label);
+                if current.as_deref() == Some(new.as_str()) {
+                    return Ok(());
+                }
+                run.relabel(now, &new, "given on resume")
+            })?;
         }
         // Every device answers before anything is built, so a missing emulator or one too old shows in seconds, not
         // after a build. What needs the app (its ready labels) waits for the install.

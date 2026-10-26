@@ -118,6 +118,14 @@ pub struct ReasonParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct RelabelParams {
+    /// The run's new label, e.g. "v2.17.0 · candidate".
+    pub label: String,
+    /// Why it changed, e.g. "extended into the full release regression".
+    pub reason: String,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct QueueParams {
     /// Spec IDs or features, as `--scope` takes them, e.g. `annotations/003-eraser` or `viewer`.
     pub specs: Vec<String>,
@@ -977,6 +985,19 @@ impl Tools {
                 .map(|(r, was)| json!({ "spec": r.spec, "platform": r.platform, "was": was }))
                 .collect();
             json!({ "added": added, "requeued": requeued })
+        }))
+    }
+
+    #[tool(
+        description = "Coordinator: give the run a new label when what it's for changes mid-run (a check extended into the release regression, say). The page, the run list and the export show it; the journal keeps the old one."
+    )]
+    async fn relabel(
+        &self,
+        Parameters(p): Parameters<RelabelParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        reply(self.hub.with_run(|run, now| {
+            run.relabel(now, &p.label, &p.reason)?;
+            Ok(json!({ "label": p.label.trim() }))
         }))
     }
 

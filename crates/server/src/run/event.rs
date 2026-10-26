@@ -152,6 +152,11 @@ pub enum Event {
         reason: String,
     },
     Resumed,
+    /// What the run is for changed mid-run (a check that grew into the release regression): its new label.
+    Relabelled {
+        label: String,
+        reason: String,
+    },
     Finished {
         result_counts: ResultCounts,
     },
