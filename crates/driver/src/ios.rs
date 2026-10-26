@@ -895,13 +895,18 @@ impl Device for Ios {
                 self.bundle_id
             )));
         }
-        if !has_content(&self.screen_json(true).await.unwrap_or_default()) {
-            return Err(device(format!(
-                "{} launched but showed no screen within 60 s",
-                self.bundle_id
-            )));
+        // An app that navigates on from its first screen reads empty for a moment in between (2026-10-26), so a single
+        // read here failed launches that had worked: look for a few seconds.
+        for _ in 0..10 {
+            if has_content(&self.screen_json(true).await.unwrap_or_default()) {
+                return Ok(());
+            }
+            sleep(Duration::from_millis(500)).await;
         }
-        Ok(())
+        Err(device(format!(
+            "{} launched but showed no screen within 60 s",
+            self.bundle_id
+        )))
     }
 
     async fn screenshot(&self, path: &Path) -> Result<()> {
