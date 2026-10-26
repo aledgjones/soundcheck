@@ -82,7 +82,7 @@ soundcheck serve docs/demo/suite --open latest
 
 ## Install
 
-You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator) for Android, Xcode for iOS. Then, in Claude Code:
+You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator on Android 14, API 34, or newer) for Android, Xcode for iOS. Then, in Claude Code:
 
 ```
 /plugin marketplace add aledgjones/soundcheck

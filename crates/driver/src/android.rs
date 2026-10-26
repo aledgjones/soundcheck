@@ -15,6 +15,8 @@ use tokio::time::{sleep, timeout};
 
 const READER_PACKAGE: &str = "dev.soundcheck.reader";
 const READER_PORT: u16 = 9018;
+/// The reader's `minSdkVersion` (readers/android/AndroidManifest.xml).
+const READER_MIN_API: u32 = 34;
 /// What a crash or hang looks like in logcat, for `errors`.
 const FAILURES: &str = r"FATAL EXCEPTION|ANR in|handleHostException|already has a parent";
 
@@ -237,6 +239,7 @@ impl Android {
         // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
         android.restore_forwards().await?;
         let forwards_at_connect = android.forwards().await?;
+        android.check_api().await?;
         android.replace_stale_reader().await?;
         Ok(Android {
             forwards_at_connect,
@@ -252,6 +255,18 @@ impl Android {
 
     /// A reader signed with another key (a build from before the committed keystore) refuses an update, so it's
     /// uninstalled first.
+    /// Names a device too old for the reader, which otherwise only fails to install.
+    async fn check_api(&self) -> Result<()> {
+        let sdk = self.shell("getprop ro.build.version.sdk").await?;
+        match sdk.trim().parse::<u32>() {
+            Ok(api) if api < READER_MIN_API => Err(device(format!(
+                "{} runs device API {api} < required {READER_MIN_API}: soundcheck's Android reader needs Android 14 or newer",
+                self.serial
+            ))),
+            _ => Ok(()),
+        }
+    }
+
     async fn install_reader(&self, apk: &Path) -> Result<()> {
         let apk = apk.display().to_string();
         match self.adb(&["install", "-r", &apk]).await {
@@ -371,7 +386,10 @@ impl Android {
         let Some(apk) = &self.reader_apk else {
             return Ok(());
         };
-        let installed = self.shell(&format!("pm path {READER_PACKAGE}")).await?;
+        // `pm path` fails for a package that isn't there: not installed yet, which ensure_reader sees to.
+        let Ok(installed) = self.shell(&format!("pm path {READER_PACKAGE}")).await else {
+            return Ok(());
+        };
         let Some(path) = installed.trim().strip_prefix("package:") else {
             return Ok(());
         };
