@@ -23,10 +23,11 @@ pub async fn sample(health: &mut Health) -> Result<()> {
             free < MIN_FREE_MEMORY_PERCENT,
         );
     }
-    // The kernel's own reading. Swap and compressed memory stay high long after pressure has passed.
+    // The kernel's own reading. Swap and compressed memory stay high long after pressure has passed, and "warning"
+    // is the Mac's steady state with an emulator, a simulator and dev tools up (2026-10-26): only critical holds.
     let level = run("sysctl", &["-n", "kern.memorystatus_vm_pressure_level"]).await?;
     if let Some(level) = pressure_level(&level) {
-        health.host(format!("Mac memory pressure {level}"), level != "normal");
+        health.host(format!("Mac memory pressure {level}"), level == "critical");
     }
     // Busy CPU, not the load average: macOS counts threads waiting on disk, so paging read as load 100+ with the CPU
     // 60% idle (2026-10-24).
