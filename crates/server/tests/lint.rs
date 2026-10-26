@@ -128,3 +128,17 @@ fn a_network_section_is_checked() {
         ]
     );
 }
+
+#[test]
+fn a_proxy_upstream_url_is_checked() {
+    let report: Vec<String> = problems("network-url")
+        .iter()
+        .map(|p| format!("{}: {}", p.path.display(), p.message))
+        .collect();
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert!(
+        report[0].starts_with("suite.yaml: network.proxy")
+            && report[0].contains("\"https://api.example.com/v1\" has more than a host and port"),
+        "{report:?}"
+    );
+}

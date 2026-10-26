@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use soundcheck_driver::proxy::Upstream;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -74,7 +75,33 @@ pub struct Network {
 pub struct ProxyRoute {
     pub name: String,
     pub listen: u16,
-    pub upstream: u16,
+    #[serde(deserialize_with = "upstream")]
+    pub upstream: Upstream,
+}
+
+/// A port on this machine, or a remote service's URL.
+fn upstream<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Upstream, D::Error> {
+    struct Visit;
+    impl serde::de::Visitor<'_> for Visit {
+        type Value = Upstream;
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a port or a URL like https://api.example.com")
+        }
+        fn visit_u64<E: serde::de::Error>(self, n: u64) -> Result<Upstream, E> {
+            u16::try_from(n)
+                .map(Upstream::Port)
+                .map_err(|_| E::custom(format!("{n} isn't a port")))
+        }
+        fn visit_i64<E: serde::de::Error>(self, n: i64) -> Result<Upstream, E> {
+            u64::try_from(n)
+                .map_err(|_| E::custom(format!("{n} isn't a port")))
+                .and_then(|n| self.visit_u64(n))
+        }
+        fn visit_str<E: serde::de::Error>(self, url: &str) -> Result<Upstream, E> {
+            Upstream::parse(url).map_err(E::custom)
+        }
+    }
+    d.deserialize_any(Visit)
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

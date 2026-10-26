@@ -2,6 +2,7 @@ use crate::suite::config::{Platform, compatible};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
+use soundcheck_driver::proxy::Upstream;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -87,7 +88,7 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         }
         let mut listens = BTreeSet::new();
         for route in &network.proxy {
-            if route.listen == route.upstream {
+            if route.upstream == Upstream::Port(route.listen) {
                 push(
                     CONFIG_FILE.into(),
                     format!(

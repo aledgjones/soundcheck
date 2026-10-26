@@ -16,7 +16,7 @@ pub fn routes(config: &SuiteConfig) -> Option<Vec<Route>> {
             .map(|r| Route {
                 name: r.name.clone(),
                 listen: r.listen,
-                upstream: r.upstream,
+                upstream: r.upstream.clone(),
             })
             .collect(),
     )

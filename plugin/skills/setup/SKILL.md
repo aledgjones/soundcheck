@@ -70,6 +70,7 @@ tickets: # only with a tracker; fixed and deferred problems then need its ticket
 network: # only for offline specs: the test build reaches `listen`, `upstream` really serves it
   proxy:
     - { name: api, listen: 23000, upstream: 3000 }
+    - { name: store, listen: 28100, upstream: https://api.revenuecat.com } # a remote service, over TLS
 ```
 
 ### Hooks

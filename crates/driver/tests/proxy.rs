@@ -1,6 +1,6 @@
 //! The network proxy on this machine alone: an echo server behind it, a client in front.
 
-use soundcheck_driver::proxy::{self, Route};
+use soundcheck_driver::proxy::{self, Route, Upstream};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -35,7 +35,7 @@ async fn start(listen: u16, upstream: u16) -> std::path::PathBuf {
     let routes = [Route {
         name: "echo".into(),
         listen,
-        upstream,
+        upstream: Upstream::Port(upstream),
     }];
     let socket = proxy::socket_path(&routes);
     tokio::spawn({
@@ -202,7 +202,7 @@ async fn start_http(listen: u16, upstream: u16) -> std::path::PathBuf {
     let routes = [Route {
         name: "api".into(),
         listen,
-        upstream,
+        upstream: Upstream::Port(upstream),
     }];
     let socket = proxy::socket_path(&routes);
     tokio::spawn({

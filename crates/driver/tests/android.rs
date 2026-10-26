@@ -1,7 +1,7 @@
 //! Drives the running Android emulator with Android's own Settings app. Runs only with `SOUNDCHECK_DEVICE_TESTS=1`, and skips where no emulator is running.
 
 use soundcheck_driver::android::Android;
-use soundcheck_driver::proxy::{self, Route};
+use soundcheck_driver::proxy::{self, Route, Upstream};
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -143,7 +143,7 @@ async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline()
     let routes = [Route {
         name: "echo".into(),
         listen: 18999,
-        upstream: 18997,
+        upstream: Upstream::Port(18997),
     }];
     let socket = proxy::socket_path(&routes);
     tokio::spawn({

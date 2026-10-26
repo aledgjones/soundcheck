@@ -1,0 +1,12 @@
+soundcheck: "0.2"
+platforms:
+  android:
+    app-id: com.example.app
+hooks:
+  guard: "true"
+  seed: "true # {scenario}"
+  build-identity: "true"
+seeds: [empty]
+network:
+  proxy:
+    - { name: store, listen: 28100, upstream: https://api.example.com/v1 }

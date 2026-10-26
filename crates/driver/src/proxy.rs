@@ -1,6 +1,6 @@
-//! TCP proxies between the app and the services it reaches on this machine, so a run can take the network away the
-//! way a phone loses it, or have a service refuse one kind of request. The project lists the routes; this module
-//! knows ports and HTTP paths only.
+//! TCP proxies between the app and the services it reaches, so a run can take the network away the way a phone loses
+//! it, or have a service refuse one kind of request. The project lists the routes; this module knows ports, hosts and
+//! HTTP paths only.
 
 use crate::DriverError;
 use std::path::{Path, PathBuf};
@@ -8,16 +8,115 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::tcp::OwnedReadHalf;
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use tokio::sync::watch;
+use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::pki_types::{CertificateDer, ServerName};
+use tokio_rustls::rustls::{ClientConfig, RootCertStore, crypto};
 
 /// The app reaches `listen`; `upstream` really serves it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Route {
     pub name: String,
     pub listen: u16,
-    pub upstream: u16,
+    pub upstream: Upstream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Upstream {
+    /// A service on this machine.
+    Port(u16),
+    /// A service elsewhere, such as a store's API. The app still talks plain HTTP to `listen`; the proxy opens TLS
+    /// when `tls` is set and gives every request this host, as a client calling it directly would.
+    Remote { tls: bool, host: String, port: u16 },
+}
+
+impl Upstream {
+    /// `https://api.example.com`, `http://host:8080` and the like: a scheme and a host, an optional port, no path.
+    pub fn parse(url: &str) -> Result<Upstream, String> {
+        let wrong =
+            |why: &str| format!("{url:?} {why}; use a port or a URL like https://api.example.com");
+        let (tls, rest) = if let Some(rest) = url.strip_prefix("https://") {
+            (true, rest)
+        } else if let Some(rest) = url.strip_prefix("http://") {
+            (false, rest)
+        } else {
+            return Err(wrong("isn't http:// or https://"));
+        };
+        let rest = rest.strip_suffix('/').unwrap_or(rest);
+        if rest.contains(['/', '?', '#', '@', '[', ']']) {
+            return Err(wrong("has more than a host and port"));
+        }
+
+        let (host, port) = match rest.rsplit_once(':') {
+            Some((host, port)) => match port.parse::<u16>() {
+                Ok(port) if port > 0 => (host, port),
+                _ => return Err(wrong("has a bad port")),
+            },
+            None => (rest, if tls { 443 } else { 80 }),
+        };
+        let label =
+            |l: &str| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+        if !host.split('.').all(label) {
+            return Err(wrong("has a bad host"));
+        }
+
+        Ok(Upstream::Remote {
+            tls,
+            host: host.to_ascii_lowercase(),
+            port,
+        })
+    }
+
+    /// The `Host` a request to a remote service carries; the port only when it isn't the scheme's own.
+    fn host_header(&self) -> Option<String> {
+        match self {
+            Upstream::Port(_) => None,
+            Upstream::Remote { tls, host, port } => Some(if *port == if *tls { 443 } else { 80 } {
+                host.clone()
+            } else {
+                format!("{host}:{port}")
+            }),
+        }
+    }
+
+    /// Opens a connection to the service, TLS included.
+    async fn connect(&self, tls: &TlsConnector) -> std::io::Result<(Upstreamed, Downstreamed)> {
+        let (host, port) = match self {
+            Upstream::Port(port) => ("127.0.0.1", *port),
+            Upstream::Remote { host, port, .. } => (host.as_str(), *port),
+        };
+        let tcp = TcpStream::connect((host, port)).await?;
+        if !matches!(self, Upstream::Remote { tls: true, .. }) {
+            let (read, write) = tcp.into_split();
+            return Ok((Box::new(write), Box::new(read)));
+        }
+
+        let name = ServerName::try_from(host.to_string()).map_err(std::io::Error::other)?;
+        let (read, write) = tokio::io::split(tls.connect(name, tcp).await?);
+        Ok((Box::new(write), Box::new(read)))
+    }
+}
+
+/// Toward the service, and back from it.
+type Upstreamed = Box<dyn AsyncWrite + Unpin + Send>;
+type Downstreamed = Box<dyn AsyncRead + Unpin + Send>;
+
+/// Certificates checked against Mozilla's roots, plus any a test trusts for its own service.
+fn tls_connector(extra: &[Vec<u8>]) -> std::io::Result<TlsConnector> {
+    let mut roots = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    for der in extra {
+        roots
+            .add(CertificateDer::from(der.clone()))
+            .map_err(std::io::Error::other)?;
+    }
+    let config = ClientConfig::builder_with_provider(Arc::new(crypto::ring::default_provider()))
+        .with_safe_default_protocol_versions()
+        .map_err(std::io::Error::other)?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    Ok(TlsConnector::from(Arc::new(config)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +169,16 @@ pub fn socket_path(routes: &[Route]) -> PathBuf {
 
 /// Runs the proxies and their command socket until a `stop` command.
 pub async fn serve(routes: &[Route], socket: &Path) -> std::io::Result<()> {
+    serve_trusting(routes, socket, &[]).await
+}
+
+/// As `serve`, also trusting these certificates (DER) from remote services, as a test's own one needs.
+pub async fn serve_trusting(
+    routes: &[Route],
+    socket: &Path,
+    certificates: &[Vec<u8>],
+) -> std::io::Result<()> {
+    let tls = tls_connector(certificates)?;
     let started = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -89,6 +198,7 @@ pub async fn serve(routes: &[Route], socket: &Path) -> std::io::Result<()> {
             listener,
             mode.clone(),
             faults.clone(),
+            tls.clone(),
         ));
     }
     let _ = std::fs::remove_file(socket);
@@ -211,7 +321,9 @@ async fn accept_loop(
     first: TcpListener,
     mode: Arc<watch::Sender<Mode>>,
     faults: Faults,
+    tls: TlsConnector,
 ) {
+    let upstream = Arc::new(route.upstream);
     let mut listener = Some(first);
     let mut rx = mode.subscribe();
     loop {
@@ -225,7 +337,7 @@ async fn accept_loop(
         let offline = tokio::select! {
             accepted = open.accept() => {
                 if let Ok((client, _)) = accepted {
-                    tokio::spawn(connection(client, route.upstream, mode.subscribe(), faults.clone()));
+                    tokio::spawn(connection(client, upstream.clone(), tls.clone(), mode.subscribe(), faults.clone()));
                 }
                 false
             }
@@ -254,16 +366,17 @@ async fn bind(port: u16) -> Option<TcpListener> {
 
 async fn connection(
     client: TcpStream,
-    upstream: u16,
+    upstream: Arc<Upstream>,
+    tls: TlsConnector,
     mut rx: watch::Receiver<Mode>,
     faults: Faults,
 ) {
     let frozen = Arc::new(AtomicBool::new(*rx.borrow() == Mode::Dropped));
-    let Ok(server) = TcpStream::connect(("127.0.0.1", upstream)).await else {
+    let Ok((server_write, server_read)) = upstream.connect(&tls).await else {
         return;
     };
+    let host = upstream.host_header();
     let (client_read, mut client_write) = client.into_split();
-    let (server_read, server_write) = server.into_split();
     let target = Arc::new(Mutex::new(String::new()));
     let mut faulted = faults.subscribe();
     let pipes = async {
@@ -275,6 +388,7 @@ async fn connection(
                 frozen.clone(),
                 faults,
                 target.clone(),
+                host.as_deref(),
             );
             tokio::select! {
                 ended = requests => match ended {
@@ -364,13 +478,14 @@ const HEAD_MAX: usize = 64 * 1024;
 /// Passes the client's requests to the service one at a time, answering any whose path has a fault itself.
 async fn requests(
     mut from: BufReader<OwnedReadHalf>,
-    mut to: OwnedWriteHalf,
+    mut to: Upstreamed,
     frozen: Arc<AtomicBool>,
     faults: Faults,
     target: Arc<Mutex<String>>,
+    host: Option<&str>,
 ) -> Ended {
     loop {
-        let head = match read_head(&mut from).await {
+        let mut head = match read_head(&mut from).await {
             Read::Request(head) => head,
             Read::Other(bytes) => {
                 if send(&mut to, &bytes, &frozen).await.is_ok() {
@@ -400,6 +515,10 @@ async fn requests(
             }
 
             return Ended::Fault(answer(status));
+        }
+
+        if let Some(host) = host {
+            head.bytes = with_host(&head.bytes, host);
         }
 
         if send(&mut to, &head.bytes, &frozen).await.is_err() {
@@ -494,10 +613,27 @@ async fn read_head(from: &mut BufReader<OwnedReadHalf>) -> Read {
     Read::Request(head)
 }
 
+/// The head with `host` as its only `Host`, which a remote service picks its site by; the app named `listen`.
+fn with_host(head: &[u8], host: &str) -> Vec<u8> {
+    let mut lines = head.split_inclusive(|&b| b == b'\n');
+    let mut out = Vec::with_capacity(head.len() + host.len());
+    out.extend_from_slice(lines.next().unwrap_or_default());
+    out.extend_from_slice(format!("Host: {host}\r\n").as_bytes());
+    for line in lines {
+        if !line
+            .get(..5)
+            .is_some_and(|l| l.eq_ignore_ascii_case(b"host:"))
+        {
+            out.extend_from_slice(line);
+        }
+    }
+    out
+}
+
 /// Passes a request's body on, or reads it to the end when there's nowhere to send it.
 async fn body(
     from: &mut BufReader<OwnedReadHalf>,
-    mut to: Option<&mut OwnedWriteHalf>,
+    mut to: Option<&mut Upstreamed>,
     framing: &Body,
     frozen: &AtomicBool,
 ) -> std::io::Result<()> {
@@ -524,7 +660,7 @@ async fn body(
 /// One CRLF-ended line of a chunked body, passed on; returns it without the line ending.
 async fn line(
     from: &mut BufReader<OwnedReadHalf>,
-    to: Option<&mut OwnedWriteHalf>,
+    to: Option<&mut Upstreamed>,
     frozen: &AtomicBool,
 ) -> std::io::Result<String> {
     let mut bytes = Vec::new();
@@ -541,7 +677,7 @@ async fn line(
 
 async fn copy_exact(
     from: &mut BufReader<OwnedReadHalf>,
-    mut to: Option<&mut OwnedWriteHalf>,
+    mut to: Option<&mut Upstreamed>,
     mut left: u64,
     frozen: &AtomicBool,
 ) -> std::io::Result<()> {
@@ -563,7 +699,7 @@ async fn copy_exact(
 }
 
 /// Writes unless the connection is frozen, when nothing passes.
-async fn send(to: &mut OwnedWriteHalf, bytes: &[u8], frozen: &AtomicBool) -> std::io::Result<()> {
+async fn send(to: &mut Upstreamed, bytes: &[u8], frozen: &AtomicBool) -> std::io::Result<()> {
     if frozen.load(Ordering::SeqCst) {
         return Ok(());
     }
@@ -572,7 +708,7 @@ async fn send(to: &mut OwnedWriteHalf, bytes: &[u8], frozen: &AtomicBool) -> std
 }
 
 /// The client closed: tell the service, unless the connection is frozen, which never closes.
-async fn finish(mut to: OwnedWriteHalf, frozen: &AtomicBool) {
+async fn finish(mut to: Upstreamed, frozen: &AtomicBool) {
     if frozen.load(Ordering::SeqCst) {
         std::future::pending::<()>().await;
     }

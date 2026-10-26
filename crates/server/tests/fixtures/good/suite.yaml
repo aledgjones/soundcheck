@@ -20,3 +20,4 @@ tickets:
 network:
   proxy:
     - { name: api, listen: 23000, upstream: 3000 }
+    - { name: store, listen: 28100, upstream: https://api.example.com }
