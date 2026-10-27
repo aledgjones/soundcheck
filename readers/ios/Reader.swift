@@ -39,6 +39,7 @@ final class Reader {
   var held: Hold?
   // Bumped whenever the held touch changes, which ends the old one's keep-alive.
   var holdID = 0
+  var reloadedPID: Int?
 
   init(udid: String) {
     self.udid = udid
@@ -64,6 +65,19 @@ final class Reader {
     guard let simulator else {
       throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
+    let latest = try await read(simulator, lean: lean)
+    // A relaunched app reads as an empty 0×0 node until Accessibility is loaded into the new process, which idb
+    // only does on a reader's first read; load it once per app process, through the first read's session (a
+    // second session ends the reader), rather than restarting the reader.
+    guard !Reader.hasDescendant(latest), let pid = Reader.rootPID(latest), pid != reloadedPID else {
+      return latest
+    }
+    reloadedPID = pid
+    try FBSimulatorControlFrameworkLoader.reloadAccessibility(withTimeout: 5)
+    return try await read(simulator, lean: lean)
+  }
+
+  func read(_ simulator: FBSimulator, lean: Bool) async throws -> Data {
     var latest = Data()
     for attempt in 0..<5 {
       let element = try await simulator.accessibilityElementForFrontmostApplication()
@@ -236,6 +250,12 @@ final class Reader {
     }
     let roots = (object as? [[String: Any]]) ?? ((object as? [String: Any]).map { [$0] } ?? [])
     return roots.contains { ($0["children"] as? [Any])?.isEmpty == false }
+  }
+
+  static func rootPID(_ data: Data) -> Int? {
+    let object = try? JSONSerialization.jsonObject(with: data)
+    let root = (object as? [[String: Any]])?.first ?? (object as? [String: Any])
+    return root?["pid"] as? Int
   }
 }
 

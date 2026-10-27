@@ -46,3 +46,81 @@ index db91112..f716859 100644
    // Returns an FBAccessibilityElement wrapping the platform element for the given request.
    // The handle owns the request's token and pops it on close.
    //
+diff --git a/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.h b/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.h
+index a9e8a83..6387bd5 100644
+--- a/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.h
++++ b/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.h
+@@ -29,6 +29,11 @@
+  */
+ @property (class, nonnull, nonatomic, readonly, strong) FBSimulatorControlFrameworkLoader *accessibilityAutomationFrameworks;
+ 
++/**
++ Asks the session kept by the last successful bootstrap to load Accessibility again, into apps launched since.
++ */
+++ (BOOL)reloadAccessibilityWithTimeout:(NSTimeInterval)timeout error:(NSError * _Nullable * _Nullable)error;
++
+ /**
+  Starts a short-lived remote automation session and asks it to load Accessibility.
+  */
+diff --git a/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.m b/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.m
+index 35714fa..d4ef9bb 100644
+--- a/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.m
++++ b/FBSimulatorControl/Utility/FBSimulatorControlFrameworkLoader.m
+@@ -20,6 +20,8 @@
+                          userInfo:@{NSLocalizedDescriptionKey: description}];
+ }
+ 
++static id FBSimulatorKeptAutomationSession;
++
+ static void FBSimulatorInvalidateAutomationSession(id session)
+ {
+   SEL invalidateSelector = NSSelectorFromString(@"invalidate");
+@@ -334,12 +336,47 @@ + (BOOL)performAccessibilityBootstrapForSimulatorDevice:(id)simulatorDevice time
+       return NO;
+     }
+     [logger log:@"Bootstrapped simulator Accessibility through a short-lived remote automation session"];
++    // soundcheck: kept for reloadAccessibility, since a second session in one process ends it.
++    FBSimulatorKeptAutomationSession = session;
+     return YES;
+   } @finally {
+-    FBSimulatorInvalidateAutomationSession(session);
++    if (FBSimulatorKeptAutomationSession != session) {
++      FBSimulatorInvalidateAutomationSession(session);
++    }
+   }
+ }
+ 
+++ (BOOL)reloadAccessibilityWithTimeout:(NSTimeInterval)timeout error:(NSError **)error
++{
++  id session = FBSimulatorKeptAutomationSession;
++  SEL loadSelector = NSSelectorFromString(@"loadAccessibilityWithTimeout:reply:");
++  if (![session respondsToSelector:loadSelector]) {
++    if (error) {
++      *error = FBSimulatorAccessibilityBootstrapError(10, @"No automation session to reload Accessibility through");
++    }
++    return NO;
++  }
++  dispatch_semaphore_t loadSemaphore = dispatch_semaphore_create(0);
++  __block BOOL loaded = NO;
++  __block NSError *loadError = nil;
++  id loadReply = ^(BOOL returnedLoaded, NSError *returnedError) {
++    loaded = returnedLoaded;
++    loadError = returnedError;
++    dispatch_semaphore_signal(loadSemaphore);
++  };
++  ((void (*)(id, SEL, double, id))objc_msgSend)(session, loadSelector, timeout, loadReply);
++  if (dispatch_semaphore_wait(loadSemaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeout + 1) * NSEC_PER_SEC))) != 0) {
++    if (error) {
++      *error = FBSimulatorAccessibilityBootstrapError(8, @"Timed out loading simulator Accessibility");
++    }
++    return NO;
++  }
++  if (!loaded && error) {
++    *error = loadError ?: FBSimulatorAccessibilityBootstrapError(9, @"The simulator rejected the Accessibility load request");
++  }
++  return loaded;
++}
++
+ + (FBSimulatorControlFrameworkLoader *)xcodeFrameworks
+ {
+   static dispatch_once_t onceToken;
