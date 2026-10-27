@@ -1183,14 +1183,19 @@ impl Hub {
             }
         }
         let names = [
-            format!("{base}-screen.png"),
+            format!("{base}-screen.webp"),
             format!("{base}-tree.txt"),
             format!("{base}-errors.txt"),
         ];
         let saved = self
             .on_device(platform, async |d| {
                 let mut saved = Vec::new();
-                if d.device.screenshot(&dir.join(&names[0])).await.is_ok() {
+                if crate::report::capture_shot(&dir.join(&names[0]), async |png| {
+                    d.device.screenshot(png).await
+                })
+                .await
+                .is_ok()
+                {
                     saved.push(names[0].clone());
                 }
                 if let Ok(tree) = d.see(None, true).await {

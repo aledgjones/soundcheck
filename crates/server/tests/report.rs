@@ -239,10 +239,15 @@ fn a_bare_evidence_name_from_an_older_journal_shows_its_png() {
 fn a_shot_is_named_under_its_attempts_prefix() {
     let base = report::evidence_base("annotations/003-eraser", 1, Ios);
     assert_eq!(base, "annotations-003-eraser-1-ios");
-    for given in ["wide", "wide.png", "annotations-003-eraser-1-ios-wide.png"] {
+    for given in [
+        "wide",
+        "wide.png",
+        "wide.webp",
+        "annotations-003-eraser-1-ios-wide.webp",
+    ] {
         assert_eq!(
             report::shot_file(&base, given),
-            "annotations-003-eraser-1-ios-wide.png",
+            "annotations-003-eraser-1-ios-wide.webp",
             "{given}"
         );
     }

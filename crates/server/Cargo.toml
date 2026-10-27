@@ -21,3 +21,5 @@ tokio-stream.workspace = true
 tokio-util.workspace = true
 reqwest.workspace = true
 soundcheck-driver = { path = "../driver" }
+image.workspace = true
+webp.workspace = true

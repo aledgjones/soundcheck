@@ -56,19 +56,69 @@ pub fn evidence_base(spec: &str, attempt: u32, platform: Platform) -> String {
     format!("{}-{attempt}-{platform}", spec.replace('/', "-"))
 }
 
-/// The file a tester's screenshot `name` is saved as: under its attempt's prefix, ending `.png`.
+/// Evidence is kept at what a tester's Read shows, which is detail enough for a person too, and as WebP: a full-size
+/// PNG made a full run's report 340 MB.
+const SHOT_MAX_SIDE: u32 = 2000;
+const SHOT_QUALITY: f32 = 80.0;
+
+/// A screenshot among evidence files: WebP, or PNG from older runs.
+pub fn is_shot(name: &str) -> bool {
+    name.ends_with(".webp") || name.ends_with(".png")
+}
+
+/// Stores the device screenshot at `png` as evidence at `to`, scaled down and as WebP. `png` stays.
+pub fn store_shot(png: &Path, to: &Path) -> anyhow::Result<()> {
+    let img = image::open(png)?.into_rgb8();
+    let (w, h) = img.dimensions();
+    let long = w.max(h);
+    let img = if long > SHOT_MAX_SIDE {
+        let scale = f64::from(SHOT_MAX_SIDE) / f64::from(long);
+        let size = |v: u32| ((f64::from(v) * scale).round() as u32).max(1);
+        image::imageops::resize(
+            &img,
+            size(w),
+            size(h),
+            image::imageops::FilterType::Triangle,
+        )
+    } else {
+        img
+    };
+    let (w, h) = img.dimensions();
+    let encoded = webp::Encoder::from_rgb(&img, w, h).encode(SHOT_QUALITY);
+    std::fs::write(to, &*encoded)?;
+    Ok(())
+}
+
+/// Takes a screenshot through `capture` (which writes a PNG) and stores it as evidence at `to`.
+pub async fn capture_shot<F, E>(to: &Path, capture: F) -> anyhow::Result<()>
+where
+    F: AsyncFnOnce(&Path) -> Result<(), E>,
+    E: std::error::Error + Send + Sync + 'static,
+{
+    let png = to.with_extension("png");
+    capture(&png).await?;
+    let (from, dest) = (png.clone(), to.to_path_buf());
+    let stored = tokio::task::spawn_blocking(move || store_shot(&from, &dest)).await?;
+    let _ = std::fs::remove_file(&png);
+    stored
+}
+
+/// The file a tester's screenshot `name` is saved as: under its attempt's prefix, ending `.webp`.
 pub fn shot_file(base: &str, name: &str) -> String {
-    let name = name.trim_end_matches(".png");
+    let name = name.trim_end_matches(".webp").trim_end_matches(".png");
     let name = name.strip_prefix(&format!("{base}-")).unwrap_or(name);
-    format!("{base}-{name}.png")
+    format!("{base}-{name}.webp")
 }
 
 /// The evidence file a tester's `name` refers to, if it was saved: its attempt's own file first, then the name as
-/// given (or with `.png`), which covers the server's captures and older runs' unprefixed shots.
+/// given (or with `.webp` or `.png`), which covers the server's captures and older runs' unprefixed shots.
 pub fn resolve_evidence(dir: &Path, base: &str, name: &str) -> Option<String> {
+    let shot = shot_file(base, name);
     [
-        shot_file(base, name),
+        shot.clone(),
+        shot.replace(".webp", ".png"),
         name.to_string(),
+        format!("{name}.webp"),
         format!("{name}.png"),
     ]
     .into_iter()
@@ -891,14 +941,19 @@ fn outcomes(spec: &Spec, posted: &Posted, r: &RowRecord, failure: Option<&str>) 
 
 fn image(page: &Page, name: &str) -> Option<String> {
     let dir = page.run_dir?.join(EVIDENCE_DIR);
-    // Older journals hold names as the tester typed them, sometimes without `.png`.
-    let name = [name.to_string(), format!("{name}.png")]
-        .into_iter()
-        .find(|f| safe_name(f) && dir.join(f).is_file())?;
+    // Older journals hold names as the tester typed them, sometimes without an extension.
+    let name = [
+        name.to_string(),
+        format!("{name}.webp"),
+        format!("{name}.png"),
+    ]
+    .into_iter()
+    .find(|f| safe_name(f) && dir.join(f).is_file())?;
     let path = dir.join(&name);
     if page.export.is_some() {
         let bytes = std::fs::read(&path).ok()?;
         let kind = match path.extension().and_then(|e| e.to_str()) {
+            Some("webp") => "image/webp",
             Some("png") => "image/png",
             Some("jpg" | "jpeg") => "image/jpeg",
             _ => return None,
@@ -943,7 +998,7 @@ fn evidence(page: &Page, posted: &Posted, captured: &[String]) -> String {
         .iter()
         .flat_map(|j| j.evidence.iter())
         .collect();
-    shots.extend(captured.iter().filter(|f| f.ends_with(".png")));
+    shots.extend(captured.iter().filter(|f| is_shot(f)));
     let texts: Vec<&String> = captured.iter().filter(|f| f.ends_with(".txt")).collect();
     if shots.is_empty() && texts.is_empty() && posted.notes.is_none() {
         return String::new();

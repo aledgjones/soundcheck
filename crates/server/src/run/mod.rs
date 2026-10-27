@@ -1327,7 +1327,7 @@ impl State {
             .iter()
             .flat_map(|p| &p.judgments)
             .flat_map(|j| &j.evidence);
-        for name in attached.chain(r.captured.iter().filter(|f| f.ends_with(".png"))) {
+        for name in attached.chain(r.captured.iter().filter(|f| crate::report::is_shot(f))) {
             if !shots.contains(name) {
                 shots.push(name.clone());
             }

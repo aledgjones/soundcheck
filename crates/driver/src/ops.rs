@@ -18,6 +18,8 @@ const POLL_MS: u64 = 250;
 const SCROLL_PAGES_MAX: u32 = 5;
 const SCROLL_SWIPE_MS: u64 = 300;
 const SCROLL_SETTLE_READS: u32 = 12;
+/// How long [`Driver::settled`] waits for the screen to hold still before taking it as it is.
+const SETTLE_MAX_MS: u64 = 2_000;
 const FILL_TRIES: u32 = 3;
 
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
@@ -75,6 +77,21 @@ impl<D: Device> Driver<D> {
             Some(m) => elements.into_iter().filter(|e| m.matches(e)).collect(),
             None => elements,
         })
+    }
+
+    /// The screen once two reads in a row match, so a reply after an input isn't a transition caught midway.
+    pub async fn settled(&self) -> Result<Vec<Element>> {
+        let deadline = Instant::now() + Duration::from_millis(SETTLE_MAX_MS);
+        let mut last = self.device.read(false).await?;
+        while Instant::now() < deadline {
+            sleep(Duration::from_millis(POLL_MS)).await;
+            let now = self.device.read(false).await?;
+            if now == last {
+                return Ok(now);
+            }
+            last = now;
+        }
+        Ok(last)
     }
 
     pub async fn expect(&self, target: &Matcher) -> Result<Element> {

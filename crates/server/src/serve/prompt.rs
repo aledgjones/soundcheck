@@ -129,6 +129,7 @@ Act and judge at a person's pace. A person never acts the instant a screen chang
 
 Every call re-reads this whole conversation, so fewer calls make a faster, cheaper run.
 
+- **Every input returns the screen once it holds still** (`tap`, `fill`, `type`, `clear`, `swipe`, `touch`, `release`, `hold`, `press`, `launch`, `double_tap` and `batch`), so don't `see` after one: read its reply. `see` is for a look before you've acted, or with a `filter` or `all`.
 - **When you already know the next few steps** (open a menu, choose an item, confirm), send them as one `batch`. It stops at the first step that fails, says which and what ran before it, and returns the screen as it is then, so you lose nothing over single calls.
 - **Keep the checks you judge an outcome on as their own calls,** after the batch, so what you saw is plain.
 - `tap` waits up to 5 s for its target, so a tap needs no `see` or `wait` before it when you know the label.

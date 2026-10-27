@@ -292,7 +292,10 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         ]}),
     )
     .await;
-    assert_eq!(done.as_array().unwrap().len(), 4, "{done}");
+    let done = done.as_str().unwrap();
+    let (steps, screen) = done.split_once("\nScreen now:\n").expect(done);
+    assert_eq!(steps.split("; ").count(), 4, "{done}");
+    assert!(screen.contains("Saved"), "{done}");
     let stopped = client
         .call_tool(
             CallToolRequestParams::new("batch").with_arguments(
@@ -320,15 +323,15 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     assert_eq!(
         shot,
         format!(
-            "saved as annotations-001-draw-1-web-saved.png: attach this name; Read it at {}",
+            "saved as annotations-001-draw-1-web-saved.webp: attach this name; Read it at {}",
             run_dir
-                .join("evidence/annotations-001-draw-1-web-saved.png")
+                .join("evidence/annotations-001-draw-1-web-saved.webp")
                 .display()
         )
     );
     assert!(
         run_dir
-            .join("evidence/annotations-001-draw-1-web-saved.png")
+            .join("evidence/annotations-001-draw-1-web-saved.webp")
             .exists()
     );
 
@@ -346,7 +349,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     let evidence = run_dir.join("evidence");
     assert!(
         evidence
-            .join("annotations-001-draw-1-web-screen.png")
+            .join("annotations-001-draw-1-web-screen.webp")
             .exists()
     );
     let tree =
@@ -367,7 +370,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         .await
         .unwrap();
     assert!(
-        html.contains("src=\"files/evidence/annotations-001-draw-1-web-saved.png\""),
+        html.contains("src=\"files/evidence/annotations-001-draw-1-web-saved.webp\""),
         "the page shows the screenshot"
     );
     assert!(

@@ -139,6 +139,17 @@ pub struct QueueParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct StatusParams {
+    /// One spec's rows, problems and side finds, with everything a review rests on.
+    pub spec: Option<String>,
+    /// With `spec`, just that platform's row.
+    pub platform: Option<Platform>,
+    /// Every row, passes included: for the rare call that needs the whole run.
+    #[serde(default)]
+    pub full: bool,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct TokenParams {
     /// Your spec token.
     pub token: String,
@@ -693,15 +704,39 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: the run at a glance: verdict and its reasons, every row's state, problems, side finds waiting, and what stops the run finishing."
+        description = "Coordinator: the run at a glance: verdict and its reasons, counts, the rows that haven't passed, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row, passes included."
     )]
-    async fn status(&self) -> Result<CallToolResult, ErrorData> {
+    async fn status(
+        &self,
+        Parameters(p): Parameters<StatusParams>,
+    ) -> Result<CallToolResult, ErrorData> {
         let evidence_dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
         reply(self.hub.with_run(|run, _| {
             let state = run.state();
+            let wanted = |spec: &str, platform: Platform| match &p.spec {
+                Some(s) => s == spec && p.platform.is_none_or(|q| q == platform),
+                None => true,
+            };
+            let mut counts = std::collections::BTreeMap::<String, u32>::new();
+            for r in state.rows.values() {
+                let key = match &r.row {
+                    Row::Filed { result, .. } => format!("{result:?}").to_uppercase(),
+                    Row::NotRun => "not run".into(),
+                    Row::Queued { .. } => "queued".into(),
+                    Row::Running { .. } => "running".into(),
+                    Row::NeedsReview { .. } => "needs review".into(),
+                };
+                *counts.entry(key).or_default() += 1;
+            }
             let rows: Vec<RowStatus> = state
                 .rows
                 .iter()
+                .filter(|((spec, platform), r)| {
+                    wanted(spec, *platform)
+                        && (p.full
+                            || p.spec.is_some()
+                            || !matches!(r.row, Row::Filed { result: crate::run::model::Final::Pass, .. }))
+                })
                 .map(|((spec, platform), r)| {
                     let (label, result, claim) = match &r.row {
                         Row::NotRun => ("not run", None, None),
@@ -768,6 +803,7 @@ impl Tools {
             let finds: Vec<_> = state
                 .pending_finds
                 .iter()
+                .filter(|f| wanted(&f.spec, f.platform))
                 .map(|f| {
                     json!({
                         "id": f.id,
@@ -783,8 +819,9 @@ impl Tools {
                 "verdict": verdict::verdict(state),
                 "paused": state.paused,
                 "finished": state.finished,
+                "counts": counts,
                 "rows": rows,
-                "problems": state.problems,
+                "problems": state.problems.iter().filter(|q| wanted(&q.spec, q.platform)).collect::<Vec<_>>(),
                 "side_finds_waiting": finds,
                 "evidence_dir": evidence_dir,
                 "notes": state.notes.iter().map(|n| format!("{} on {}: {}", n.spec, n.platform, n.text)).collect::<Vec<_>>(),
@@ -875,7 +912,7 @@ impl Tools {
                 anyhow::bail!("{file} is already saved: pick another name");
             }
             std::fs::create_dir_all(&dir)?;
-            std::fs::copy(source, dir.join(&file))?;
+            report::store_shot(source, &dir.join(&file))?;
             run.add_evidence(now, p.problem, &file, &p.reason)?;
             Ok(json!({ "problem": p.problem, "added": file }))
         }))
@@ -1148,7 +1185,9 @@ impl Tools {
             }
             std::fs::create_dir_all(&dir).map_err(|e| DriverError::Device(e.to_string()))?;
             let path = dir.join(&name);
-            d.device.screenshot(&path).await?;
+            report::capture_shot(&path, async |png| d.device.screenshot(png).await)
+                .await
+                .map_err(|e| DriverError::Device(format!("{e:#}")))?;
             Ok(format!(
                 "saved as {name}: attach this name; Read it at {}",
                 path.display()
@@ -1166,69 +1205,74 @@ impl Tools {
             .await
     }
 
-    #[tool(description = "Tester: tap an element (waits up to 5 s for it).")]
+    #[tool(
+        description = "Tester: tap an element (waits up to 5 s for it). Returns what it tapped and the screen once it holds still."
+    )]
     async fn tap(
         &self,
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("tap", &p.token, async |d| {
-            Ok(line(&d.tap(&matcher(&p.target)?, p.last).await?))
+            let tapped = line(&d.tap(&matcher(&p.target)?, p.last).await?);
+            Ok(self.acted(&p.token, d, tapped).await)
         })
         .await
     }
 
     #[tool(
-        description = "Tester: tap a field, empty it, type the text and check it landed (retries twice)."
+        description = "Tester: tap a field, empty it, type the text and check it landed (retries twice). Returns the screen once it holds still."
     )]
     async fn fill(
         &self,
         Parameters(p): Parameters<FillParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("fill", &p.token, async |d| {
-            d.fill(&matcher(&p.target)?, &p.text)
-                .await
-                .map(|()| "filled")
+            d.fill(&matcher(&p.target)?, &p.text).await?;
+            Ok(self.acted(&p.token, d, "filled").await)
         })
         .await
     }
 
     #[tool(
         name = "type",
-        description = "Tester: type into the focused field (appends)."
+        description = "Tester: type into the focused field (appends). Returns the screen once it holds still."
     )]
     async fn r#type(
         &self,
         Parameters(p): Parameters<TextParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("type", &p.token, async |d| {
-            d.type_checked(&p.text).await.map(|()| "typed")
+            d.type_checked(&p.text).await?;
+            Ok(self.acted(&p.token, d, "typed").await)
         })
         .await
     }
 
-    #[tool(description = "Tester: empty the focused field.")]
+    #[tool(
+        description = "Tester: empty the focused field. Returns the screen once it holds still."
+    )]
     async fn clear(
         &self,
         Parameters(p): Parameters<ClearParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("clear", &p.token, async |d| {
-            d.device
-                .clear(p.chars.unwrap_or(60))
-                .await
-                .map(|()| "cleared")
+            d.device.clear(p.chars.unwrap_or(60)).await?;
+            Ok(self.acted(&p.token, d, "cleared").await)
         })
         .await
     }
 
-    #[tool(description = "Tester: swipe from one point to another over `ms` milliseconds.")]
+    #[tool(
+        description = "Tester: swipe from one point to another over `ms` milliseconds. Returns the screen once it holds still."
+    )]
     async fn swipe(
         &self,
         Parameters(p): Parameters<GestureParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("swipe", &p.token, async |d| {
             d.swipe((p.from[0], p.from[1]), (p.to[0], p.to[1]), p.ms)
-                .await
-                .map(|()| "swiped")
+                .await?;
+            Ok(self.acted(&p.token, d, "swiped").await)
         })
         .await
     }
@@ -1244,8 +1288,11 @@ impl Tools {
             path: p.path,
             keep: p.keep,
         };
-        self.device("touch", &p.token, async |d| step(d, &s).await)
-            .await
+        self.device("touch", &p.token, async |d| {
+            let what = step(d, &s).await?;
+            Ok(self.acted(&p.token, d, what).await)
+        })
+        .await
     }
 
     #[tool(
@@ -1256,17 +1303,23 @@ impl Tools {
         Parameters(p): Parameters<ReleaseParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let s = Step::Release { back: p.back };
-        self.device("release", &p.token, async |d| step(d, &s).await)
-            .await
+        self.device("release", &p.token, async |d| {
+            let what = step(d, &s).await?;
+            Ok(self.acted(&p.token, d, what).await)
+        })
+        .await
     }
 
-    #[tool(description = "Tester: press and hold an element for `ms` milliseconds.")]
+    #[tool(
+        description = "Tester: press and hold an element for `ms` milliseconds. Returns the screen once it holds still."
+    )]
     async fn hold(
         &self,
         Parameters(p): Parameters<HoldParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("hold", &p.token, async |d| {
-            Ok(line(&d.hold(&matcher(&p.target)?, p.ms).await?))
+            let held = line(&d.hold(&matcher(&p.target)?, p.ms).await?);
+            Ok(self.acted(&p.token, d, held).await)
         })
         .await
     }
@@ -1279,7 +1332,8 @@ impl Tools {
         Parameters(p): Parameters<TextParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("press", &p.token, async |d| {
-            d.device.press(&p.text).await.map(|()| "pressed")
+            d.device.press(&p.text).await?;
+            Ok(self.acted(&p.token, d, "pressed").await)
         })
         .await
     }
@@ -1295,18 +1349,21 @@ impl Tools {
         .await
     }
 
-    #[tool(description = "Tester: restart the app.")]
+    #[tool(description = "Tester: restart the app. Returns the screen once it holds still.")]
     async fn launch(
         &self,
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("launch", &p.token, async |d| {
-            d.device.launch().await.map(|()| "launched")
+            d.device.launch().await?;
+            Ok(self.acted(&p.token, d, "launched").await)
         })
         .await
     }
 
-    #[tool(description = "Tester (web): hover over an element.")]
+    #[tool(
+        description = "Tester (web): hover over an element. Returns the screen once it holds still."
+    )]
     async fn hover(
         &self,
         Parameters(p): Parameters<TargetParams>,
@@ -1315,18 +1372,21 @@ impl Tools {
             let e = d.expect(&matcher(&p.target)?).await?;
             let (x, y) = e.tap_point();
             d.device.hover_at(x, y).await?;
-            Ok(line(&e))
+            Ok(self.acted(&p.token, d, line(&e)).await)
         })
         .await
     }
 
-    #[tool(description = "Tester (web): open a URL, or go `back` or `forward`.")]
+    #[tool(
+        description = "Tester (web): open a URL, or go `back` or `forward`. Returns the screen once it holds still."
+    )]
     async fn goto(
         &self,
         Parameters(p): Parameters<GotoParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("goto", &p.token, async |d| {
-            d.device.goto(&p.url).await.map(|()| "opened")
+            d.device.goto(&p.url).await?;
+            Ok(self.acted(&p.token, d, "opened").await)
         })
         .await
     }
@@ -1420,7 +1480,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, touch, release, hover, goto, press, pause), for a run of steps whose course you already know (open a menu, choose, confirm). It stops at the first that fails and says which, what ran before it, and what's on screen now. Pause steps keep a sequence's timing on the device. Inputs start at least 500 ms after the last one ended, as a person's would. Returns what each step did."
+        description = "Tester: several steps in one call (tap, fill, type, clear, expect, gone, wait, check, hold, swipe, touch, release, hover, goto, press, pause), for a run of steps whose course you already know (open a menu, choose, confirm). It stops at the first that fails and says which, what ran before it, and what's on screen now. Pause steps keep a sequence's timing on the device. Inputs start at least 500 ms after the last one ended, as a person's would. Returns what each step did and the screen once it holds still."
     )]
     async fn batch(
         &self,
@@ -1475,7 +1535,7 @@ impl Tools {
                     }
                 }
             }
-            Ok(done)
+            Ok(self.acted(&p.token, d, done.join("; ")).await)
         })
         .await
     }
@@ -1530,24 +1590,37 @@ impl Tools {
                 tolerance: 2,
             };
             let result = d.preview_compare(&request, &dir, &name).await?;
+            // Compared as PNGs, kept as evidence like every other shot.
+            let mut evidence = Vec::new();
+            for stage in ["before", "preview", "saved"] {
+                let png = dir.join(format!("{name}-{stage}.png"));
+                let kept = format!("{name}-{stage}.webp");
+                if report::store_shot(&png, &dir.join(&kept)).is_ok() {
+                    let _ = std::fs::remove_file(&png);
+                    if stage != "before" {
+                        evidence.push(kept);
+                    }
+                }
+            }
             Ok(json!({
                 "result": result.summary(),
                 "passed": result.passed,
-                "evidence": [format!("{name}-preview.png"), format!("{name}-saved.png")],
+                "evidence": evidence,
             }))
         })
         .await
     }
 
     #[tool(
-        description = "Tester: double-tap an element, timed on the device at a person's double-tap speed (one tap call at a time is too slow to count as one)."
+        description = "Tester: double-tap an element, timed on the device at a person's double-tap speed (one tap call at a time is too slow to count as one). Returns the screen once it holds still."
     )]
     async fn double_tap(
         &self,
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("double_tap", &p.token, async |d| {
-            Ok(line(&d.double_tap(&matcher(&p.target)?, p.last).await?))
+            let tapped = line(&d.double_tap(&matcher(&p.target)?, p.last).await?);
+            Ok(self.acted(&p.token, d, tapped).await)
         })
         .await
     }
@@ -1629,6 +1702,19 @@ impl Tools {
     }
 
     /// Runs a device operation for the platform the token's spec is on, counting it as the tester's activity.
+    /// What an input did, then the screen once it holds still, so a tester needn't `see` after every step.
+    async fn acted(&self, token: &str, d: &Driver<AnyDevice>, what: impl Into<String>) -> String {
+        let screen = match d.settled().await {
+            Ok(elements) => {
+                let lines: Vec<String> = elements.iter().map(line).collect();
+                self.hub.remember_screen(token, lines.clone());
+                lines.join("\n")
+            }
+            Err(e) => format!("(couldn't read it: {e})"),
+        };
+        format!("{}\nScreen now:\n{screen}", what.into())
+    }
+
     async fn device<T: Serialize>(
         &self,
         tool: &str,
