@@ -796,9 +796,15 @@ impl Run {
         )
     }
 
-    /// The token total the coordinator read from a tester's completion notice. Allowed after the run has finished,
-    /// since the last testers' notices come after their posts.
-    pub fn tokens(&mut self, now: u64, token: &str, tokens: u64) -> Result<()> {
+    /// A tester's tokens, posted by the plugin's hook when it stops. Allowed after the run has finished, since the
+    /// last tester stops after its post; a second post for an attempt replaces the first.
+    pub fn tokens(
+        &mut self,
+        now: u64,
+        token: &str,
+        tokens: u64,
+        spent: Option<event::Spent>,
+    ) -> Result<()> {
         let dispatched = self
             .entries
             .iter()
@@ -811,6 +817,7 @@ impl Run {
             Event::Tokens {
                 token: token.into(),
                 tokens,
+                spent,
             },
         )
     }

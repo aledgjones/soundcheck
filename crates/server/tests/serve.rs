@@ -180,6 +180,65 @@ async fn ready_answers_whether_a_platform_can_take_a_spec() {
 }
 
 #[tokio::test]
+async fn a_stopped_testers_hook_records_its_tokens() {
+    let (server, url, dir) = server_in().await;
+    let client = client(&url).await;
+    let dispatched = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/001-draw", "platform": "android" }),
+    )
+    .await;
+    let token = dispatched["token"].as_str().unwrap();
+    let transcript = dir.join("agent.jsonl");
+    let lines = [
+        json!({ "type": "user", "message": { "content": dispatched["prompt"] } }),
+        json!({ "type": "assistant", "message": { "id": "m1", "usage": {
+            "input_tokens": 2, "cache_creation_input_tokens": 13_000,
+            "cache_read_input_tokens": 0, "output_tokens": 100 } } }),
+        json!({ "type": "assistant", "message": { "id": "m2", "usage": {
+            "input_tokens": 1, "cache_creation_input_tokens": 400,
+            "cache_read_input_tokens": 13_000, "output_tokens": 60 } } }),
+    ];
+    std::fs::write(&transcript, lines.map(|l| l.to_string()).join("\n")).unwrap();
+    let hook = |agent_type: &str| {
+        json!({ "agent_type": agent_type, "agent_transcript_path": transcript }).to_string()
+    };
+
+    let port = server.addr.port();
+    let other = soundcheck::tester_usage::subagent_stop(&hook("general-purpose"), port)
+        .await
+        .unwrap();
+    assert_eq!(other, None, "other agents are left alone");
+    let said = soundcheck::tester_usage::subagent_stop(&hook("soundcheck:soundcheck-tester"), port)
+        .await
+        .unwrap();
+    assert_eq!(said, Some(format!("{token} used 13461 tokens")));
+
+    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+    let recorded: Value = journal
+        .lines()
+        .map(|l| serde_json::from_str::<Value>(l).unwrap())
+        .find(|e| e["event"] == "tokens")
+        .unwrap();
+    assert_eq!(recorded["token"], token);
+    assert_eq!(recorded["tokens"], 13_461);
+    assert_eq!(
+        recorded["spent"],
+        json!({ "input": 3, "cache_write": 13_400, "cache_read": 13_000, "output": 160 })
+    );
+
+    let unknown = reqwest::Client::new()
+        .post(format!("{url}/tokens"))
+        .json(&json!({ "token": "nope#1@ios", "tokens": 1,
+            "spent": { "input": 0, "cache_write": 0, "cache_read": 0, "output": 0 } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status().as_u16(), 409);
+}
+
+#[tokio::test]
 async fn only_this_machines_own_callers_are_answered() {
     let (server, url) = server().await;
     let port = server.addr.port();

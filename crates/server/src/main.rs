@@ -82,6 +82,14 @@ enum Command {
         #[arg(long, default_value_t = 7357)]
         port: u16,
     },
+    /// The plugin's hooks, which Claude Code runs with the hook's input on stdin.
+    #[command(hide = true)]
+    Hook {
+        #[arg(value_parser = ["subagent-stop"])]
+        event: String,
+        #[arg(long, default_value_t = 7357)]
+        port: u16,
+    },
     /// The suite's network proxy (suite.yaml `network`): runs and drive commands start it when it isn't up.
     Proxy {
         #[arg(value_parser = ["serve", "status", "stop"])]
@@ -143,6 +151,7 @@ fn main() -> ExitCode {
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(proxy_command(&action, &suite)))
             .map(|out| println!("{out}")),
+        Command::Hook { event: _, port } => return hook_command(port),
         Command::Mcp { port } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(soundcheck::bridge::bridge(port))),
@@ -668,6 +677,22 @@ fn opt(n: Option<u64>) -> String {
     n.map_or("-".into(), |n| n.to_string())
 }
 
+/// Always succeeds: a hook that fails would show in the person's session, and a missed count costs nothing.
+fn hook_command(port: u16) -> ExitCode {
+    let mut stdin = String::new();
+    let result = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| tokio::runtime::Runtime::new().map_err(anyhow::Error::from))
+        .and_then(|rt| rt.block_on(soundcheck::tester_usage::subagent_stop(&stdin, port)));
+    match result {
+        Ok(Some(line)) => eprintln!("soundcheck: {line}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("soundcheck: tester tokens not recorded: {e:#}"),
+    }
+
+    ExitCode::SUCCESS
+}
+
 fn usage_command(run_dir: &Path, compare: Option<&Path>) -> Result<()> {
     let attempts = read_attempts(run_dir)?;
     if attempts.is_empty() {
@@ -685,8 +710,8 @@ fn usage_command(run_dir: &Path, compare: Option<&Path>) -> Result<()> {
 fn print_usage(attempts: &[soundcheck::run::usage::AttemptUsage]) {
     let width = attempts.iter().map(|a| a.token.len()).max().unwrap_or(0);
     println!(
-        "{:width$}  {:>7}  {:>5}  {:>6}  top tools",
-        "attempt", "tokens", "calls", "time"
+        "{:width$}  {:>7}  {:>10}  {:>5}  {:>6}  top tools",
+        "attempt", "tokens", "cache read", "calls", "time"
     );
     for a in attempts {
         let mut tools: Vec<(&String, &u32)> = a.calls.iter().collect();
@@ -697,9 +722,10 @@ fn print_usage(attempts: &[soundcheck::run::usage::AttemptUsage]) {
             .map(|(t, n)| format!("{t} {n}"))
             .collect();
         println!(
-            "{:width$}  {:>7}  {:>5}  {:>6}  {}",
+            "{:width$}  {:>7}  {:>10}  {:>5}  {:>6}  {}",
             a.token,
             opt(a.tokens),
+            opt(a.spent.map(|s| s.cache_read)),
             a.total_calls(),
             duration(a.duration_ms),
             top.join(", ")
@@ -838,6 +864,7 @@ fn import_usage(run_dir: &Path, tsv: &Path) -> Result<()> {
         events.push(Event::Tokens {
             token: token.into(),
             tokens: parse(tokens)?,
+            spent: None,
         });
     }
 

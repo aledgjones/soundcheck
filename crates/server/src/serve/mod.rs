@@ -1050,6 +1050,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
         .route("/ready/{platform}", get(ready))
+        .route("/tokens", post(tokens))
         .route("/", get(page))
         .route("/fragment", get(fragment))
         .route("/download", get(download))
@@ -1232,6 +1233,20 @@ async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
 }
 
 /// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
+async fn tokens(
+    State(hub): State<Arc<Hub>>,
+    axum::Json(t): axum::Json<crate::tester_usage::TesterTokens>,
+) -> Response {
+    match hub.with_run(|run, now| run.tokens(now, &t.token, t.tokens, Some(t.spent))) {
+        Ok(()) => (
+            StatusCode::OK,
+            format!("{} used {} tokens\n", t.token, t.tokens),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
 async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> Response {
     match hub.hold(platform).await {
         None => (StatusCode::OK, format!("{platform} ready\n")).into_response(),

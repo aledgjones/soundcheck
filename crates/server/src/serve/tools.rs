@@ -31,14 +31,6 @@ fn reply(result: anyhow::Result<serde_json::Value>) -> Result<CallToolResult, Er
     })
 }
 
-fn record_done(run: &mut crate::run::Run, now: u64, done: &[Done]) -> anyhow::Result<()> {
-    for d in done {
-        run.tokens(now, &d.token, d.tokens)?;
-    }
-
-    Ok(())
-}
-
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct PostResultParams {
     /// Your spec token, from your brief.
@@ -66,24 +58,6 @@ pub struct DispatchParams {
     /// Spec ID, e.g. `annotations/001-draw`.
     pub spec: String,
     pub platform: Platform,
-    /// Testers that have finished since you last reported any.
-    #[serde(default)]
-    pub done: Vec<Done>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-pub struct FinishParams {
-    /// Testers that have finished since you last reported any.
-    #[serde(default)]
-    pub done: Vec<Done>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
-pub struct Done {
-    /// The tester's spec token.
-    pub token: String,
-    /// The total tokens its completion notice gives.
-    pub tokens: u64,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -820,16 +794,13 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`. Pass `done` for every tester that has finished since you last did, with the total tokens from its completion notice."
+        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
     )]
     async fn dispatch(
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
-        if let Err(e) = hub.with_run(|run, now| record_done(run, now, &p.done)) {
-            return reply(Err(e));
-        }
         let suite = hub.suite();
         let Some(spec) = suite.specs.iter().find(|s| s.id == p.spec) else {
             return reply(Err(anyhow::anyhow!("no spec {} in the suite", p.spec)));
@@ -1091,15 +1062,11 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it. Pass `done` for the testers not yet reported."
+        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it."
     )]
-    async fn finish(
-        &self,
-        Parameters(p): Parameters<FinishParams>,
-    ) -> Result<CallToolResult, ErrorData> {
+    async fn finish(&self) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();
         reply(self.hub.with_run(|run, now| {
-            record_done(run, now, &p.done)?;
             let counts = run.finish(now)?;
             let report = hub.export(run, now)?;
             Ok(json!({ "results": counts, "verdict": run.verdict(), "report": report }))

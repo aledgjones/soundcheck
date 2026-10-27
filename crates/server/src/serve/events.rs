@@ -196,7 +196,7 @@ pub fn summary(entry: &Entry) -> String {
             calls.values().sum::<u32>(),
             duration_ms / 1000
         ),
-        Event::Tokens { token, tokens } => format!("{token} used {tokens} tokens"),
+        Event::Tokens { token, tokens, .. } => format!("{token} used {tokens} tokens"),
     };
     format!("#{} {what}", entry.seq)
 }

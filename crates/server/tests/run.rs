@@ -1,4 +1,4 @@
-use soundcheck::run::event::RowRef;
+use soundcheck::run::event::{RowRef, Spent};
 use soundcheck::run::model::*;
 use soundcheck::run::usage;
 use soundcheck::run::{MAX_ATTEMPTS, Plan, PlannedSpec, Row, Run};
@@ -519,8 +519,14 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     let silent = run.dispatch(310_000, BACK, Android, brief).unwrap();
     run.stall(1_000_000, &silent, "never started").unwrap();
 
-    run.tokens(1_000_001, &posted, 42_000).unwrap();
-    assert!(run.tokens(1_000_002, "nope#1@android", 1).is_err());
+    let spent = Spent {
+        input: 30,
+        cache_write: 9_000,
+        cache_read: 1_200_000,
+        output: 4_000,
+    };
+    run.tokens(1_000_001, &posted, 42_000, Some(spent)).unwrap();
+    assert!(run.tokens(1_000_002, "nope#1@android", 1, None).is_err());
 
     let attempts = usage::attempts(run.entries_after(0));
     assert_eq!(
@@ -530,6 +536,7 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     );
     assert_eq!(attempts[0].token, posted);
     assert_eq!(attempts[0].tokens, Some(42_000));
+    assert_eq!(attempts[0].spent, Some(spent));
     assert_eq!(attempts[0].total_calls(), 4);
     assert_eq!(attempts[0].calls["tap"], 2);
     assert_eq!(attempts[0].duration_ms, Some(60_000));

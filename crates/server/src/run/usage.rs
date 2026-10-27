@@ -1,4 +1,4 @@
-use super::event::Event;
+use super::event::{Event, Spent};
 use super::journal::Entry;
 use std::collections::BTreeMap;
 
@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub struct AttemptUsage {
     pub token: String,
     pub tokens: Option<u64>,
+    pub spent: Option<Spent>,
     pub calls: BTreeMap<String, u32>,
     pub duration_ms: Option<u64>,
 }
@@ -41,8 +42,14 @@ pub fn attempts(entries: &[Entry]) -> Vec<AttemptUsage> {
                 a.calls = calls.clone();
                 a.duration_ms = Some(*duration_ms);
             }
-            Event::Tokens { token, tokens } => {
-                by_token.entry(token.clone()).or_default().tokens = Some(*tokens);
+            Event::Tokens {
+                token,
+                tokens,
+                spent,
+            } => {
+                let a = by_token.entry(token.clone()).or_default();
+                a.tokens = Some(*tokens);
+                a.spent = *spent;
             }
             _ => {}
         }

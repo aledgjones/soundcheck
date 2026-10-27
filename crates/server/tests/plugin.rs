@@ -96,6 +96,15 @@ fn the_mcp_config_runs_the_stdio_bridge() {
 }
 
 #[test]
+fn a_stopped_tester_reports_its_tokens() {
+    let config: serde_json::Value = serde_json::from_str(&plugin_file("hooks/hooks.json")).unwrap();
+    assert_eq!(
+        config["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
+        "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook subagent-stop"
+    );
+}
+
+#[test]
 fn the_plugin_bin_runs_the_release_for_its_version() {
     let shim = plugin_file("bin/soundcheck");
     assert!(shim.contains(".claude-plugin/plugin.json"));

@@ -171,11 +171,24 @@ pub enum Event {
         /// From its first call to its last.
         duration_ms: u64,
     },
-    /// A tester's token total, which only its completion notice carries, so the coordinator reports it.
+    /// A tester's tokens, from its transcript when it stops (the plugin's `SubagentStop` hook).
     Tokens {
         token: String,
+        /// Its context on its last turn: the figure Claude Code's completion notice gives.
         tokens: u64,
+        /// What its turns added up to; missing for attempts recorded before soundcheck kept it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spent: Option<Spent>,
     },
+}
+
+/// A tester's usage summed over its turns.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Spent {
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
