@@ -1284,6 +1284,22 @@ async fn the_run_finishes_itself_once_the_last_row_files() {
     assert_eq!(status["finished"], true);
     let report = std::fs::read_to_string(dir.join("report.html")).unwrap();
     assert!(report.contains("Final report, exported"));
+    assert!(!report.contains("used 9876 tokens"));
+
+    let late = reqwest::Client::new()
+        .post(format!("{url}/tokens"))
+        .json(&json!({ "token": back["token"], "tokens": 9_876,
+            "spent": { "input": 1, "cache_write": 9_000, "cache_read": 0, "output": 875 } }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(late.status().as_u16(), 200);
+    let report = std::fs::read_to_string(dir.join("report.html")).unwrap();
+    assert!(
+        report.contains("used 9876 tokens"),
+        "the last tester's tokens reach the report"
+    );
+    assert!(report.contains("Final report, exported"));
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

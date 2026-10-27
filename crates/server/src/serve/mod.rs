@@ -1569,7 +1569,16 @@ async fn tokens(
     State(hub): State<Arc<Hub>>,
     axum::Json(t): axum::Json<crate::tester_usage::TesterTokens>,
 ) -> Response {
-    match hub.with_run(|run, now| run.tokens(now, &t.token, t.tokens, Some(t.spent))) {
+    let recorded = hub.with_run(|run, now| {
+        run.tokens(now, &t.token, t.tokens, Some(t.spent))?;
+        // The last tester's tokens land after its result has finished the run and exported it.
+        if run.state().finished {
+            let _ = hub.export(run, now);
+        }
+
+        Ok(())
+    });
+    match recorded {
         Ok(()) => (
             StatusCode::OK,
             format!("{} used {} tokens\n", t.token, t.tokens),
