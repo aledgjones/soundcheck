@@ -305,6 +305,62 @@ impl Run {
         Ok((attempt, verify))
     }
 
+    /// The rows `dispatch` could start now, in the order it takes them: queued rows first, then rows never run, each
+    /// in the run's spec order with a spec's platforms in turn. `spec` and `platform` narrow it. When nothing can
+    /// start, the error says why: the first refusal, or that nothing is left.
+    pub fn next_rows(
+        &self,
+        spec: Option<&str>,
+        platform: Option<Platform>,
+    ) -> Result<Vec<(String, Platform)>> {
+        self.open_for_commands()?;
+
+        if self.state.paused {
+            bail!("the run is paused; resume it first");
+        }
+
+        if let Some(spec) = spec {
+            self.planned(spec)?;
+        }
+
+        let mut queued = Vec::new();
+        let mut never_run = Vec::new();
+        for planned in &self.plan.specs {
+            if spec.is_some_and(|s| s != planned.id) {
+                continue;
+            }
+
+            for &p in &planned.platforms {
+                if platform.is_some_and(|wanted| wanted != p) {
+                    continue;
+                }
+
+                let row = (planned.id.clone(), p);
+                match self.state.rows.get(&row).map(|r| &r.row) {
+                    Some(Row::Queued { .. }) => queued.push(row),
+                    Some(Row::NotRun) => never_run.push(row),
+                    _ => {}
+                }
+            }
+        }
+
+        let candidates: Vec<(String, Platform)> = queued.into_iter().chain(never_run).collect();
+        let Some((first, on)) = candidates.first() else {
+            bail!("nothing to dispatch: every row has run, is running or waits for review");
+        };
+        let ready: Vec<(String, Platform)> = candidates
+            .iter()
+            .filter(|(s, p)| self.check_dispatch(s, *p).is_ok())
+            .cloned()
+            .collect();
+
+        if ready.is_empty() {
+            self.check_dispatch(first, *on)?;
+        }
+
+        Ok(ready)
+    }
+
     /// A tester's result. A PASS files at once; anything else waits for review.
     pub fn post(&mut self, now: u64, token: &str, posted: Posted) -> Result<Claim> {
         self.post_probed(now, token, posted, false)

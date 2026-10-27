@@ -24,7 +24,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
 use rmcp::transport::streamable_http_server::{StreamableHttpServerConfig, StreamableHttpService};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use soundcheck_driver::Driver;
 use soundcheck_driver::android::Android;
 use soundcheck_driver::any::AnyDevice;
@@ -181,6 +181,37 @@ pub async fn wait_for_calm_host() -> bool {
     }
 }
 
+pub const ENDED_WITHOUT_POSTING: &str = "the tester ended without posting";
+
+/// A started attempt: what its tester agent is started with.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Dispatched {
+    pub token: String,
+    pub model: Option<String>,
+    pub agent: String,
+    pub prompt: String,
+}
+
+/// What a session needs to know about the run: the SessionStart and Stop hooks read it.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Summary {
+    pub folder: PathBuf,
+    pub label: String,
+    pub verdict: String,
+    pub finished: bool,
+    pub paused: bool,
+    pub rows: usize,
+    /// Rows without a filed result.
+    pub left: usize,
+    /// Running attempts' tokens.
+    pub running: Vec<String>,
+    /// Claims waiting for review, as "spec on platform".
+    pub review: Vec<String>,
+    pub side_finds: usize,
+    /// Whether the session asked about has started testers in this run.
+    pub coordinator: bool,
+}
+
 /// What `queue` did: rows that joined the run, and rows queued again with what each was.
 pub struct Queued {
     pub added: Vec<(String, Platform)>,
@@ -222,6 +253,8 @@ pub struct Hub {
     last_call: std::sync::atomic::AtomicU64,
     /// Stops the server, when a new run takes the port.
     stop: CancellationToken,
+    /// The Claude Code sessions that started testers through the plugin's hook: only they are told to dispatch.
+    coordinators: Mutex<std::collections::HashSet<String>>,
 }
 
 /// How long a finished run must go without a tool call before a new run may take its port.
@@ -272,6 +305,7 @@ impl Hub {
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
+            coordinators: Mutex::new(std::collections::HashSet::new()),
             last_call: std::sync::atomic::AtomicU64::new(now_ms()),
             stop: CancellationToken::new(),
         })
@@ -295,7 +329,9 @@ impl Hub {
     pub fn with_run<T>(&self, f: impl FnOnce(&mut Run, u64) -> Result<T>) -> Result<T> {
         let mut run = self.run.lock().unwrap_or_else(|e| e.into_inner());
         let before = run.last_seq();
-        let result = f(&mut run, now_ms());
+        let now = now_ms();
+        let result = f(&mut run, now);
+        self.finish_when_done(&mut run, now);
         let fresh = run.entries_after(before);
         for entry in fresh {
             let _ = self.events.send(entry.clone());
@@ -307,6 +343,23 @@ impl Hub {
             );
         }
         result
+    }
+
+    /// Finishes the run and writes its report once every row is filed and no side find waits. A run with rows never
+    /// dispatched is left for `finish`.
+    fn finish_when_done(&self, run: &mut Run, now: u64) {
+        let state = run.state();
+        let done = !state.finished
+            && !state.rows.is_empty()
+            && state.pending_finds.is_empty()
+            && state
+                .rows
+                .values()
+                .all(|r| matches!(r.row, crate::run::Row::Filed { .. }));
+
+        if done && run.finish(now).is_ok() {
+            let _ = self.export(run, now);
+        }
     }
 
     /// The suite specs are dispatched from: as loaded at start, plus any specs added since.
@@ -722,6 +775,222 @@ impl Hub {
         }
     }
 
+    /// Starts a row's next attempt: the row named, or with either half left out, the first [`Run::next_rows`] offers
+    /// on a platform that can take a spec now.
+    pub async fn dispatch(
+        self: &Arc<Self>,
+        spec: Option<&str>,
+        platform: Option<Platform>,
+    ) -> Result<Dispatched> {
+        if let Some(spec) = spec
+            && !self.suite().specs.iter().any(|s| s.id == spec)
+        {
+            anyhow::bail!("no spec {spec} in the suite");
+        }
+
+        let (spec, platform) = match (spec, platform) {
+            (Some(spec), Some(platform)) => {
+                // Check first, so a refused dispatch never resets a device.
+                self.with_run(|run, _| run.check_dispatch(spec, platform))?;
+
+                if let Some(reason) = self.hold(platform).await {
+                    anyhow::bail!("{}", self.held(&[(platform, reason)]));
+                }
+
+                (spec.to_string(), platform)
+            }
+            _ => self.pick(spec, platform).await?,
+        };
+
+        self.start_attempt(&spec, platform).await
+    }
+
+    /// The row `dispatch` would start next, asking each platform whether it's held at most once.
+    pub async fn pick(
+        self: &Arc<Self>,
+        spec: Option<&str>,
+        platform: Option<Platform>,
+    ) -> Result<(String, Platform)> {
+        let rows = self.with_run(|run, _| run.next_rows(spec, platform))?;
+        let mut held: Vec<(Platform, String)> = Vec::new();
+        for (spec, platform) in rows {
+            if held.iter().any(|(p, _)| *p == platform) {
+                continue;
+            }
+
+            match self.hold(platform).await {
+                None => return Ok((spec, platform)),
+                Some(reason) => held.push((platform, reason)),
+            }
+        }
+
+        anyhow::bail!("{}", self.held(&held))
+    }
+
+    fn held(&self, held: &[(Platform, String)]) -> String {
+        let reasons: Vec<String> = match held {
+            [(_, reason)] => vec![reason.clone()],
+            _ => held.iter().map(|(p, r)| format!("{p}: {r}")).collect(),
+        };
+        let first = held.first().map(|(p, _)| p.to_string()).unwrap_or_default();
+        format!(
+            "held: {}. Run `soundcheck ready {} {first} --wait` in the background, and dispatch again when it exits",
+            reasons.join("; "),
+            self.run_dir.display(),
+        )
+    }
+
+    async fn start_attempt(
+        self: &Arc<Self>,
+        spec_id: &str,
+        platform: Platform,
+    ) -> Result<Dispatched> {
+        let suite = self.suite();
+        let Some(spec) = suite.specs.iter().find(|s| s.id == spec_id) else {
+            anyhow::bail!("no spec {spec_id} in the suite");
+        };
+        self.end_wait(spec_id, platform);
+        let reset_started = std::time::Instant::now();
+        let seeded = match self.prepare(spec, platform).await {
+            Ok(context) => context,
+            Err(e) => {
+                let reason = format!("{e:#}");
+                let _ = self.with_run(|run, now| run.reset_failed(now, spec_id, platform, &reason));
+                anyhow::bail!(
+                    "the reset failed three times, so {spec_id} is filed BLOCKED on {platform}: {reason}"
+                );
+            }
+        };
+
+        let context = suite
+            .features
+            .iter()
+            .find(|f| f.name == spec.feature)
+            .and_then(|f| f.context.as_deref());
+        self.with_run(|run, now| {
+            let rerun = run
+                .state()
+                .rows
+                .get(&(spec_id.to_string(), platform))
+                .and_then(|r| r.rerun_note.clone());
+            let reset_ms = reset_started.elapsed().as_millis() as u64;
+            let token = run.dispatch_after_reset(
+                now,
+                spec_id,
+                platform,
+                Some(reset_ms),
+                |token, verify| {
+                    prompt::render(
+                        spec,
+                        context,
+                        platform,
+                        token,
+                        verify,
+                        rerun.as_deref(),
+                        seeded.as_deref(),
+                    )
+                },
+            )?;
+            Ok(Dispatched {
+                model: spec
+                    .front
+                    .model
+                    .clone()
+                    .or_else(|| suite.config.as_ref().map(|c| c.models.default.clone())),
+                agent: prompt::agent(spec).to_string(),
+                prompt: prompt::handoff(&token),
+                token,
+            })
+        })
+    }
+
+    /// The row a tester agent's prompt names, if any: the longest spec ID in it, and a platform named as a word.
+    pub fn named_row(&self, prompt: &str) -> (Option<String>, Option<Platform>) {
+        let spec = self
+            .suite()
+            .specs
+            .iter()
+            .map(|s| s.id.clone())
+            .filter(|id| prompt.contains(id.as_str()))
+            .max_by_key(String::len);
+        let rest = match &spec {
+            Some(id) => prompt.replace(id.as_str(), " "),
+            None => prompt.to_string(),
+        };
+        let platform = rest
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .find_map(|word| match word.to_ascii_lowercase().as_str() {
+                "android" => Some(Platform::Android),
+                "ios" => Some(Platform::Ios),
+                "web" => Some(Platform::Web),
+                _ => None,
+            });
+        (spec, platform)
+    }
+
+    pub fn summary(&self, session: Option<&str>) -> Summary {
+        let run = self.run.lock().unwrap_or_else(|e| e.into_inner());
+        let state = run.state();
+        let mut running = Vec::new();
+        let mut review = Vec::new();
+        let mut left = 0;
+        for ((spec, platform), r) in &state.rows {
+            match &r.row {
+                crate::run::Row::Filed { .. } => continue,
+                crate::run::Row::Running { token, .. } => running.push(token.clone()),
+                crate::run::Row::NeedsReview { .. } => review.push(format!("{spec} on {platform}")),
+                _ => {}
+            }
+
+            left += 1;
+        }
+
+        let verdict = crate::run::verdict::verdict(state);
+        Summary {
+            folder: self.run_dir.clone(),
+            label: self.label_of(&run).to_string(),
+            verdict: serde_json::to_value(verdict.status)
+                .ok()
+                .and_then(|v| v.as_str().map(String::from))
+                .unwrap_or_default(),
+            finished: state.finished,
+            paused: state.paused,
+            rows: state.rows.len(),
+            left,
+            running,
+            review,
+            side_finds: state.pending_finds.len(),
+            coordinator: session.is_some_and(|s| self.is_coordinator(s)),
+        }
+    }
+
+    pub fn add_coordinator(&self, session: &str) {
+        self.coordinators
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.to_string());
+    }
+
+    pub fn is_coordinator(&self, session: &str) -> bool {
+        self.coordinators
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(session)
+    }
+
+    /// A tester agent has stopped. If its attempt is still running it never posted, so the attempt counts as a
+    /// stall and the row is queued again (or filed BLOCKED on its last attempt). Returns what happened, if anything.
+    pub fn tester_ended(&self, token: &str) -> Result<Option<String>> {
+        self.with_run(|run, now| {
+            if run.state().finished || run.running(token).is_err() {
+                return Ok(None);
+            }
+
+            run.stall(now, token, ENDED_WITHOUT_POSTING)?;
+            Ok(Some(format!("{token}: {ENDED_WITHOUT_POSTING}")))
+        })
+    }
+
     async fn host_busy(&self, platform: Platform) -> Vec<String> {
         self.on_device(platform, async |d| d.device.health().await)
             .await
@@ -1051,6 +1320,10 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/events", get(events_stream))
         .route("/ready/{platform}", get(ready))
         .route("/tokens", post(tokens))
+        .route("/ended", post(ended))
+        .route("/dispatch", post(dispatch_route))
+        .route("/summary", get(summary))
+        .route("/next", get(next))
         .route("/", get(page))
         .route("/fragment", get(fragment))
         .route("/download", get(download))
@@ -1187,7 +1460,11 @@ struct EventsQuery {
 /// means a coordinator whose Monitor lapsed misses nothing.
 /// Tool calls are POSTs to `/mcp`; the live page's polling isn't anyone using the run.
 async fn note_call(State(hub): State<Arc<Hub>>, request: Request, next: Next) -> Response {
-    if request.method() == axum::http::Method::POST && request.uri().path().starts_with("/mcp") {
+    let path = request.uri().path();
+
+    if request.method() == axum::http::Method::POST
+        && (path.starts_with("/mcp") || path == "/dispatch")
+    {
         hub.last_call
             .store(now_ms(), std::sync::atomic::Ordering::Relaxed);
     }
@@ -1232,7 +1509,62 @@ async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
         .into_response()
 }
 
-/// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
+#[derive(Deserialize)]
+struct DispatchRequest {
+    /// The tester agent's prompt as the coordinator wrote it, which may name a row.
+    #[serde(default)]
+    prompt: String,
+    session: Option<String>,
+}
+
+/// The plugin's PreToolUse hook starts a tester through this: the attempt's details, or 409 with the refusal.
+async fn dispatch_route(
+    State(hub): State<Arc<Hub>>,
+    axum::Json(d): axum::Json<DispatchRequest>,
+) -> Response {
+    if let Some(session) = &d.session {
+        hub.add_coordinator(session);
+    }
+
+    let (spec, platform) = hub.named_row(&d.prompt);
+    match hub.dispatch(spec.as_deref(), platform).await {
+        Ok(dispatched) => axum::Json(dispatched).into_response(),
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SummaryQuery {
+    session: Option<String>,
+}
+
+async fn summary(State(hub): State<Arc<Hub>>, Query(q): Query<SummaryQuery>) -> Response {
+    axum::Json(hub.summary(q.session.as_deref())).into_response()
+}
+
+/// The row a dispatch would start now, without starting it, else 409 with why none can.
+async fn next(State(hub): State<Arc<Hub>>) -> Response {
+    match hub.pick(None, None).await {
+        Ok((spec, platform)) => {
+            axum::Json(serde_json::json!({ "spec": spec, "platform": platform })).into_response()
+        }
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct EndedRequest {
+    token: String,
+}
+
+/// A tester agent has stopped: the plugin's SubagentStop hook says so after posting its tokens.
+async fn ended(State(hub): State<Arc<Hub>>, axum::Json(e): axum::Json<EndedRequest>) -> Response {
+    match hub.tester_ended(&e.token) {
+        Ok(said) => (StatusCode::OK, said.map(|s| s + "\n").unwrap_or_default()).into_response(),
+        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
 async fn tokens(
     State(hub): State<Arc<Hub>>,
     axum::Json(t): axum::Json<crate::tester_usage::TesterTokens>,
@@ -1247,6 +1579,7 @@ async fn tokens(
     }
 }
 
+/// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
 async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> Response {
     match hub.hold(platform).await {
         None => (StatusCode::OK, format!("{platform} ready\n")).into_response(),

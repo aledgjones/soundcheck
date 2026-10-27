@@ -18,6 +18,11 @@ async fn server() -> (serve::Server, String) {
 
 /// A server whose run folder sits in its own reports folder, beside an earlier run.
 async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
+    server_on(&[Platform::Android, Platform::Ios, Platform::Web]).await
+}
+
+/// [`server_in`] with rows only on `platforms`.
+async fn server_on(platforms: &[Platform]) -> (serve::Server, String, std::path::PathBuf) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     let suite = suite::load(&root);
     let plan = Plan {
@@ -26,7 +31,13 @@ async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
             .iter()
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
-                platforms: s.front.platforms.clone(),
+                platforms: s
+                    .front
+                    .platforms
+                    .iter()
+                    .filter(|p| platforms.contains(p))
+                    .copied()
+                    .collect(),
                 outcomes: s.outcomes.clone(),
             })
             .collect(),
@@ -213,7 +224,15 @@ async fn a_stopped_testers_hook_records_its_tokens() {
     let said = soundcheck::tester_usage::subagent_stop(&hook("soundcheck:soundcheck-tester"), port)
         .await
         .unwrap();
-    assert_eq!(said, Some(format!("{token} used 13461 tokens")));
+    assert_eq!(
+        said,
+        Some(format!(
+            "{token} used 13461 tokens; {token}: the tester ended without posting"
+        )),
+        "a tester that never posted is queued again"
+    );
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(status["rows"][0]["state"], "queued");
 
     let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
     let recorded: Value = journal
@@ -1022,6 +1041,249 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
     let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
     assert!(journal.contains(r#""event":"spec-changed","spec":"annotations/002-back""#));
 
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+const DRAW: &str = "annotations/001-draw";
+
+/// Posts a pass for a running attempt of 001-draw, whose probes need a word.
+async fn pass_draw(client: &RunningService<RoleClient, ClientConfig>, token: &str) {
+    let posted = call(
+        client,
+        "post_result",
+        json!({
+            "token": token,
+            "judgments": [
+                { "outcome": 0, "answer": "held", "observed": "the stroke went and came back" },
+                { "outcome": 1, "answer": "held", "observed": "undo and redo matched" }
+            ],
+            "probed": "undid twice: nothing else changed"
+        }),
+    )
+    .await;
+    assert_eq!(posted["claim"], "PASS", "{posted}");
+}
+
+#[tokio::test]
+async fn dispatch_with_no_spec_starts_the_next_row() {
+    let (server, url) = server().await;
+    let client = client(&url).await;
+    let first = call(&client, "dispatch", json!({})).await;
+    assert_eq!(first["token"], format!("{DRAW}#1@android"));
+    let refused = call(&client, "dispatch", json!({})).await;
+    assert!(
+        refused.as_str().unwrap().contains("one spec at a time"),
+        "{refused}"
+    );
+
+    pass_draw(&client, first["token"].as_str().unwrap()).await;
+    let next = reqwest::get(format!("{url}/next")).await.unwrap();
+    assert_eq!(
+        next.json::<Value>().await.unwrap(),
+        json!({ "spec": DRAW, "platform": "ios" }),
+        "asking doesn't dispatch"
+    );
+    let back = call(&client, "dispatch", json!({ "platform": "android" })).await;
+    assert_eq!(back["token"], "annotations/002-back#1@android");
+    assert_eq!(back["agent"], "soundcheck-tester-mechanics");
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn the_tester_hook_turns_an_agent_call_into_a_dispatch() {
+    let (server, _) = server().await;
+    let port = server.addr.port();
+    let hook = |agent: &str, prompt: &str| {
+        json!({
+            "session_id": "coordinator-1",
+            "tool_name": "Agent",
+            "tool_input": { "subagent_type": agent, "prompt": prompt, "description": "next tester", "model": "haiku" },
+        })
+        .to_string()
+    };
+    let other = soundcheck::plugin_hooks::pre_tool_use(&hook("general-purpose", "next"), port)
+        .await
+        .unwrap();
+    assert_eq!(other, None, "other agents are left alone");
+
+    let named = hook(
+        "soundcheck:soundcheck-tester",
+        "annotations/002-back, please",
+    );
+    let reply: Value = serde_json::from_str(
+        &soundcheck::plugin_hooks::pre_tool_use(&named, port)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let out = &reply["hookSpecificOutput"];
+    assert_eq!(out["permissionDecision"], "allow");
+    let token = "annotations/002-back#1@android";
+    let updated = &out["updatedInput"];
+    assert_eq!(
+        updated["subagent_type"],
+        "soundcheck:soundcheck-tester-mechanics"
+    );
+    assert_eq!(updated["description"], token);
+    assert_eq!(updated["model"], "opus", "the spec's model");
+    assert_eq!(updated["run_in_background"], true);
+    assert!(
+        updated["prompt"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("Run soundcheck spec `{token}`"))
+    );
+
+    let next = hook("soundcheck:soundcheck-tester", "next");
+    let reply: Value = serde_json::from_str(
+        &soundcheck::plugin_hooks::pre_tool_use(&next, port)
+            .await
+            .unwrap()
+            .unwrap(),
+    )
+    .unwrap();
+    let out = &reply["hookSpecificOutput"];
+    assert_eq!(out["permissionDecision"], "deny");
+    assert!(
+        out["permissionDecisionReason"]
+            .as_str()
+            .unwrap()
+            .contains("one spec at a time"),
+        "{out}"
+    );
+
+    server.shutdown.cancel();
+    server.handle.await.unwrap();
+    let down = soundcheck::plugin_hooks::pre_tool_use(&next, port)
+        .await
+        .unwrap();
+    assert_eq!(down, None, "no run up, no change");
+}
+
+#[tokio::test]
+async fn the_stop_hook_holds_only_a_stalled_coordinator() {
+    let (server, url) = server().await;
+    let port = server.addr.port();
+    let client = client(&url).await;
+    let stop = |session: &str, active: bool| {
+        json!({ "session_id": session, "stop_hook_active": active }).to_string()
+    };
+    let stopping =
+        |input: String| async move { soundcheck::plugin_hooks::stop(&input, port).await.unwrap() };
+    assert_eq!(
+        stopping(stop("coordinator-1", false)).await,
+        None,
+        "not a coordinator yet"
+    );
+
+    let dispatched: Value = reqwest::Client::new()
+        .post(format!("{url}/dispatch"))
+        .json(&json!({ "prompt": "next", "session": "coordinator-1" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        stopping(stop("coordinator-1", false)).await,
+        None,
+        "a tester is running"
+    );
+
+    pass_draw(&client, dispatched["token"].as_str().unwrap()).await;
+    let blocked: Value =
+        serde_json::from_str(&stopping(stop("coordinator-1", false)).await.unwrap()).unwrap();
+    assert_eq!(blocked["decision"], "block");
+    assert!(
+        blocked["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("dispatch {DRAW} on ios")),
+        "{blocked}"
+    );
+    assert_eq!(
+        stopping(stop("coordinator-1", true)).await,
+        None,
+        "never twice in a row"
+    );
+    assert_eq!(
+        stopping(stop("someone-else", false)).await,
+        None,
+        "other sessions stop freely"
+    );
+
+    call(&client, "pause", json!({ "reason": "a fix first" })).await;
+    assert_eq!(
+        stopping(stop("coordinator-1", false)).await,
+        None,
+        "a paused run waits"
+    );
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+    server.handle.await.unwrap();
+    assert_eq!(
+        stopping(stop("coordinator-1", false)).await,
+        None,
+        "no run up"
+    );
+}
+
+#[tokio::test]
+async fn a_new_session_hears_where_the_run_stands() {
+    let (server, _, dir) = server_in().await;
+    let port = server.addr.port();
+    let context = soundcheck::plugin_hooks::session_start(port)
+        .await
+        .unwrap()
+        .unwrap();
+    let reply: Value = serde_json::from_str(&context).unwrap();
+    let text = reply["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(text.contains(&dir.display().to_string()), "{text}");
+    assert!(text.contains("v0.0.0 · test"), "{text}");
+    assert!(text.contains("verdict not-ready"), "{text}");
+    assert!(text.contains("4 of 4 rows left"), "{text}");
+    assert!(text.contains("soundcheck:run"), "{text}");
+
+    server.shutdown.cancel();
+    server.handle.await.unwrap();
+    assert_eq!(
+        soundcheck::plugin_hooks::session_start(port).await.unwrap(),
+        None
+    );
+}
+
+#[tokio::test]
+async fn the_run_finishes_itself_once_the_last_row_files() {
+    let (server, url, dir) = server_on(&[Platform::Android, Platform::Ios]).await;
+    let client = client(&url).await;
+    for _ in 0..2 {
+        let d = call(&client, "dispatch", json!({ "spec": DRAW })).await;
+        pass_draw(&client, d["token"].as_str().unwrap()).await;
+    }
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(status["finished"], false, "a row is still untested");
+
+    let back = call(&client, "dispatch", json!({})).await;
+    call(
+        &client,
+        "post_result",
+        json!({
+            "token": back["token"],
+            "judgments": [{ "outcome": 0, "answer": "held", "observed": "the collection showed" }]
+        }),
+    )
+    .await;
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(status["finished"], true);
+    let report = std::fs::read_to_string(dir.join("report.html")).unwrap();
+    assert!(report.contains("Final report, exported"));
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

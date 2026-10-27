@@ -1,4 +1,4 @@
-//! The plugin's `SubagentStop` hook: reads a stopped tester's transcript and posts its tokens to the run.
+//! The plugin's `SubagentStop` hook: reads a stopped tester's transcript, posts its tokens to the run and says it ended.
 
 use crate::run::event::Spent;
 use anyhow::{Context, Result};
@@ -100,8 +100,9 @@ fn spec_token(prompt: &str) -> Option<String> {
     Some(token.to_string())
 }
 
-/// Reads the hook's input from stdin and posts the tester's tokens to the run serving on `port`. Agents other than
-/// soundcheck testers are ignored. Its message goes to stderr, which Claude Code keeps out of the conversation.
+/// Reads the hook's input from stdin, posts the tester's tokens to the run serving on `port`, then tells it the tester
+/// ended, which queues the spec again if it never posted. Agents other than soundcheck testers are ignored. Its
+/// message goes to stderr, which Claude Code keeps out of the conversation.
 pub async fn subagent_stop(stdin: &str, port: u16) -> Result<Option<String>> {
     let input: HookInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
     if !input.agent_type.contains("soundcheck-tester") {
@@ -117,20 +118,32 @@ pub async fn subagent_stop(stdin: &str, port: u16) -> Result<Option<String>> {
         anyhow::bail!("{} has no spec token in its first prompt", path.display());
     };
 
+    let counted = post(port, "tokens", &tokens).await;
+    // Whether the attempt posted is the server's to judge, so this goes whether or not the count was taken.
+    let ended = post(port, "ended", &serde_json::json!({ "token": tokens.token })).await;
+    let said: Vec<String> = [counted, ended]
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|e| format!("{e:#}")))
+        .filter(|line| !line.is_empty())
+        .collect();
+    Ok(Some(said.join("; ")))
+}
+
+async fn post(port: u16, route: &str, body: &impl Serialize) -> Result<String> {
     let response = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{port}/tokens"))
+        .post(format!("http://127.0.0.1:{port}/{route}"))
         .timeout(std::time::Duration::from_secs(3))
-        .json(&tokens)
+        .json(body)
         .send()
         .await
         .with_context(|| format!("no run serving on port {port}"))?;
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let text = response.text().await.unwrap_or_default();
     if !status.is_success() {
-        anyhow::bail!("the run refused {}: {}", tokens.token, body.trim());
+        anyhow::bail!("the run refused /{route}: {}", text.trim());
     }
 
-    Ok(Some(body.trim().to_string()))
+    Ok(text.trim().to_string())
 }
 
 #[cfg(test)]

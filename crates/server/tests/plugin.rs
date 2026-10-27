@@ -96,12 +96,21 @@ fn the_mcp_config_runs_the_stdio_bridge() {
 }
 
 #[test]
-fn a_stopped_tester_reports_its_tokens() {
+fn each_hook_runs_its_soundcheck_hook_command() {
     let config: serde_json::Value = serde_json::from_str(&plugin_file("hooks/hooks.json")).unwrap();
-    assert_eq!(
-        config["hooks"]["SubagentStop"][0]["hooks"][0]["command"],
-        "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook subagent-stop"
-    );
+    for (event, command) in [
+        ("SubagentStop", "subagent-stop"),
+        ("Stop", "stop"),
+        ("SessionStart", "session-start"),
+        ("PreToolUse", "pre-tool-use"),
+    ] {
+        assert_eq!(
+            config["hooks"][event][0]["hooks"][0]["command"],
+            format!("\"${{CLAUDE_PLUGIN_ROOT}}/bin/soundcheck\" hook {command}"),
+            "{event}"
+        );
+    }
+    assert_eq!(config["hooks"]["PreToolUse"][0]["matcher"], "Agent|Task");
 }
 
 #[test]

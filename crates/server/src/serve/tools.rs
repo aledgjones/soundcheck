@@ -1,4 +1,4 @@
-use super::{Hub, prompt};
+use super::Hub;
 use crate::report;
 use crate::run::model::{Answer, Build, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
@@ -55,9 +55,10 @@ pub struct JudgeParams {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct DispatchParams {
-    /// Spec ID, e.g. `annotations/001-draw`.
-    pub spec: String,
-    pub platform: Platform,
+    /// Spec ID, e.g. `annotations/001-draw`; leave out for the next row.
+    pub spec: Option<String>,
+    /// Leave out for the next platform that can take a spec.
+    pub platform: Option<Platform>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -794,81 +795,14 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a spec's next attempt on a platform. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
+        description = "Coordinator: start a row's next attempt. Leave out `spec` and `platform` to start the next row (queued rows first, then untested, on a platform that can take a spec now), or name them for a particular row. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
     )]
     async fn dispatch(
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let hub = self.hub.clone();
-        let suite = hub.suite();
-        let Some(spec) = suite.specs.iter().find(|s| s.id == p.spec) else {
-            return reply(Err(anyhow::anyhow!("no spec {} in the suite", p.spec)));
-        };
-        // Check first, so a refused dispatch never resets a device.
-        if let Err(e) = hub.with_run(|run, _| run.check_dispatch(&p.spec, p.platform)) {
-            return reply(Err(e));
-        }
-        if let Some(reason) = hub.hold(p.platform).await {
-            return reply(Err(anyhow::anyhow!(
-                "held: {reason}. Run `soundcheck ready {} {} --wait` in the background, and dispatch again when it exits",
-                hub.run_dir.display(),
-                p.platform
-            )));
-        }
-        hub.end_wait(&p.spec, p.platform);
-        let reset_started = std::time::Instant::now();
-        let seeded = match hub.prepare(spec, p.platform).await {
-            Ok(context) => context,
-            Err(e) => {
-                let reason = format!("{e:#}");
-                let _ =
-                    hub.with_run(|run, now| run.reset_failed(now, &p.spec, p.platform, &reason));
-                return reply(Err(anyhow::anyhow!(
-                    "the reset failed three times, so {} is filed BLOCKED on {}: {reason}",
-                    p.spec,
-                    p.platform
-                )));
-            }
-        };
-        let context = suite
-            .features
-            .iter()
-            .find(|f| f.name == spec.feature)
-            .and_then(|f| f.context.as_deref());
-        reply(hub.with_run(|run, now| {
-            let rerun = run
-                .state()
-                .rows
-                .get(&(p.spec.clone(), p.platform))
-                .and_then(|r| r.rerun_note.clone());
-            let reset_ms = reset_started.elapsed().as_millis() as u64;
-            let token = run.dispatch_after_reset(
-                now,
-                &p.spec,
-                p.platform,
-                Some(reset_ms),
-                |token, verify| {
-                    prompt::render(
-                        spec,
-                        context,
-                        p.platform,
-                        token,
-                        verify,
-                        rerun.as_deref(),
-                        seeded.as_deref(),
-                    )
-                },
-            )?;
-            Ok(json!({
-                "token": token,
-                "model": spec.front.model.clone().or_else(|| {
-                    suite.config.as_ref().map(|c| c.models.default.clone())
-                }),
-                "agent": prompt::agent(spec),
-                "prompt": prompt::handoff(&token),
-            }))
-        }))
+        let dispatched = self.hub.dispatch(p.spec.as_deref(), p.platform).await;
+        reply(dispatched.map(|d| json!(d)))
     }
 
     #[tool(

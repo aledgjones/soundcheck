@@ -85,7 +85,7 @@ enum Command {
     /// The plugin's hooks, which Claude Code runs with the hook's input on stdin.
     #[command(hide = true)]
     Hook {
-        #[arg(value_parser = ["subagent-stop"])]
+        #[arg(value_parser = ["subagent-stop", "stop", "session-start", "pre-tool-use"])]
         event: String,
         #[arg(long, default_value_t = 7357)]
         port: u16,
@@ -151,7 +151,7 @@ fn main() -> ExitCode {
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(proxy_command(&action, &suite)))
             .map(|out| println!("{out}")),
-        Command::Hook { event: _, port } => return hook_command(port),
+        Command::Hook { event, port } => return hook_command(&event, port),
         Command::Mcp { port } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
             .and_then(|rt| rt.block_on(soundcheck::bridge::bridge(port))),
@@ -677,17 +677,29 @@ fn opt(n: Option<u64>) -> String {
     n.map_or("-".into(), |n| n.to_string())
 }
 
-/// Always succeeds: a hook that fails would show in the person's session, and a missed count costs nothing.
-fn hook_command(port: u16) -> ExitCode {
+/// Always succeeds: a hook that fails would show in the person's session, and a missed hook costs nothing the run
+/// can't recover. SubagentStop's message goes to stderr; the others print their JSON reply, if any, on stdout.
+fn hook_command(event: &str, port: u16) -> ExitCode {
+    use soundcheck::{plugin_hooks, tester_usage};
     let mut stdin = String::new();
     let result = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)
         .map_err(anyhow::Error::from)
         .and_then(|_| tokio::runtime::Runtime::new().map_err(anyhow::Error::from))
-        .and_then(|rt| rt.block_on(soundcheck::tester_usage::subagent_stop(&stdin, port)));
-    match result {
-        Ok(Some(line)) => eprintln!("soundcheck: {line}"),
-        Ok(None) => {}
-        Err(e) => eprintln!("soundcheck: tester tokens not recorded: {e:#}"),
+        .and_then(|rt| {
+            rt.block_on(async {
+                match event {
+                    "subagent-stop" => tester_usage::subagent_stop(&stdin, port).await,
+                    "stop" => plugin_hooks::stop(&stdin, port).await,
+                    "session-start" => plugin_hooks::session_start(port).await,
+                    _ => plugin_hooks::pre_tool_use(&stdin, port).await,
+                }
+            })
+        });
+    match (event, result) {
+        ("subagent-stop", Ok(Some(line))) => eprintln!("soundcheck: {line}"),
+        (_, Ok(Some(reply))) => println!("{reply}"),
+        (_, Ok(None)) => {}
+        (_, Err(e)) => eprintln!("soundcheck: {event} hook: {e:#}"),
     }
 
     ExitCode::SUCCESS

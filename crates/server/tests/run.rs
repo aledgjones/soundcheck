@@ -1608,3 +1608,52 @@ fn evidence_added_after_review_shows_on_the_problem_and_survives_a_reopen() {
             .ends_with(&[shot.to_string()])
     );
 }
+
+#[test]
+fn the_next_rows_are_queued_ones_first_then_untested_in_spec_order() {
+    let (mut run, _) = open("next-rows");
+    let rows = |run: &Run| run.next_rows(None, None).unwrap();
+    assert_eq!(
+        rows(&run),
+        vec![
+            (DRAW.to_string(), Android),
+            (DRAW.to_string(), Ios),
+            (BACK.to_string(), Android),
+        ],
+        "each spec's platforms in turn"
+    );
+
+    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    assert!(
+        run.next_rows(None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("one spec at a time")
+    );
+    run.stall(2, &t, "silent").unwrap();
+    let t = run.dispatch(3, DRAW, Ios, brief).unwrap();
+    run.post(4, &t, judged(&[Answer::Held, Answer::Held]))
+        .unwrap();
+    assert_eq!(
+        rows(&run),
+        vec![(DRAW.to_string(), Android), (BACK.to_string(), Android)],
+        "the stalled row goes first"
+    );
+    assert_eq!(
+        run.next_rows(Some(BACK), None).unwrap(),
+        vec![(BACK.to_string(), Android)]
+    );
+    assert!(
+        run.next_rows(None, Some(Ios)).is_err(),
+        "nothing left on iOS"
+    );
+    assert!(run.next_rows(Some("nope/001"), None).is_err());
+
+    run.pause(5, "a fix first").unwrap();
+    assert!(
+        run.next_rows(None, None)
+            .unwrap_err()
+            .to_string()
+            .contains("paused")
+    );
+}
