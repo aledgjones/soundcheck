@@ -1190,11 +1190,13 @@ impl Hub {
     pub fn reports(&self) -> reports::Reports {
         reports::Reports {
             dir: self.run_dir.parent().map(PathBuf::from).unwrap_or_default(),
-            current: self
-                .run_dir
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned()),
+            current: Some(self.page_key()),
         }
+    }
+
+    /// The run's page is at `/{key}/`: its id, or its folder's name for a run from before ids.
+    pub fn page_key(&self) -> String {
+        crate::run::saved::page_key(&self.run_dir)
     }
 
     pub fn fixtures_dir(&self) -> PathBuf {
@@ -1497,6 +1499,9 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     );
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let addr = listener.local_addr()?;
+    // This run's own page; any other run's `/{key}/` is the reports router's. The bare endpoints are the old
+    // addresses, kept for the CLI and older links.
+    let key = hub.page_key();
     let app = axum::Router::new()
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
@@ -1506,7 +1511,16 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/dispatch", post(dispatch_route))
         .route("/summary", get(summary))
         .route("/next", get(next))
-        .route("/", get(page))
+        .route("/", get(runs_index))
+        .route(&format!("/{key}"), get(to_page))
+        .route(&format!("/{key}/"), get(page))
+        .route(&format!("/{key}/fragment"), get(fragment))
+        .route(&format!("/{key}/events"), get(events_stream))
+        .route(&format!("/{key}/download"), get(download))
+        .route(
+            &format!("/{key}/files/evidence/{{name}}"),
+            get(evidence_file),
+        )
         .route("/fragment", get(fragment))
         .route("/download", get(download))
         .route("/files/evidence/{name}", get(evidence_file))
@@ -1615,6 +1629,10 @@ async fn evidence_file(State(hub): State<Arc<Hub>>, Path(name): Path<String>) ->
 }
 
 /// Every run beside this one, newest first, from their summaries.
+async fn to_page(State(hub): State<Arc<Hub>>) -> Response {
+    axum::response::Redirect::permanent(&format!("/{}/", hub.page_key())).into_response()
+}
+
 async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
     let current = hub
         .run_dir
@@ -1627,7 +1645,7 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
     let live = hub
         .with_run(|run, _| Ok(report::run_summary(run, hub.label_of(run))))
         .unwrap_or_default();
-    runs.push((current.clone(), live, None));
+    runs.push((current.clone(), live, Some(format!("{}/", hub.page_key()))));
     runs.sort_by(|a, b| b.0.cmp(&a.0));
     axum::response::Html(report::index(&runs, &current)).into_response()
 }

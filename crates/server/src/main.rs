@@ -610,11 +610,15 @@ fn run_command(args: RunArgs) -> Result<()> {
             "soundcheck {VERSION}: run {id} in {}; open it again with --open {id}",
             run_dir.display()
         );
-        println!("MCP at {url}/mcp; the live page is at {url}/");
+        let key = soundcheck::run::saved::page_key(&run_dir);
+        println!("MCP at {url}/mcp; the live page is at {url}/{key}/");
         let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
+        if let Some(tunnel) = &_tunnel {
+            println!("remote: this run is at {}/{key}/", tunnel.url);
+        }
         if open_page {
             let _ = std::process::Command::new("open")
-                .arg(format!("{url}/"))
+                .arg(format!("{url}/{key}/"))
                 .spawn();
         }
         // Nothing is printed after a hangup: the terminal is gone, and a failed print would panic before the stacks

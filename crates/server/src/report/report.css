@@ -173,8 +173,10 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .settled{display:block;margin-top:4px;font-size:14px;color:var(--label2);border-left:2px solid var(--sep);padding-left:10px}
 .hint{color:var(--partial);margin-left:4px}
 /* new: sticky "now" bar while the run is live */
-body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bar)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;backdrop-filter:saturate(1.8) blur(16px);-webkit-backdrop-filter:saturate(1.8) blur(16px);background:var(--bar)}
 .nowbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;backdrop-filter:saturate(1.8) blur(16px);-webkit-backdrop-filter:saturate(1.8) blur(16px);background:var(--bar);border-bottom:1px solid var(--sep)}
+/* Installed on iOS, the system blurs a band below the status bar too: keep the bar's text clear of it. */
+@media (display-mode:standalone){body::before{height:calc(env(safe-area-inset-top,0px) + 16px)}.nowbar{top:calc(env(safe-area-inset-top,0px) + 16px)}}
 .nowbar-in{max-width:980px;margin:0 auto;display:flex;gap:6px 22px;align-items:flex-start;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .nowbar b{font-weight:600}
 .nowbar-live{flex:none}

@@ -709,7 +709,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: the run at a glance: verdict and its reasons, counts, the rows that haven't passed, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row, passes included."
+        description = "Coordinator: the run at a glance: verdict and its reasons, counts (rows not run yet are counted, per platform too, not listed), the rows that are running, queued, waiting for review or didn't pass, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row."
     )]
     async fn status(
         &self,
@@ -740,7 +740,11 @@ impl Tools {
                     wanted(spec, *platform)
                         && (p.full
                             || p.spec.is_some()
-                            || !matches!(r.row, Row::Filed { result: crate::run::model::Final::Pass, .. }))
+                            // Passed and never-run rows are only counted: a full run's first look listed 170 of them.
+                            || !matches!(
+                                r.row,
+                                Row::NotRun | Row::Filed { result: crate::run::model::Final::Pass, .. }
+                            ))
                 })
                 .map(|((spec, platform), r)| {
                     let (label, result, claim) = match &r.row {
@@ -825,6 +829,14 @@ impl Tools {
                 "paused": state.paused,
                 "finished": state.finished,
                 "counts": counts,
+                "not_run_by_platform": state
+                    .rows
+                    .iter()
+                    .filter(|(_, r)| matches!(r.row, Row::NotRun))
+                    .fold(std::collections::BTreeMap::<String, u32>::new(), |mut m, ((_, platform), _)| {
+                        *m.entry(platform.to_string()).or_default() += 1;
+                        m
+                    }),
                 "rows": rows,
                 "problems": state.problems.iter().filter(|q| wanted(&q.spec, q.platform)).collect::<Vec<_>>(),
                 "side_finds_waiting": finds,

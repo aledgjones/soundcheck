@@ -548,6 +548,12 @@ impl Run {
 
         let candidates: Vec<(String, Platform)> = queued.into_iter().chain(never_run).collect();
         let Some((first, on)) = candidates.first() else {
+            if let Some(p) = platform {
+                bail!(
+                    "{p} has nothing left to run: every row there has run, is running or waits for review"
+                );
+            }
+
             bail!("nothing to dispatch: every row has run, is running or waits for review");
         };
         let ready: Vec<(String, Platform)> = candidates
@@ -557,7 +563,22 @@ impl Run {
             .collect();
 
         if ready.is_empty() {
-            self.check_dispatch(first, *on)?;
+            let Err(busy) = self.check_dispatch(first, *on) else {
+                return Ok(ready);
+            };
+            // A platform that's done would otherwise read as waiting its turn behind the busy one.
+            let waiting: BTreeSet<Platform> = candidates.iter().map(|(_, p)| *p).collect();
+            let done: Vec<String> = self
+                .platforms()
+                .into_iter()
+                .filter(|p| !waiting.contains(p))
+                .map(|p| p.to_string())
+                .collect();
+            if done.is_empty() {
+                return Err(busy);
+            }
+
+            bail!("{} has nothing left to run; {busy}", done.join(" and "));
         }
 
         Ok(ready)

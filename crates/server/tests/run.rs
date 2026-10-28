@@ -1226,6 +1226,20 @@ fn a_listed_rerun_needs_a_reason() {
 }
 
 #[test]
+fn a_platform_with_nothing_left_says_so() {
+    let path = journal("nothing-left");
+    let mut run = Run::open(plan(true), &path, 0).unwrap();
+    pass(&mut run, 1, DRAW, Android);
+    pass(&mut run, 10, BACK, Android);
+    let err = run.next_rows(None, Some(Android)).unwrap_err().to_string();
+    assert!(err.starts_with("android has nothing left to run"), "{err}");
+    assert_eq!(
+        run.next_rows(None, None).unwrap(),
+        [(DRAW.to_string(), Ios)]
+    );
+}
+
+#[test]
 fn a_native_change_reruns_nothing_by_itself() {
     let (mut run, _) = open("fix-native");
     run.install_build(0, Android, build("a1", "fp1"), vec![])

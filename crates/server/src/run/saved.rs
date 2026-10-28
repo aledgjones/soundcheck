@@ -169,6 +169,20 @@ pub fn new_id() -> String {
     )
 }
 
+/// Where a run's page lives, `/{key}/`: its id, or its folder's name for a run from before ids.
+pub fn page_key(run_dir: &Path) -> String {
+    read_info(run_dir)
+        .ok()
+        .map(|info| info.id)
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            run_dir
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+        })
+        .unwrap_or_default()
+}
+
 /// The run folder a `--open` value names: a folder itself, or the id (or a unique start of it) of a run in `reports`.
 pub fn find_run(reports: &Path, wanted: &Path) -> Result<PathBuf> {
     if wanted.join(INFO_FILE).is_file() {

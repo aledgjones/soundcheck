@@ -14,15 +14,21 @@ use std::sync::Arc;
 #[derive(Clone)]
 pub struct Reports {
     pub dir: PathBuf,
-    /// The run this server is running, which the live page shows instead.
+    /// The page key (3.9) of the run this server is running, whose live page is served instead.
     pub current: Option<String>,
 }
 
-/// `/runs/{name}/`, its evidence, and its export if it has one.
+/// `/{key}/` for each run (its id, or its folder's name before ids), its evidence, and its export if it has one.
+/// `/runs/{name}/` is the old address, kept so earlier links still open.
 pub fn router(reports: Reports) -> axum::Router {
     axum::Router::new()
-        .route("/runs/{name}", get(to_folder))
-        .route("/runs/{name}/", get(run_page))
+        .route("/{name}", get(to_folder))
+        .route("/{name}/", get(run_page))
+        .route("/{name}/files/evidence/{file}", get(evidence))
+        .route("/{name}/report.html", get(exported))
+        .route("/{name}/download", get(download))
+        .route("/runs/{name}", get(to_page))
+        .route("/runs/{name}/", get(to_page))
         .route("/runs/{name}/files/evidence/{file}", get(evidence))
         .route("/runs/{name}/report.html", get(exported))
         .route("/runs/{name}/download", get(download))
@@ -58,11 +64,12 @@ pub fn list(reports: &Reports) -> Vec<(String, serde_json::Value, Option<String>
         let Ok(summary) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
+        let key = saved::page_key(&entry.path());
         let href = if entry.path().join(saved::INFO_FILE).exists() {
-            Some(format!("runs/{name}/"))
+            Some(format!("{key}/"))
         } else if entry.path().join(EXPORT_FILE).exists() {
             // Runs from before soundcheck kept their suite can only show their export.
-            Some(format!("runs/{name}/report.html"))
+            Some(format!("{key}/report.html"))
         } else {
             None
         };
@@ -72,18 +79,33 @@ pub fn list(reports: &Reports) -> Vec<(String, serde_json::Value, Option<String>
     runs
 }
 
+/// The run folder a page key names: a run's id, or a folder's name.
 fn folder(reports: &Reports, name: &str) -> Option<PathBuf> {
-    report::safe_name(name).then(|| reports.dir.join(name))
+    if !report::safe_name(name) {
+        return None;
+    }
+
+    let by_name = reports.dir.join(name);
+    if by_name.join(saved::INFO_FILE).is_file() || by_name.join(EXPORT_FILE).is_file() {
+        return Some(by_name);
+    }
+
+    saved::find_run(&reports.dir, std::path::Path::new(name)).ok()
 }
 
 async fn to_folder(Path(name): Path<String>) -> Redirect {
     Redirect::permanent(&format!("{name}/"))
 }
 
-async fn run_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>) -> Response {
-    if reports.current.as_deref() == Some(name.as_str()) {
-        return Redirect::to("/").into_response();
+/// An old `/runs/{name}/` link: to the run's page under its key.
+async fn to_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>) -> Response {
+    match folder(&reports, &name) {
+        Some(dir) => Redirect::permanent(&format!("/{}/", saved::page_key(&dir))).into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+async fn run_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>) -> Response {
     let Some(dir) = folder(&reports, &name) else {
         return StatusCode::NOT_FOUND.into_response();
     };

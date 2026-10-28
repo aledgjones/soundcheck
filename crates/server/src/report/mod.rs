@@ -336,27 +336,49 @@ fn header(page: &Page) -> String {
         facts.push(format!("<span>Started {}</span>", time(first.at)));
     }
     let attempts = usage::attempts(entries);
-    // A run from before usage was recorded falls back to the time between its journal entries.
-    let (active, active_title) = if attempts.iter().any(|a| a.duration_ms.is_some()) {
-        (
-            attempts.iter().filter_map(|a| a.duration_ms).sum(),
-            "Testers' working time, added up across attempts and platforms",
-        )
-    } else {
-        (
-            active_ms(entries),
-            "Time the run spent working, without the gaps between sessions",
-        )
-    };
-    let minutes = active / 60_000;
-    if minutes > 0 {
-        let took = if minutes < 60 {
+    let took = |ms: u64| {
+        let minutes = ms / 60_000;
+        if minutes < 60 {
             format!("{minutes} min")
         } else {
             format!("{} h {} min", minutes / 60, minutes % 60)
-        };
+        }
+    };
+    // Per platform, since platforms in parallel would add up to more than the clock.
+    let per_platform: Vec<(Platform, u64)> = platforms(page)
+        .iter()
+        .map(|p| {
+            let suffix = format!("@{p}");
+            let ms = attempts
+                .iter()
+                .filter(|a| a.token.ends_with(&suffix))
+                .filter_map(|a| a.duration_ms)
+                .sum();
+            (*p, ms)
+        })
+        .filter(|(_, ms)| *ms >= 60_000)
+        .collect();
+    if attempts.iter().any(|a| a.duration_ms.is_some()) {
+        if per_platform.len() > 1 {
+            let each: Vec<String> = per_platform
+                .iter()
+                .map(|(p, ms)| format!("{} {}", platform_name(*p), took(*ms)))
+                .collect();
+            facts.push(format!(
+                "<span title=\"Testers' working time on each platform\">Active {}</span>",
+                each.join(" · ")
+            ));
+        } else if let Some((_, ms)) = per_platform.first() {
+            facts.push(format!(
+                "<span title=\"Testers' working time, added up across attempts\">Active {}</span>",
+                took(*ms)
+            ));
+        }
+    } else if active_ms(entries) >= 60_000 {
+        // A run from before usage was recorded falls back to the time between its journal entries.
         facts.push(format!(
-            "<span title=\"{active_title}\">Active {took}</span>"
+            "<span title=\"Time the run spent working, without the gaps between sessions\">Active {}</span>",
+            took(active_ms(entries))
         ));
     }
     let tokens: u64 = attempts.iter().filter_map(|a| a.tokens).sum();
@@ -1354,11 +1376,7 @@ pub fn index(runs: &[(String, serde_json::Value, Option<String>)], current: &str
                     .join(" · ")
             })
             .unwrap_or_default();
-        let href = if name == current {
-            Some("./".to_string())
-        } else {
-            link.as_deref().map(esc)
-        };
+        let href = link.as_deref().map(esc);
         let when = s["started"].as_u64().map(date_time).unwrap_or_default();
         let live = if name == current && !s["finished"].as_bool().unwrap_or(false) {
             " <span class=\"chip ticket\">Live</span>"

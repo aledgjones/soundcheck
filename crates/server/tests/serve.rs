@@ -549,11 +549,29 @@ async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
         index.find("v2.16.1 · candidate").unwrap(),
     );
     assert!(newer < older, "newest first");
-    assert!(index.contains("href=\"runs/20261020-090000/report.html\""));
-    let past = reqwest::get(format!("{url}/runs/20261020-090000/report.html"))
+    assert!(index.contains("href=\"20261020-090000/report.html\""));
+    let past = reqwest::get(format!("{url}/20261020-090000/report.html"))
         .await
         .unwrap();
     assert_eq!(past.text().await.unwrap(), "<h1>earlier</h1>");
+    let old_link = reqwest::get(format!("{url}/runs/20261020-090000/report.html"))
+        .await
+        .unwrap();
+    assert_eq!(
+        old_link.text().await.unwrap(),
+        "<h1>earlier</h1>",
+        "old /runs/ links still open"
+    );
+    let root = reqwest::get(format!("{url}/"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        root.contains("v2.16.1 · candidate"),
+        "the root lists the runs"
+    );
 
     client.cancel().await.unwrap();
     server.shutdown.cancel();
@@ -565,7 +583,7 @@ async fn the_page_offers_its_report_as_a_download() {
     let client = client(&url).await;
     call(&client, "pause", json!({ "reason": "an event to report" })).await;
 
-    let page = reqwest::get(format!("{url}/"))
+    let page = reqwest::get(format!("{url}/{}/", saved::page_key(&dir)))
         .await
         .unwrap()
         .text()

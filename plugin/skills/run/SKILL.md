@@ -99,7 +99,7 @@ When the person has a fix committed (or built and installed it themselves) on a 
 
 The run stays open until the person says it's done: filing the last row doesn't close it. Once every row is filed, tell the person and go on to triage; call `finish` when they say the run is done (or want to stop with rows never dispatched). It refuses, and names what's in the way, if anything is still running or waiting for review. Rows never dispatched leave the verdict Not ready.
 
-Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline) for sharing. Call `export` again after triage, so the shared copy shows the decisions; `export` also works mid-run, stamped in progress. Nobody needs an export just to look: every run, finished or not, opens from its folder (`/runs` on a run's server, or `soundcheck serve <suite>`).
+Finishing writes the final report (`report.html` in the run folder, screenshots embedded, so it opens anywhere offline) for sharing. Call `export` again after triage, so the shared copy shows the decisions; `export` also works mid-run, stamped in progress. Nobody needs an export just to look: every run, finished or not, opens from its folder (`/` on a run's server lists them, each at `/{run id}/`, or `soundcheck serve <suite>`).
 
 If the server dies, start it again with `soundcheck run <suite> --open <run id>`: it keeps the run's platforms, scope and title, and puts any spec that was running back first without using an attempt.
 
