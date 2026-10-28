@@ -61,6 +61,15 @@ pub struct SuiteConfig {
     pub tickets: Option<Tickets>,
     /// How the app reaches its services on this machine, so `offline` and `network-drop` can cut them.
     pub network: Option<Network>,
+    /// Who may open the live page through `--remote`'s tunnel.
+    pub remote: Option<Remote>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    /// Google account emails let past the tunnel's sign-in.
+    pub allow: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

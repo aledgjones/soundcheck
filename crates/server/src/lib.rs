@@ -3,6 +3,7 @@ pub mod drive;
 pub mod lint;
 pub mod network;
 pub mod plugin_hooks;
+pub mod remote;
 pub mod report;
 pub mod run;
 pub mod serve;

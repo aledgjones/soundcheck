@@ -56,6 +56,9 @@ enum Command {
         /// Print the address without opening the browser.
         #[arg(long)]
         no_open: bool,
+        /// Also open the page through an ngrok tunnel, behind Google sign-in for suite.yaml's `remote.allow`.
+        #[arg(long)]
+        remote: bool,
     },
     /// Print one line per run event, replaying from a cursor: run it under a Monitor.
     Events {
@@ -135,6 +138,10 @@ struct RunArgs {
     /// it, only a platform whose installed build can't be identified is built.
     #[arg(long)]
     install: bool,
+    /// Also open the live page through an ngrok tunnel, behind Google sign-in for suite.yaml's `remote.allow`.
+    /// Read-only: the tunnel passes only the page's GETs, never `/mcp` or dispatch.
+    #[arg(long)]
+    remote: bool,
 }
 
 fn main() -> ExitCode {
@@ -168,7 +175,8 @@ fn main() -> ExitCode {
             port,
             open,
             no_open,
-        } => serve_command(&suite, port, open, !no_open),
+            remote,
+        } => serve_command(&suite, port, open, !no_open, remote),
         Command::Drive {
             platform,
             suite,
@@ -219,6 +227,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         first_call_seconds,
         headed,
         install,
+        remote,
     } = args;
     let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
     let suite = suite::load(root);
@@ -231,6 +240,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         );
     }
     let config = suite.config.as_ref().context("suite.yaml")?;
+    let remote = remote_allow(remote, config)?;
     let guard = std::process::Command::new("sh")
         .args(["-c", &config.hooks.guard])
         .current_dir(root)
@@ -512,6 +522,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         )?;
         println!("soundcheck {VERSION}: run in {}", run_dir.display());
         println!("MCP at {url}/mcp; the live page is at {url}/");
+        let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
         if open_page {
             let _ = std::process::Command::new("open")
                 .arg(format!("{url}/"))
@@ -527,9 +538,55 @@ fn run_command(args: RunArgs) -> Result<()> {
     })
 }
 
-fn serve_command(root: &Path, port: u16, open: Option<String>, open_page: bool) -> Result<()> {
+/// The allow list `--remote` needs, refused before anything starts when suite.yaml has none.
+fn remote_allow(remote: bool, config: &suite::config::SuiteConfig) -> Result<Option<Vec<String>>> {
+    if !remote {
+        return Ok(None);
+    }
+
+    let allow = &config
+        .remote
+        .as_ref()
+        .context("`--remote` needs `remote: { allow: [<Google email>] }` in suite.yaml")?
+        .allow;
+    soundcheck::remote::policy(allow, 0)?;
+    Ok(Some(allow.clone()))
+}
+
+/// A tunnel that won't open is reported, not fatal: the run matters more than the remote view.
+async fn open_remote(
+    allow: Option<&[String]>,
+    port: u16,
+    dir: &Path,
+) -> Option<soundcheck::remote::Tunnel> {
+    let allow = allow?;
+
+    match soundcheck::remote::start(port, allow, dir).await {
+        Ok(tunnel) => {
+            println!(
+                "remote: {}/ (Google sign-in for {}; read-only)",
+                tunnel.url,
+                allow.join(", ")
+            );
+            Some(tunnel)
+        }
+        Err(error) => {
+            eprintln!("remote: no tunnel: {error:#}");
+            None
+        }
+    }
+}
+
+fn serve_command(
+    root: &Path,
+    port: u16,
+    open: Option<String>,
+    open_page: bool,
+    remote: bool,
+) -> Result<()> {
     let suite = suite::load(root);
     let config = suite.config.as_ref().context("no suite.yaml")?;
+    let remote = remote_allow(remote, config)?;
     let dir = suite::reports_dir(root, config);
     let reports = serve::reports::Reports {
         dir: dir.clone(),
@@ -555,12 +612,13 @@ fn serve_command(root: &Path, port: u16, open: Option<String>, open_page: bool) 
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let server = serve::start_reports(dir, port).await?;
+        let server = serve::start_reports(dir.clone(), port).await?;
         let url = format!("http://{}{path}", server.addr);
         println!(
             "soundcheck {VERSION}: runs at http://{}/; showing {url}",
             server.addr
         );
+        let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &dir).await;
         if open_page {
             let _ = std::process::Command::new("open").arg(&url).spawn();
         }

@@ -69,6 +69,7 @@ At the end the coordinator goes through the problems with you, one at a time. It
   - **Web:** its own Chrome, headless by default.
   - Devices run without windows. `soundcheck run --headed` is for watching: Chrome opens in a window, Simulator.app opens on the iOS device being driven, and the Android emulator shows its window when soundcheck restarts it (one already running stays as it is). Look only, since a click or resize can steer a test.
   - Evidence (screenshots, the screen tree, app errors) is captured on every failure.
+- **Watch from anywhere.** `soundcheck run --remote` (or `serve --remote`) opens the live page through an ngrok tunnel behind Google sign-in, read-only, for the accounts in suite.yaml's `remote.allow`. It prints the URL; add it to a home screen to open it full screen. Needs `ngrok` with its authtoken set.
 - **Results belong to their build.** Every row records the build it ran on, so a pass on yesterday's build never stands in for today's.
 
 The design, and the reasons behind each choice, are in [DESIGN.md](DESIGN.md).
