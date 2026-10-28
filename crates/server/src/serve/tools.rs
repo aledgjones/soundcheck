@@ -1038,7 +1038,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: finish the run once nothing is running, waiting for review or queued. Writes the final report. Triage still works afterwards; export again after it."
+        description = "Coordinator: close the run, only when the person says it's done: filing the last row doesn't. Needs nothing running, waiting for review or queued, and writes the final report. Triage still works afterwards; export again after it."
     )]
     async fn finish(&self) -> Result<CallToolResult, ErrorData> {
         let hub = self.hub.clone();

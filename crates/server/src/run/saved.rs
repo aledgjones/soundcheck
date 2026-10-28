@@ -13,6 +13,10 @@ pub const JOURNAL_FILE: &str = "journal.jsonl";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunInfo {
+    /// The run's own id, given when it's opened: it's reopened by this, and lives until the person closes it.
+    /// Runs from before ids get one when next opened.
+    #[serde(default)]
+    pub id: String,
     /// The suite the run tested, where hooks run from on resume.
     pub suite: PathBuf,
     /// The release under test, shown as the page's title.
@@ -141,6 +145,50 @@ pub fn snapshot_specs(run_dir: &Path, suite: &Suite, ids: &[String]) -> Result<(
 pub fn write_info(run_dir: &Path, info: &RunInfo) -> Result<()> {
     std::fs::write(run_dir.join(INFO_FILE), serde_json::to_string_pretty(info)?)?;
     Ok(())
+}
+
+/// A fresh run id, a version-4 UUID. Std's per-process hash keys are random, which is all an id needs.
+pub fn new_id() -> String {
+    use std::hash::{BuildHasher, Hasher};
+
+    let random = || {
+        std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish()
+    };
+    let (hi, lo) = (random(), random());
+    let hi = (hi & !0xf000) | 0x4000;
+    let lo = (lo & !(0b11 << 62)) | (0b10 << 62);
+    format!(
+        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        hi >> 32,
+        (hi >> 16) & 0xffff,
+        hi & 0xffff,
+        lo >> 48,
+        lo & 0xffff_ffff_ffff
+    )
+}
+
+/// The run folder a `--open` value names: a folder itself, or the id (or a unique start of it) of a run in `reports`.
+pub fn find_run(reports: &Path, wanted: &Path) -> Result<PathBuf> {
+    if wanted.join(INFO_FILE).is_file() {
+        return Ok(wanted.to_path_buf());
+    }
+
+    let id = wanted.to_string_lossy();
+    let mut found: Vec<PathBuf> = std::fs::read_dir(reports)
+        .with_context(|| format!("no runs in {}", reports.display()))?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|dir| {
+            read_info(dir).is_ok_and(|info| !info.id.is_empty() && info.id.starts_with(&*id))
+        })
+        .collect();
+    match found.len() {
+        1 => Ok(found.remove(0)),
+        0 => bail!("no run with id {id} in {}", reports.display()),
+        n => bail!("{n} runs have ids starting {id}: give more of it"),
+    }
 }
 
 pub fn read_info(run_dir: &Path) -> Result<RunInfo> {

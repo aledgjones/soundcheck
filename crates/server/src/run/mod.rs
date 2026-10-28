@@ -941,9 +941,9 @@ impl Run {
         )
     }
 
-    /// A new build is on a platform. Reruns what it may have changed: every row on a native change, rows with open
-    /// problems always (so a fix is proven on the build that has it), plus the rows the coordinator lists with a reason.
-    /// Everything else keeps its result, stamped with the build it ran on.
+    /// A new build is on a platform. Reruns only the rows listed, each with a reason: the person approves the set
+    /// from the coordinator's proposal, native change or not (SA-784). Everything else keeps its result, and the log
+    /// says which build it ran on.
     pub fn install_build(
         &mut self,
         now: u64,
@@ -973,11 +973,6 @@ impl Run {
                     .join(", ")
             );
         }
-        let native = self
-            .state
-            .builds
-            .get(&platform)
-            .is_some_and(|old| old.fingerprint != build.fingerprint);
         let mut reruns: Vec<Rerun> = Vec::new();
         let mut add = |spec: &str, reason: String| {
             if !reruns.iter().any(|r| r.spec == spec) {
@@ -987,20 +982,6 @@ impl Run {
                 });
             }
         };
-        for ((spec, p), r) in &self.state.rows {
-            if *p != platform || !matches!(r.row, Row::Filed { .. }) {
-                continue;
-            }
-            if native {
-                add(spec, "native change".into());
-            } else if let Some(problem) = self.state.problems.iter().find(|pr| {
-                &pr.spec == spec
-                    && pr.platform == platform
-                    && self.state.status_of(pr) == &Status::Open
-            }) {
-                add(spec, format!("open problem {}", problem.id));
-            }
-        }
         for rerun in listed {
             if rerun.reason.trim().is_empty() {
                 bail!("say why {} should rerun", rerun.spec);

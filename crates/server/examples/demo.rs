@@ -25,6 +25,7 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(run_dir.join(EVIDENCE_DIR))?;
     let platforms = vec![Platform::Android, Platform::Ios];
     let info = saved::RunInfo {
+        id: saved::new_id(),
         suite: demo.join("suite"),
         label: LABEL.into(),
         platforms: platforms.clone(),
@@ -367,6 +368,7 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
     let platforms = vec![Platform::Android, Platform::Ios];
     let label = "v3.4.1 · candidate";
     let info = saved::RunInfo {
+        id: saved::new_id(),
         suite: demo.join("suite"),
         label: label.into(),
         platforms: platforms.clone(),

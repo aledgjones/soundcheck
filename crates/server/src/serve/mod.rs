@@ -351,7 +351,6 @@ impl Hub {
         let before = run.last_seq();
         let now = now_ms();
         let result = f(&mut run, now);
-        self.finish_when_done(&mut run, now);
         let fresh = run.entries_after(before);
         for entry in fresh {
             let _ = self.events.send(entry.clone());
@@ -363,23 +362,6 @@ impl Hub {
             );
         }
         result
-    }
-
-    /// Finishes the run and writes its report once every row is filed and no side find waits. A run with rows never
-    /// dispatched is left for `finish`.
-    fn finish_when_done(&self, run: &mut Run, now: u64) {
-        let state = run.state();
-        let done = !state.finished
-            && !state.rows.is_empty()
-            && state.pending_finds.is_empty()
-            && state
-                .rows
-                .values()
-                .all(|r| matches!(r.row, crate::run::Row::Filed { .. }));
-
-        if done && run.finish(now).is_ok() {
-            let _ = self.export(run, now);
-        }
     }
 
     /// The suite specs are dispatched from: as loaded at start, plus any specs added since.
@@ -960,6 +942,8 @@ impl Hub {
             );
         };
 
+        self.probe_build(platform).await?;
+
         self.start_attempt(&spec, platform).await
     }
 
@@ -1289,6 +1273,21 @@ impl Hub {
             .await
             .with_context(|| format!("the install hook failed on {platform}"))?;
         Ok(())
+    }
+
+    /// Logs the platform's build when it isn't the last one logged, whoever installed it, so every attempt belongs to
+    /// the build logged last before it. A build the hook can't identify produces no evidence: the dispatch is refused.
+    async fn probe_build(&self, platform: Platform) -> Result<()> {
+        let build = self.read_build(platform).await.with_context(|| {
+            format!("can't tell which build is on {platform}, so nothing is dispatched there")
+        })?;
+        self.with_run(|run, now| {
+            if run.state().builds.get(&platform) == Some(&build) {
+                return Ok(());
+            }
+
+            run.install_build(now, platform, build, vec![]).map(|_| ())
+        })
     }
 
     /// Records the build each platform has now, as the hook reports it. A platform whose hook fails is left

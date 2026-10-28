@@ -21,6 +21,7 @@ async fn main() -> Result<()> {
     let platforms = vec![Platform::Android, Platform::Ios];
     let label = "v3.5.0 · live demo";
     let info = saved::RunInfo {
+        id: saved::new_id(),
         suite: demo.join("suite"),
         label: label.into(),
         platforms: platforms.clone(),

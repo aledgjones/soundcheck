@@ -4,7 +4,8 @@ use rmcp::transport::StreamableHttpClientTransport;
 use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig;
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
-use soundcheck::run::{Plan, PlannedSpec, Run};
+use soundcheck::run::event::Event;
+use soundcheck::run::{Plan, PlannedSpec, Run, saved};
 use soundcheck::serve::{self, Hub};
 use soundcheck::suite;
 use soundcheck::suite::config::Platform;
@@ -699,6 +700,131 @@ async fn the_build_identity_hook_records_each_platforms_build() {
 }
 
 #[tokio::test]
+async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-probe-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in [
+        "annotations/_feature.md",
+        "annotations/001-draw.spec.md",
+        "annotations/002-back.spec.md",
+    ] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    // Whatever is "installed" is the commit in a file, so the test can install a build behind the run's back.
+    let config: String = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("build-identity:") {
+                r#"  build-identity: "printf '{\"commit\": \"%s\"}' \"$(cat installed)\"""#
+                    .to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+    std::fs::write(suite_dir.join("installed"), "aaaaaaa1").unwrap();
+    let suite = suite::load(&suite_dir);
+    assert!(suite.problems.is_empty(), "{:?}", suite.problems);
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s.front.platforms.clone(),
+                outcomes: s.outcomes.clone(),
+            })
+            .collect(),
+        parallel: true,
+        prepare: false,
+    };
+    let run_dir = base.join("reports/run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "probe".into(),
+        run_dir,
+        120_000,
+        vec![Platform::Android, Platform::Ios],
+    );
+    let android = |hub: &std::sync::Arc<Hub>| {
+        hub.with_run(|run, _| Ok(run.state().builds.get(&Platform::Android).cloned()))
+            .unwrap()
+            .map(|b| b.commit)
+    };
+
+    hub.dispatch(Some(DRAW), Some(Platform::Android))
+        .await
+        .unwrap();
+    assert_eq!(android(&hub).as_deref(), Some("aaaaaaa1"));
+
+    std::fs::write(base.join("suite/installed"), "bbbbbbb2").unwrap();
+    let before = hub.with_run(|run, _| Ok(run.last_seq())).unwrap();
+    hub.dispatch(Some(DRAW), Some(Platform::Ios)).await.unwrap();
+    let logged = hub
+        .with_run(|run, _| Ok(run.entries_after(before).to_vec()))
+        .unwrap();
+    assert!(
+        logged.iter().any(|e| matches!(&e.event,
+            Event::BuildInstalled { platform: Platform::Ios, build, reruns }
+                if build.commit == "bbbbbbb2" && reruns.is_empty())),
+        "the new build is logged, and reruns nothing"
+    );
+    assert_eq!(
+        android(&hub).as_deref(),
+        Some("aaaaaaa1"),
+        "only the platform dispatched to is probed"
+    );
+}
+
+#[test]
+fn a_run_is_found_again_by_its_id() {
+    let id = saved::new_id();
+    assert_eq!(id.len(), 36);
+    assert_eq!(&id[14..15], "4", "a version-4 UUID");
+    assert_ne!(id, saved::new_id());
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let reports = std::env::temp_dir().join(format!("soundcheck-ids-{nanos}"));
+    let run_dir = reports.join("20261028-174254");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    saved::write_info(
+        &run_dir,
+        &saved::RunInfo {
+            id: id.clone(),
+            suite: reports.clone(),
+            label: "Release 5".into(),
+            platforms: vec![Platform::Ios],
+            scope: vec![],
+        },
+    )
+    .unwrap();
+
+    assert_eq!(saved::find_run(&reports, Path::new(&id)).unwrap(), run_dir);
+    assert_eq!(
+        saved::find_run(&reports, Path::new(&id[..8])).unwrap(),
+        run_dir,
+        "a unique start of the id is enough"
+    );
+    assert_eq!(saved::find_run(&reports, &run_dir).unwrap(), run_dir);
+    assert!(saved::find_run(&reports, Path::new("ffffffff-none")).is_err());
+}
+
+#[tokio::test]
 async fn a_tester_can_run_the_projects_data_checks() {
     let (server, url) = server().await;
     let client = client(&url).await;
@@ -880,6 +1006,7 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
     }
     let suite = suite::load(&root);
     let info = saved::RunInfo {
+        id: saved::new_id(),
         suite: root.clone(),
         label: "v0.0.0 · test".into(),
         platforms: vec![Platform::Android, Platform::Ios],
@@ -1262,7 +1389,7 @@ async fn a_new_session_hears_where_the_run_stands() {
 }
 
 #[tokio::test]
-async fn the_run_finishes_itself_once_the_last_row_files() {
+async fn the_run_stays_open_until_it_is_closed() {
     let (server, url, dir) = server_on(&[Platform::Android, Platform::Ios]).await;
     let client = client(&url).await;
     for _ in 0..2 {
@@ -1282,6 +1409,13 @@ async fn the_run_finishes_itself_once_the_last_row_files() {
         }),
     )
     .await;
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(
+        status["finished"], false,
+        "filing the last row doesn't close the run"
+    );
+
+    call(&client, "finish", json!({})).await;
     let status = call(&client, "status", json!({})).await;
     assert_eq!(status["finished"], true);
     let report = std::fs::read_to_string(dir.join("report.html")).unwrap();

@@ -126,13 +126,14 @@ struct RunArgs {
     /// rows, so the verdict covers exactly the scope.
     #[arg(long, value_delimiter = ',')]
     scope: Vec<String>,
-    /// Carry on a run from its folder instead of starting a new one.
-    #[arg(long)]
-    resume: Option<PathBuf>,
+    /// Open an existing run instead of starting a new one: its id (or a unique start of it) or its folder. A run
+    /// stays open until it's closed, and opening it never changes its rows.
+    #[arg(long, alias = "resume")]
+    open: Option<PathBuf>,
     #[arg(long, default_value_t = 7357)]
     port: u16,
-    /// The release under test, shown as the page's title, e.g. "v2.16.2 · candidate".
-    #[arg(long)]
+    /// The run's title, e.g. "Release 2.17.1", shown as the page's title.
+    #[arg(long, alias = "title")]
     label: Option<String>,
     /// Don't open the live page in the browser when the run starts.
     #[arg(long)]
@@ -237,7 +238,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         suite: root,
         platforms,
         scope,
-        resume,
+        open,
         port,
         label,
         no_open,
@@ -270,6 +271,9 @@ fn run_command(args: RunArgs) -> Result<()> {
     );
     // The stacks and the guard run inside the runtime, after `suite` has moved into it.
     let stack_config = config.clone();
+    let resume = open
+        .map(|wanted| soundcheck::run::saved::find_run(&suite::reports_dir(root, config), &wanted))
+        .transpose()?;
     // A resumed run keeps how it was started, unless told otherwise.
     let saved = resume
         .as_deref()
@@ -350,11 +354,16 @@ fn run_command(args: RunArgs) -> Result<()> {
         }
         if let Some(info) = saved
             .as_ref()
-            .filter(|i| i.scope != scope || !added.is_empty())
+            .filter(|i| i.scope != scope || !added.is_empty() || i.id.is_empty())
         {
             soundcheck::run::saved::write_info(
                 &run_dir,
                 &soundcheck::run::saved::RunInfo {
+                    id: if info.id.is_empty() {
+                        soundcheck::run::saved::new_id()
+                    } else {
+                        info.id.clone()
+                    },
                     platforms: platforms.clone(),
                     scope: scope.clone(),
                     ..info.clone()
@@ -372,6 +381,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         soundcheck::run::saved::save(
             &run_dir,
             &soundcheck::run::saved::RunInfo {
+                id: soundcheck::run::saved::new_id(),
                 suite: std::fs::canonicalize(root)?,
                 label: label.clone(),
                 platforms: platforms.clone(),
@@ -593,7 +603,13 @@ fn run_command(args: RunArgs) -> Result<()> {
             run_dir.join("server.json"),
             serde_json::to_string_pretty(&info)?,
         )?;
-        println!("soundcheck {VERSION}: run in {}", run_dir.display());
+        let id = soundcheck::run::saved::read_info(&run_dir)
+            .map(|info| info.id)
+            .unwrap_or_default();
+        println!(
+            "soundcheck {VERSION}: run {id} in {}; open it again with --open {id}",
+            run_dir.display()
+        );
         println!("MCP at {url}/mcp; the live page is at {url}/");
         let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
         if open_page {

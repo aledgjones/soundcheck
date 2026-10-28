@@ -1123,7 +1123,7 @@ fn build(commit: &str, fingerprint: &str) -> Build {
 }
 
 #[test]
-fn a_js_fix_reruns_open_problems_and_listed_rows_only() {
+fn a_fix_build_reruns_only_the_approved_rows() {
     let (mut run, _) = open("fix-js");
     run.install_build(0, Android, build("aaaaaaa1", "fp1"), vec![])
         .unwrap();
@@ -1131,16 +1131,21 @@ fn a_js_fix_reruns_open_problems_and_listed_rows_only() {
     pass(&mut run, 10, BACK, Android);
     pass(&mut run, 20, DRAW, Ios);
 
-    let reruns = run
-        .install_build(30, Android, build("bbbbbbb2", "fp1"), vec![])
+    // A build alone reruns nothing, not even the open problem's row: the person approves the set.
+    let unlisted = run
+        .install_build(25, Android, build("bbbbbbb2", "fp1"), vec![])
         .unwrap();
-    assert_eq!(
-        reruns,
-        [Rerun {
-            spec: DRAW.into(),
-            reason: "open problem 1".into()
-        }]
-    );
+    assert!(unlisted.is_empty());
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Fail));
+
+    let approved = vec![Rerun {
+        spec: DRAW.into(),
+        reason: "the fix touches undo".into(),
+    }];
+    let reruns = run
+        .install_build(30, Android, build("bbbbbbb2", "fp1"), approved.clone())
+        .unwrap();
+    assert_eq!(reruns, approved);
     assert_eq!(
         result(&run, BACK, Android),
         Some(Final::Pass),
@@ -1185,7 +1190,7 @@ fn a_js_fix_reruns_open_problems_and_listed_rows_only() {
         run.state()
             .notes
             .iter()
-            .any(|n| n.text == "rerun on 2.16.1 (bbbbbbb): open problem 1")
+            .any(|n| n.text == "rerun on 2.16.1 (bbbbbbb): the fix touches undo")
     );
 }
 
@@ -1221,7 +1226,7 @@ fn a_listed_rerun_needs_a_reason() {
 }
 
 #[test]
-fn a_native_change_reruns_the_whole_platform() {
+fn a_native_change_reruns_nothing_by_itself() {
     let (mut run, _) = open("fix-native");
     run.install_build(0, Android, build("a1", "fp1"), vec![])
         .unwrap();
@@ -1230,8 +1235,18 @@ fn a_native_change_reruns_the_whole_platform() {
     let reruns = run
         .install_build(20, Android, build("b2", "fp2"), vec![])
         .unwrap();
-    assert_eq!(reruns.len(), 2);
-    assert!(reruns.iter().all(|r| r.reason == "native change"));
+    assert!(reruns.is_empty());
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(
+        run.row(BACK, Android)
+            .unwrap()
+            .build
+            .as_ref()
+            .unwrap()
+            .commit,
+        "a1",
+        "a kept result stays with the build it ran on"
+    );
 }
 
 #[test]
@@ -1440,7 +1455,11 @@ fn each_build_gets_a_fresh_attempt_budget() {
     }
     run.review(30, BACK, Android, bug(), "seen 3 times")
         .unwrap();
-    run.install_build(40, Android, build("b2", "fp1"), vec![])
+    let approved = vec![Rerun {
+        spec: BACK.into(),
+        reason: "the fix touches the back stack".into(),
+    }];
+    run.install_build(40, Android, build("b2", "fp1"), approved)
         .unwrap();
     let t = run.dispatch(41, BACK, Android, brief).unwrap();
     assert_eq!(

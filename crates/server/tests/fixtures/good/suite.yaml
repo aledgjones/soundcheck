@@ -11,7 +11,7 @@ platforms:
 hooks:
   guard: "true"
   seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
-  build-identity: "true"
+  build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{platform}\"}'"
   check: echo checked
   act: echo acted
 seeds: [viewer, empty]
