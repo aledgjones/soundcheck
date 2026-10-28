@@ -8,7 +8,7 @@ pub mod usage;
 pub mod verdict;
 
 use crate::suite::config::Platform;
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use event::{Event, ResultCounts, RowRef};
 use journal::{Entry, Journal};
 use model::*;
@@ -30,6 +30,29 @@ pub struct Plan {
     pub specs: Vec<PlannedSpec>,
     /// Off by default: platforms take turns, one spec running at a time.
     pub parallel: bool,
+    /// Whether each platform is prepared (suite.yaml `prepare`) before any spec runs there.
+    pub prepare: bool,
+}
+
+/// What `running` gives as the spec of a preparation's token, so the device tools work for it as for a spec.
+pub const PREPARE: &str = "prepare";
+
+/// A platform's preparation on this server's stacks. It lives with the server, not the journal's rows: a new server
+/// means new stacks, so every platform is prepared again before its next spec.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Prep {
+    Waiting {
+        attempts: u32,
+    },
+    Running {
+        token: String,
+        attempt: u32,
+    },
+    Done,
+    /// Every attempt failed: the platform's waiting rows are filed BLOCKED with this.
+    Failed {
+        reason: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -168,6 +191,8 @@ pub struct Run {
     activity: HashMap<String, Activity>,
     /// Every entry so far, for the event stream's replay.
     entries: Vec<Entry>,
+    /// Each platform's preparation on this server's stacks; every platform starts waiting (see [`Prep`]).
+    preparation: BTreeMap<Platform, Prep>,
 }
 
 impl Run {
@@ -180,6 +205,7 @@ impl Run {
             journal,
             activity: HashMap::new(),
             entries: Vec::new(),
+            preparation: BTreeMap::new(),
         };
         for entry in &entries {
             run.state.apply(&run.plan, entry);
@@ -277,6 +303,173 @@ impl Run {
         Ok(token)
     }
 
+    /// Where `platform`'s preparation stands; done when the suite has none.
+    pub fn prep(&self, platform: Platform) -> Prep {
+        if !self.plan.prepare {
+            return Prep::Done;
+        }
+        self.preparation
+            .get(&platform)
+            .cloned()
+            .unwrap_or(Prep::Waiting { attempts: 0 })
+    }
+
+    /// Whether anything runs where `platform` would: on it, or anywhere while platforms take turns.
+    fn busy(&self, platform: Platform) -> Option<String> {
+        let running = self.state.rows.iter().find(|((_, p), r)| {
+            matches!(r.row, Row::Running { .. }) && (*p == platform || !self.plan.parallel)
+        });
+        if let Some(((spec, on), _)) = running {
+            return Some(format!(
+                "{spec} is still running on {on}; one spec at a time"
+            ));
+        }
+        let preparing = self.preparation.iter().find(|(p, prep)| {
+            matches!(prep, Prep::Running { .. }) && (**p == platform || !self.plan.parallel)
+        });
+        preparing.map(|(on, _)| format!("{on} is being prepared; one at a time"))
+    }
+
+    /// The platform to prepare before anything else, if one has rows waiting and isn't prepared yet; `platform`
+    /// narrows it. A platform with nothing waiting isn't prepared, so a finished run stays finished.
+    pub fn next_prepare(&self, platform: Option<Platform>) -> Option<Platform> {
+        if !self.plan.prepare || self.state.paused || self.state.finished {
+            return None;
+        }
+        let waiting: BTreeSet<Platform> = self
+            .state
+            .rows
+            .iter()
+            .filter(|(_, r)| matches!(r.row, Row::NotRun | Row::Queued { .. }))
+            .map(|((_, p), _)| *p)
+            .collect();
+        waiting.into_iter().find(|p| {
+            platform.is_none_or(|wanted| wanted == *p)
+                && matches!(self.prep(*p), Prep::Waiting { .. })
+                && self.busy(*p).is_none()
+        })
+    }
+
+    /// Starts preparing `platform`; returns its token. `brief` renders the tester's prompt from the token.
+    pub fn dispatch_prepare(
+        &mut self,
+        now: u64,
+        platform: Platform,
+        brief: impl FnOnce(&str) -> String,
+    ) -> Result<String> {
+        self.open_for_commands()?;
+        let Prep::Waiting { attempts } = self.prep(platform) else {
+            bail!("{platform} isn't waiting to be prepared");
+        };
+        if let Some(why) = self.busy(platform) {
+            bail!("{why}");
+        }
+        let attempt = attempts + 1;
+        let token = format!("{PREPARE}#{attempt}@{platform}");
+        self.commit(
+            now,
+            Event::PrepareDispatched {
+                platform,
+                attempt,
+                token: token.clone(),
+                prompt: brief(&token),
+            },
+        )?;
+        self.preparation.insert(
+            platform,
+            Prep::Running {
+                token: token.clone(),
+                attempt,
+            },
+        );
+        self.activity.insert(
+            token.clone(),
+            Activity {
+                last: now,
+                in_call: 0,
+                started: false,
+                first: None,
+                calls: BTreeMap::new(),
+            },
+        );
+        Ok(token)
+    }
+
+    /// The platform a running preparation's token is for.
+    pub fn preparing(&self, token: &str) -> Option<Platform> {
+        self.preparation.iter().find_map(|(p, prep)| match prep {
+            Prep::Running { token: t, .. } if t == token => Some(*p),
+            _ => None,
+        })
+    }
+
+    /// The preparation worked: the platform's specs can start.
+    pub fn prepared(&mut self, now: u64, token: &str) -> Result<()> {
+        let platform = self
+            .preparing(token)
+            .with_context(|| format!("{token} isn't a running preparation"))?;
+        self.commit(
+            now,
+            Event::Prepared {
+                platform,
+                token: token.into(),
+            },
+        )?;
+        self.preparation.insert(platform, Prep::Done);
+        self.end_activity(now, token)
+    }
+
+    /// The preparation didn't work (the tester couldn't, the ready check failed, or it stalled). It's tried again up
+    /// to [`MAX_ATTEMPTS`] times; after that, the platform's waiting rows are filed BLOCKED with the reason.
+    pub fn prepare_failed(&mut self, now: u64, token: &str, reason: &str) -> Result<()> {
+        let platform = self
+            .preparing(token)
+            .with_context(|| format!("{token} isn't a running preparation"))?;
+        let Prep::Running { attempt, .. } = self.prep(platform) else {
+            unreachable!("preparing() found it running");
+        };
+        let last = attempt >= MAX_ATTEMPTS;
+        self.commit(
+            now,
+            Event::PrepareFailed {
+                platform,
+                token: token.into(),
+                reason: reason.into(),
+                last,
+            },
+        )?;
+        self.end_activity(now, token)?;
+        if !last {
+            self.preparation
+                .insert(platform, Prep::Waiting { attempts: attempt });
+            return Ok(());
+        }
+        self.preparation.insert(
+            platform,
+            Prep::Failed {
+                reason: reason.into(),
+            },
+        );
+        let waiting: Vec<String> = self
+            .state
+            .rows
+            .iter()
+            .filter(|((_, p), r)| {
+                *p == platform && matches!(r.row, Row::NotRun | Row::Queued { .. })
+            })
+            .map(|((s, _), _)| s.clone())
+            .collect();
+        for spec in waiting {
+            self.reset_failed(
+                now,
+                &spec,
+                platform,
+                &format!("{platform} couldn't be prepared: {reason}"),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Whether a spec could be dispatched now, without dispatching it: the server checks before it seeds, so a
     /// refused dispatch never resets a device. Returns the attempt it would be and any claim to verify.
     pub fn check_dispatch(&self, spec: &str, platform: Platform) -> Result<(u32, Option<String>)> {
@@ -296,11 +489,14 @@ impl Run {
         if record.budget >= MAX_ATTEMPTS {
             bail!("{spec} on {platform} has used all {MAX_ATTEMPTS} attempts on this build");
         }
+        match self.prep(platform) {
+            Prep::Done => {}
+            Prep::Failed { reason } => bail!("{platform} couldn't be prepared: {reason}"),
+            _ => bail!("{platform} isn't prepared yet: dispatch the next row, which prepares it"),
+        }
         let attempt = record.attempts + 1;
-        if let Some(((busy, on), _)) = self.state.rows.iter().find(|((_, p), r)| {
-            matches!(r.row, Row::Running { .. }) && (*p == platform || !self.plan.parallel)
-        }) {
-            bail!("{busy} is still running on {on}; one spec at a time");
+        if let Some(why) = self.busy(platform) {
+            bail!("{why}");
         }
         Ok((attempt, verify))
     }
@@ -861,10 +1057,12 @@ impl Run {
         tokens: u64,
         spent: Option<event::Spent>,
     ) -> Result<()> {
-        let dispatched = self
-            .entries
-            .iter()
-            .any(|e| matches!(&e.event, Event::Dispatched { token: t, .. } if t == token));
+        let dispatched = self.entries.iter().any(|e| match &e.event {
+            Event::Dispatched { token: t, .. } | Event::PrepareDispatched { token: t, .. } => {
+                t == token
+            }
+            _ => false,
+        });
         if !dispatched {
             bail!("no attempt with token {token}");
         }
@@ -908,6 +1106,9 @@ impl Run {
 
     pub fn stall(&mut self, now: u64, token: &str, reason: &str) -> Result<()> {
         self.open_for_commands()?;
+        if self.preparing(token).is_some() {
+            return self.prepare_failed(now, token, &format!("it stalled: {reason}"));
+        }
         self.running(token)?;
         self.commit(
             now,
@@ -1244,6 +1445,9 @@ impl Run {
 
     /// The spec and platform a running token belongs to.
     pub fn running(&self, token: &str) -> Result<(String, Platform)> {
+        if let Some(platform) = self.preparing(token) {
+            return Ok((PREPARE.to_string(), platform));
+        }
         match self.state.running_token(token) {
             Some(key) => Ok(key),
             None => {
@@ -1257,6 +1461,9 @@ impl Run {
         self.running(token)?;
         let sent = self.entries.iter().rev().find_map(|e| match &e.event {
             Event::Dispatched {
+                token: t, prompt, ..
+            } if t == token => Some(prompt.clone()),
+            Event::PrepareDispatched {
                 token: t, prompt, ..
             } if t == token => Some(prompt.clone()),
             _ => None,
@@ -1338,6 +1545,10 @@ impl State {
     /// Applies one journalled event. Commands validated it before it was written, so this never fails.
     fn apply(&mut self, plan: &Plan, entry: &Entry) {
         match &entry.event {
+            // Preparation lives with the server, not the rows (see `Prep`); these are for the timeline.
+            Event::PrepareDispatched { .. }
+            | Event::Prepared { .. }
+            | Event::PrepareFailed { .. } => {}
             Event::Dispatched {
                 spec,
                 platform,

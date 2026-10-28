@@ -89,6 +89,15 @@ pub fn agent(spec: &Spec) -> &'static str {
 pub const TESTER: &str = "soundcheck-tester";
 pub const MECHANICS_TESTER: &str = "soundcheck-tester-mechanics";
 
+/// The brief for readying a platform (suite.yaml `prepare`). It isn't a spec: there's one thing to say, whether it
+/// worked, and soundcheck checks the platform's `ready` labels itself afterwards.
+pub fn prepare(steps: &str, platform: Platform, token: &str) -> String {
+    format!(
+        "# Prepare {platform} for the run\n\nYou are a soundcheck tester, readying {platform} before any spec runs there. Drive the app only through soundcheck's tools and follow the steps below. This isn't a test: don't look for problems or post side finds.\n\nYour token: `{token}`. Pass it on every soundcheck call.\n\n## Steps\n\n{}\n\n## When you're done\n\nCall `post_result` once, with one judgment for outcome 0: `held` when the steps are done and the app is ready, saying what shows; `failed` saying what stopped you. Soundcheck then checks the app is ready itself.\n",
+        steps.trim()
+    )
+}
+
 /// What the coordinator passes to the tester agent: the brief itself travels by `brief`, outside the coordinator.
 pub fn handoff(token: &str) -> String {
     format!(

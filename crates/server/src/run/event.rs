@@ -106,6 +106,25 @@ pub enum Event {
     Interrupted {
         token: String,
     },
+    /// A tester started readying a platform (suite.yaml `prepare`) before any spec runs there.
+    PrepareDispatched {
+        platform: Platform,
+        attempt: u32,
+        token: String,
+        prompt: String,
+    },
+    /// The platform is ready: the tester finished and its `ready` labels showed.
+    Prepared {
+        platform: Platform,
+        token: String,
+    },
+    /// An attempt at readying the platform didn't work; on the `last`, its waiting rows are filed BLOCKED.
+    PrepareFailed {
+        platform: Platform,
+        token: String,
+        reason: String,
+        last: bool,
+    },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.
     Stalled {
         token: String,

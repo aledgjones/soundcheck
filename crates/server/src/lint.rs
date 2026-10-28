@@ -181,6 +181,14 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             ),
         );
     }
+    if let Some(prepare) = &config.prepare
+        && !suite.root.join(prepare).is_file()
+    {
+        push(
+            CONFIG_FILE.into(),
+            format!("prepare: no file {}", prepare.display()),
+        );
+    }
     if let Some(tickets) = &config.tickets
         && !tickets.url.contains("{id}")
     {

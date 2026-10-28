@@ -58,6 +58,9 @@ pub struct SuiteConfig {
     pub models: Models,
     #[serde(default)]
     pub parallel: bool,
+    /// Steps that ready a platform before any spec runs there (a markdown file, relative to the suite): with stacks,
+    /// each run's backend is blank, so this is where the app signs in. A tester follows it; it isn't a spec.
+    pub prepare: Option<PathBuf>,
     pub tickets: Option<Tickets>,
     /// How the app reaches its services on this machine, so `offline` and `network-drop` can cut them.
     pub network: Option<Network>,

@@ -135,6 +135,21 @@ pub fn summary(entry: &Entry) -> String {
         Event::Interrupted { token } => format!(
             "{token} interrupted by a server restart; queued again without using an attempt"
         ),
+        Event::PrepareDispatched {
+            platform, attempt, ..
+        } => format!("preparing {platform} (attempt {attempt})"),
+        Event::Prepared { platform, .. } => format!("{platform} prepared: its specs can start"),
+        Event::PrepareFailed {
+            platform,
+            reason,
+            last: false,
+            ..
+        } => format!("{platform} not prepared ({reason}); trying again"),
+        Event::PrepareFailed {
+            platform, reason, ..
+        } => format!(
+            "{platform} couldn't be prepared: {reason}; its waiting specs are filed BLOCKED"
+        ),
         Event::Stalled { token, reason } => format!("{token} stalled: {reason}; queued again"),
         Event::ResetFailed {
             spec,

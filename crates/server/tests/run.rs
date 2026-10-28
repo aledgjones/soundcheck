@@ -1,7 +1,7 @@
 use soundcheck::run::event::{RowRef, Spent};
 use soundcheck::run::model::*;
 use soundcheck::run::usage;
-use soundcheck::run::{MAX_ATTEMPTS, Plan, PlannedSpec, Row, Run};
+use soundcheck::run::{MAX_ATTEMPTS, PREPARE, Plan, PlannedSpec, Row, Run};
 use soundcheck::suite::config::Platform::{self, Android, Ios};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -35,6 +35,7 @@ fn plan(parallel: bool) -> Plan {
             },
         ],
         parallel,
+        prepare: false,
     }
 }
 
@@ -1656,4 +1657,80 @@ fn the_next_rows_are_queued_ones_first_then_untested_in_spec_order() {
             .to_string()
             .contains("paused")
     );
+}
+
+fn prepared(name: &str) -> (Run, PathBuf) {
+    let path = journal(name);
+    let plan = Plan {
+        prepare: true,
+        ..plan(false)
+    };
+    (Run::open(plan, &path, 0).unwrap(), path)
+}
+
+fn prepare(run: &mut Run, at: u64, platform: Platform) -> String {
+    assert_eq!(run.next_prepare(Some(platform)), Some(platform));
+    run.dispatch_prepare(at, platform, |_| "steps".into())
+        .unwrap()
+}
+
+#[test]
+fn a_platforms_specs_wait_until_it_is_prepared() {
+    let (mut run, _) = prepared("prepare-waits");
+    let refused = run.check_dispatch(BACK, Android).unwrap_err();
+    assert!(refused.to_string().contains("isn't prepared yet"));
+    let token = prepare(&mut run, 1, Android);
+    assert_eq!(run.running(&token).unwrap(), (PREPARE.to_string(), Android));
+    assert_eq!(run.brief(&token).unwrap(), "steps");
+    assert!(run.check_dispatch(DRAW, Ios).is_err(), "one at a time");
+    run.prepared(2, &token).unwrap();
+    assert!(run.check_dispatch(BACK, Android).is_ok());
+    assert_eq!(run.next_prepare(None), Some(Ios));
+    // Preparation is no row: the verdict and the rows are the specs'.
+    assert_eq!(run.state().rows.len(), 3);
+}
+
+#[test]
+fn a_platform_that_cant_be_prepared_blocks_only_its_specs() {
+    let (mut run, _) = prepared("prepare-fails");
+    for attempt in 1..=MAX_ATTEMPTS {
+        let token = prepare(&mut run, u64::from(attempt) * 10, Android);
+        assert!(token.starts_with(&format!("prepare#{attempt}@")));
+        run.prepare_failed(
+            u64::from(attempt) * 10 + 1,
+            &token,
+            "Google asked for a password",
+        )
+        .unwrap();
+    }
+    assert_eq!(run.next_prepare(Some(Android)), None);
+    assert_eq!(result(&run, BACK, Android), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, Ios), None);
+    assert_eq!(run.next_prepare(None), Some(Ios));
+}
+
+#[test]
+fn a_stalled_preparation_is_tried_again() {
+    let (mut run, _) = prepared("prepare-stalls");
+    let token = prepare(&mut run, 1, Ios);
+    run.stall(5, &token, "no tool call for 2 minutes").unwrap();
+    assert!(run.running(&token).is_err());
+    let again = prepare(&mut run, 6, Ios);
+    assert_eq!(again, "prepare#2@ios");
+}
+
+#[test]
+fn a_new_server_prepares_every_platform_again() {
+    let (mut run, path) = prepared("prepare-again");
+    let token = prepare(&mut run, 1, Android);
+    run.prepared(2, &token).unwrap();
+    drop(run);
+    let plan = Plan {
+        prepare: true,
+        ..plan(false)
+    };
+    let run = Run::open(plan, &path, 100).unwrap();
+    assert!(run.check_dispatch(BACK, Android).is_err());
+    assert_eq!(run.next_prepare(Some(Android)), Some(Android));
 }

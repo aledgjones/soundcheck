@@ -650,6 +650,11 @@ impl Tools {
             notes: p.notes,
             probed: p.probed,
         };
+        // A preparation isn't a spec: no evidence, no claim, no review.
+        if spec == crate::run::PREPARE {
+            let said = self.hub.finish_prepare(&p.token, platform, &posted).await;
+            return reply(said.map(|said| json!({ "claim": said })));
+        }
         let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
         let base = report::evidence_base(&spec, attempt, platform);
         let mut missing = Vec::new();

@@ -530,8 +530,18 @@ fn run_command(args: RunArgs) -> Result<()> {
                 pass(&mut checks, format!("{platform} has build {}", build.label()));
             }
         }
-        // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say).
-        for &platform in &platforms {
+        // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say). With a prepare
+        // spec the app signs in there, on this run's stacks, so a ready label seen now would prove nothing.
+        if let Some(prepare) = &stack_config.prepare {
+            pass(
+                &mut checks,
+                format!(
+                    "each platform is prepared ({}) before its specs, and its ready labels checked then",
+                    prepare.display()
+                ),
+            );
+        }
+        for &platform in platforms.iter().filter(|_| stack_config.prepare.is_none()) {
             let labels = ready.get(&platform).cloned().unwrap_or_default();
             hub.on_device(platform, async |d| {
                 soundcheck_driver::Device::launch(&d.device).await?;

@@ -1,5 +1,6 @@
 //! The run's page: one renderer for the live page and the export, so what's watched is what's kept.
 
+use crate::run::event::Event;
 use crate::run::journal::Entry;
 use crate::run::model::{Answer, Call, Final, Posted, ProblemKind, ProblemSource, Status};
 use crate::run::usage;
@@ -10,6 +11,7 @@ use crate::suite::Suite;
 use crate::suite::config::Platform;
 use crate::suite::spec::Spec;
 use base64::Engine;
+use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::path::Path;
 
@@ -1180,6 +1182,10 @@ fn notes(page: &Page) -> String {
             .collect();
         rows.push(("Builds".into(), builds.join(". ")));
     }
+    let prepared = preparation(page.run.entries_after(0));
+    if !prepared.is_empty() {
+        rows.push(("Preparation".into(), prepared.join(". ")));
+    }
     let mut kinds: Vec<(&str, Vec<String>)> =
         vec![("Reruns", vec![]), ("Harness and environment", vec![])];
     for n in &state.notes {
@@ -1232,10 +1238,53 @@ fn notes(page: &Page) -> String {
         .iter()
         .map(|(t, d)| format!("<dt>{t}</dt><dd>{d}</dd>"))
         .collect();
-    let count = state.notes.len() + usize::from(!state.builds.is_empty());
+    let count = state.notes.len()
+        + usize::from(!state.builds.is_empty())
+        + usize::from(!prepared.is_empty());
     format!(
         "<section class=\"block\"><h2>Notes</h2><div class=\"card notes\"><details class=\"fold\" id=\"notes\"><summary>Show all {count} notes</summary><dl>{dl}</dl></details></div></section>"
     )
+}
+
+/// Each platform's latest preparation (suite.yaml `prepare`): how long it took, or why it couldn't be done.
+fn preparation(entries: &[Entry]) -> Vec<String> {
+    let mut started: BTreeMap<String, u64> = BTreeMap::new();
+    let mut latest: BTreeMap<Platform, String> = BTreeMap::new();
+    for e in entries {
+        match &e.event {
+            Event::PrepareDispatched {
+                platform,
+                attempt,
+                token,
+                ..
+            } => {
+                started.insert(token.clone(), e.at);
+                latest.insert(*platform, format!("preparing (attempt {attempt})"));
+            }
+            Event::Prepared { platform, token } => {
+                let took = started.get(token).map_or(0, |at| e.at.saturating_sub(*at)) / 1000;
+                latest.insert(*platform, format!("prepared in {took} s"));
+            }
+            Event::PrepareFailed {
+                platform,
+                reason,
+                last,
+                ..
+            } => {
+                let what = if *last {
+                    "couldn't be prepared"
+                } else {
+                    "not prepared, trying again"
+                };
+                latest.insert(*platform, format!("{what}: {}", esc(reason)));
+            }
+            _ => {}
+        }
+    }
+    latest
+        .into_iter()
+        .map(|(p, line)| format!("{}: {line}", platform_name(p)))
+        .collect()
 }
 
 fn timeline(page: &Page) -> String {

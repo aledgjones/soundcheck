@@ -11,6 +11,7 @@ hooks:
   stack-up: "true"
 seeds: [empty]
 parallel: true
+prepare: missing.md
 network:
   proxy:
     android:

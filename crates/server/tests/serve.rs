@@ -42,6 +42,7 @@ async fn server_on(platforms: &[Platform]) -> (serve::Server, String, std::path:
             })
             .collect(),
         parallel: false,
+        prepare: false,
     };
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -662,6 +663,7 @@ async fn the_build_identity_hook_records_each_platforms_build() {
             })
             .collect(),
         parallel: false,
+        prepare: false,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();

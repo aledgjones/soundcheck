@@ -157,6 +157,7 @@ fn a_proxy_per_platform_is_checked() {
             "suite.yaml: network.proxy.web.api: device is for Android's routes, which forward ports from the device",
             "suite.yaml: network.proxy: ios has no routes, so its app can't reach anything",
             "suite.yaml: hooks: stack-up and stack-down go together, so every stack started is removed",
+            "suite.yaml: prepare: no file missing.md",
         ]
     );
 }

@@ -55,6 +55,7 @@ pub fn plan_for(suite: &Suite, platforms: &[Platform], scope: &[String]) -> Resu
             .filter(|s| !s.platforms.is_empty())
             .collect(),
         parallel: config.parallel,
+        prepare: config.prepare.is_some(),
     })
 }
 

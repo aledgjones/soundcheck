@@ -48,6 +48,7 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
             })
             .collect(),
         parallel: false,
+        prepare: false,
     };
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -215,6 +216,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             })
             .collect(),
         parallel: true,
+        prepare: false,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -457,6 +459,7 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
             })
             .collect(),
         parallel: false,
+        prepare: false,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();

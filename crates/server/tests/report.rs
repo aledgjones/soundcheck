@@ -38,6 +38,7 @@ fn sample() -> (suite::Suite, Run) {
             })
             .collect(),
         parallel: false,
+        prepare: false,
     };
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
