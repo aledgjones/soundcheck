@@ -20,7 +20,8 @@ const READER_MIN_API: u32 = 34;
 /// What a crash or hang looks like in logcat, for `errors`.
 const FAILURES: &str = r"FATAL EXCEPTION|ANR in|handleHostException|already has a parent";
 
-static TOKEN: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"<node ([^>]*?)/?>").unwrap());
+static TOKEN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"<node ([^>]*?)(/?)>|</node>").unwrap());
 // uiautomator single-quotes a value that holds a double quote.
 static ATTR: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"([\w-]+)=(?:"([^"]*)"|'([^']*)')"#).unwrap());
@@ -66,11 +67,16 @@ fn unescape(s: &str) -> String {
 
 /// Parses `uiautomator dump` XML into elements. The reader's default tree is already what a screen reader is given
 /// (Android leaves out views it deems unimportant), so the default view only drops labels that are just a resource or
-/// test id (`phosphor-react-native-list-regular`), which a screen reader never speaks. `all` keeps them.
+/// test id (`phosphor-react-native-list-regular`), which a screen reader never speaks, and the text inside a labelled
+/// control (a score row's title, artist and duration under `Select score …`), which TalkBack reads as the one label, as
+/// VoiceOver does on iOS. A focusable control inside it still reads on its own. `all` keeps them.
 pub fn parse(xml: &str, all: bool) -> Vec<Element> {
     let mut out = Vec::new();
+    // Per open node: whether it, or a node around it, is a labelled control that its plain text belongs to.
+    let mut labelled: Vec<bool> = Vec::new();
     for node in TOKEN.captures_iter(xml) {
         let Some(body) = node.get(1) else {
+            labelled.pop();
             continue;
         };
         let attrs: std::collections::HashMap<&str, String> = ATTR
@@ -85,6 +91,18 @@ pub fn parse(xml: &str, all: bool) -> Vec<Element> {
         let get = |k: &str| attrs.get(k).map(String::as_str).unwrap_or("");
         let flag = |k: &str| get(k) == "true";
         let (desc, text, id) = (get("content-desc"), get("text"), get("resource-id"));
+        let focusable = ["focusable", "clickable", "long-clickable", "checkable"]
+            .into_iter()
+            .any(flag);
+        let inside = labelled.last().copied().unwrap_or(false);
+        if node.get(2).is_some_and(|m| m.as_str().is_empty()) {
+            labelled.push(inside || (focusable && !desc.trim().is_empty()));
+        }
+
+        if inside && !focusable && !all {
+            continue;
+        }
+
         let spoken = [desc, text].into_iter().find(|s| !s.trim().is_empty());
         let label = match (spoken, all) {
             (Some(s), _) => s,
@@ -907,6 +925,18 @@ mod tests {
         assert_eq!(seen[1].value.as_deref(), Some("Opener"));
         assert!(!seen[1].enabled && seen[1].focused);
         assert_eq!(seen[1].tap_point(), (400.0, 130.0));
+    }
+
+    #[test]
+    fn a_labelled_control_reads_as_its_label_alone() {
+        let xml = r#"<hierarchy><node content-desc="Select score Waltz" focusable="true" clickable="true" bounds="[0,0][800,100]"><node text="Waltz" focusable="false" bounds="[0,0][400,50]" /><node text="Holst" focusable="false" bounds="[0,50][400,100]" /><node content-desc="Score menu" clickable="true" bounds="[700,0][800,100]" /></node><node text="Scores by title" bounds="[0,120][400,160]" /></hierarchy>"#;
+        let labels =
+            |all| -> Vec<String> { parse(xml, all).into_iter().map(|e| e.label).collect() };
+        assert_eq!(
+            labels(false),
+            ["Select score Waltz", "Score menu", "Scores by title"]
+        );
+        assert_eq!(labels(true).len(), 5);
     }
 
     #[test]
