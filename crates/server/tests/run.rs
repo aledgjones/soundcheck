@@ -459,7 +459,7 @@ fn only_silence_between_calls_counts_as_a_stall() {
         run.stalled(500_000, 120_000, 600_000).is_empty(),
         "a long seed or wait isn't a stall"
     );
-    run.call_finished(500_000, &t);
+    run.call_finished(500_000, &t, "see");
     assert!(run.stalled(600_000, 120_000, 600_000).is_empty());
     assert_eq!(run.stalled(620_000, 120_000, 600_000), vec![t.clone()]);
 
@@ -485,7 +485,7 @@ fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
     );
     assert!(!run.started(&t));
     run.call_started(300_000, &t, "see");
-    run.call_finished(301_000, &t);
+    run.call_finished(301_000, &t, "see");
     assert!(run.started(&t));
     assert!(run.stalled(420_000, 120_000, 600_000).is_empty());
     assert_eq!(run.stalled(421_000, 120_000, 600_000), vec![t.clone()]);
@@ -502,19 +502,19 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     let (mut run, _) = open("usage");
     let posted = run.dispatch(0, DRAW, Android, brief).unwrap();
     run.call_started(5_000, &posted, "brief");
-    run.call_finished(5_000, &posted);
+    run.call_finished(5_000, &posted, "brief");
     for at in [6_000, 8_000] {
         run.call_started(at, &posted, "tap");
-        run.call_finished(at + 500, &posted);
+        run.call_finished(at + 500, &posted, "tap");
     }
     run.call_started(9_000, &posted, "see");
-    run.call_finished(65_000, &posted);
+    run.call_finished(65_000, &posted, "see");
     run.post(65_000, &posted, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
 
     let stalled = run.dispatch(70_000, BACK, Android, brief).unwrap();
     run.call_started(80_000, &stalled, "brief");
-    run.call_finished(80_000, &stalled);
+    run.call_finished(80_000, &stalled, "brief");
     run.stall(300_000, &stalled, "quiet").unwrap();
 
     let silent = run.dispatch(310_000, BACK, Android, brief).unwrap();
@@ -540,6 +540,8 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     assert_eq!(attempts[0].spent, Some(spent));
     assert_eq!(attempts[0].total_calls(), 4);
     assert_eq!(attempts[0].calls["tap"], 2);
+    assert_eq!(attempts[0].call_ms["tap"], 1_000);
+    assert_eq!(attempts[0].call_ms["see"], 56_000);
     assert_eq!(attempts[0].duration_ms, Some(60_000));
     assert_eq!(attempts[0].row(), format!("{DRAW}@android"));
     assert_eq!(

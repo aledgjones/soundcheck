@@ -627,7 +627,7 @@ impl Tools {
         }
         reply(self.hub.with_run(|run, now| {
             run.call_started(now, &p.token, "judge");
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "judge");
             let judged = run.judge(now, &p.token, p.judgment)?;
             Ok(json!({ "judged": judged }))
         }))
@@ -685,7 +685,7 @@ impl Tools {
             .any(|s| s.id == spec && s.probe.is_some());
         let claim = match self.hub.with_run(|run, now| {
             run.call_started(now, &p.token, "post_result");
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "post_result");
             run.post_probed(now, &p.token, posted, has_probes)
         }) {
             Ok(claim) => claim,
@@ -869,7 +869,7 @@ impl Tools {
         let brief = self.hub.with_run(|run, now| {
             let brief = run.brief(&p.token)?;
             run.call_started(now, &p.token, "brief");
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "brief");
             Ok(brief)
         });
         Ok(match brief {
@@ -1169,7 +1169,7 @@ impl Tools {
         }
         let result = pause(p.ms).await;
         let _ = self.hub.with_run(|run, now| {
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "sleep");
             Ok(())
         });
         reply(
@@ -1471,7 +1471,7 @@ impl Tools {
             Err(e) => return reply(Err(e)),
         };
         let _ = self.hub.with_run(|run, now| {
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "act");
             Ok(())
         });
         reply(result.map(|out| json!({ "output": out.trim() })))
@@ -1498,7 +1498,7 @@ impl Tools {
             Err(e) => return reply(Err(e)),
         };
         let _ = self.hub.with_run(|run, now| {
-            run.call_finished(now, &p.token);
+            run.call_finished(now, &p.token, "check_data");
             Ok(())
         });
         reply(result.map(|out| json!({ "output": out.trim() })))
@@ -1763,7 +1763,7 @@ impl Tools {
             Ok(_) => None,
         };
         let _ = self.hub.with_run(|run, now| {
-            run.call_finished(now, token);
+            run.call_finished(now, token, tool);
             // The run's own record of it, so a reboot is never mistaken for the app leaving the foreground.
             if let Some(why) = &restarted {
                 run.device_restarted(now, platform, &spec, why)?;

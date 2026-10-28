@@ -1,4 +1,4 @@
-//! The plugin's Stop, SessionStart and PreToolUse hooks. Each asks the run serving on the port and prints the hook's
+//! The plugin's Stop, SessionStart, PreToolUse and PostToolUse hooks. Each asks the run serving on the port and prints the hook's
 //! JSON reply, or nothing: with no run up, sessions are left alone.
 
 use crate::serve::{Dispatched, Summary};
@@ -80,16 +80,9 @@ pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let response = reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{port}/next"))
-        .timeout(Duration::from_secs(30))
-        .send()
-        .await?;
-    if !response.status().is_success() {
+    let Some(next) = next_row(port, Duration::from_secs(30)).await? else {
         return Ok(None);
-    }
-
-    let next: Next = response.json().await?;
+    };
     Ok(Some(
         json!({
             "decision": "block",
@@ -97,6 +90,51 @@ pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
                 "dispatch {} on {}: it could start now and nothing has started it, so start its tester now",
                 next.spec, next.platform
             ),
+        })
+        .to_string(),
+    ))
+}
+
+/// The row a platform could start now, or None when every platform is busy or nothing is ready.
+async fn next_row(port: u16, timeout: Duration) -> Result<Option<Next>> {
+    let response = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/next"))
+        .timeout(timeout)
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        return Ok(None);
+    }
+
+    Ok(Some(response.json().await?))
+}
+
+/// After each of the coordinator's own calls, says when a platform has gone idle with a row it could start: a
+/// tester's reply that lands mid-turn wakes nobody, and the Stop hook only catches it once the turn ends. Testers
+/// never get here, as hooks.json matches only tools they don't have.
+pub async fn post_tool_use(stdin: &str, port: u16) -> Result<Option<String>> {
+    let input: ToolInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
+
+    let Some(s) = summary(port, Some(&input.session_id)).await? else {
+        return Ok(None);
+    };
+
+    if !s.coordinator || s.finished || s.paused {
+        return Ok(None);
+    }
+
+    let Some(next) = next_row(port, Duration::from_secs(5)).await? else {
+        return Ok(None);
+    };
+    Ok(Some(
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PostToolUse",
+                "additionalContext": format!(
+                    "soundcheck: {} on {} could start now and nothing has started it; dispatch it before anything else",
+                    next.spec, next.platform
+                ),
+            },
         })
         .to_string(),
     ))

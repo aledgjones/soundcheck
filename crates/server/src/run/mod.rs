@@ -181,6 +181,10 @@ struct Activity {
     first: Option<u64>,
     /// Calls this attempt made, by tool.
     calls: BTreeMap<String, u32>,
+    /// Time spent inside each tool's calls.
+    call_ms: BTreeMap<String, u64>,
+    /// Calls under way, with when each began.
+    open: Vec<(String, u64)>,
 }
 
 pub struct Run {
@@ -221,6 +225,8 @@ impl Run {
                         started: true,
                         first: None,
                         calls: BTreeMap::new(),
+                        call_ms: BTreeMap::new(),
+                        open: Vec::new(),
                     },
                 );
             }
@@ -304,6 +310,8 @@ impl Run {
                 started: false,
                 first: None,
                 calls: BTreeMap::new(),
+                call_ms: BTreeMap::new(),
+                open: Vec::new(),
             },
         );
         Ok(token)
@@ -396,6 +404,8 @@ impl Run {
                 started: false,
                 first: None,
                 calls: BTreeMap::new(),
+                call_ms: BTreeMap::new(),
+                open: Vec::new(),
             },
         );
         Ok(token)
@@ -1035,6 +1045,7 @@ impl Run {
             }
             a.started = true;
             *a.calls.entry(tool.to_string()).or_default() += 1;
+            a.open.push((tool.to_string(), now));
         }
     }
 
@@ -1051,6 +1062,7 @@ impl Run {
             Event::Usage {
                 token: token.into(),
                 calls: a.calls,
+                call_ms: a.call_ms,
                 duration_ms: a.last.saturating_sub(first),
             },
         )
@@ -1084,10 +1096,15 @@ impl Run {
         )
     }
 
-    pub fn call_finished(&mut self, now: u64, token: &str) {
+    pub fn call_finished(&mut self, now: u64, token: &str, tool: &str) {
         if let Some(a) = self.activity.get_mut(token) {
             a.in_call = a.in_call.saturating_sub(1);
             a.last = now;
+
+            if let Some(i) = a.open.iter().rposition(|(t, _)| t == tool) {
+                let (_, began) = a.open.remove(i);
+                *a.call_ms.entry(tool.to_string()).or_default() += now.saturating_sub(began);
+            }
         }
     }
 

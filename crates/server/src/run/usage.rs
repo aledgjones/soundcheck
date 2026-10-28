@@ -9,6 +9,7 @@ pub struct AttemptUsage {
     pub tokens: Option<u64>,
     pub spent: Option<Spent>,
     pub calls: BTreeMap<String, u32>,
+    pub call_ms: BTreeMap<String, u64>,
     pub duration_ms: Option<u64>,
 }
 
@@ -38,10 +39,12 @@ pub fn attempts(entries: &[Entry]) -> Vec<AttemptUsage> {
             Event::Usage {
                 token,
                 calls,
+                call_ms,
                 duration_ms,
             } => {
                 let a = by_token.entry(token.clone()).or_default();
                 a.calls = calls.clone();
+                a.call_ms = call_ms.clone();
                 a.duration_ms = Some(*duration_ms);
             }
             Event::Tokens {

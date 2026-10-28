@@ -1381,6 +1381,53 @@ async fn the_stop_hook_holds_only_a_stalled_coordinator() {
 }
 
 #[tokio::test]
+async fn a_coordinator_mid_turn_hears_when_a_row_could_start() {
+    let (server, url) = server().await;
+    let port = server.addr.port();
+    let client = client(&url).await;
+    let after = |session: &str| {
+        let input =
+            json!({ "session_id": session, "tool_name": "Bash", "tool_input": {} }).to_string();
+        async move {
+            soundcheck::plugin_hooks::post_tool_use(&input, port)
+                .await
+                .unwrap()
+        }
+    };
+    assert_eq!(after("coordinator-1").await, None, "not a coordinator yet");
+
+    let dispatched: Value = reqwest::Client::new()
+        .post(format!("{url}/dispatch"))
+        .json(&json!({ "prompt": "next", "session": "coordinator-1" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after("coordinator-1").await, None, "a tester is running");
+
+    pass_draw(&client, dispatched["token"].as_str().unwrap()).await;
+    let nudge: Value = serde_json::from_str(&after("coordinator-1").await.unwrap()).unwrap();
+    let text = nudge["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.contains(&format!("{DRAW} on ios could start now")),
+        "{text}"
+    );
+    assert_eq!(after("someone-else").await, None, "only the coordinator");
+
+    call(&client, "pause", json!({ "reason": "a fix first" })).await;
+    assert_eq!(after("coordinator-1").await, None, "a paused run waits");
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+    server.handle.await.unwrap();
+    assert_eq!(after("coordinator-1").await, None, "no run up");
+}
+
+#[tokio::test]
 async fn a_new_session_hears_where_the_run_stands() {
     let (server, _, dir) = server_in().await;
     let port = server.addr.port();

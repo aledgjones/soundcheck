@@ -187,6 +187,9 @@ pub enum Event {
     Usage {
         token: String,
         calls: BTreeMap<String, u32>,
+        /// Time inside each tool's calls; absent from runs before it was kept.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        call_ms: BTreeMap<String, u64>,
         /// From its first call to its last.
         duration_ms: u64,
     },

@@ -206,6 +206,7 @@ pub fn summary(entry: &Entry) -> String {
             token,
             calls,
             duration_ms,
+            ..
         } => format!(
             "{token} used {} calls in {}s",
             calls.values().sum::<u32>(),

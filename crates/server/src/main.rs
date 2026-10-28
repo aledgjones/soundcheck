@@ -89,7 +89,7 @@ enum Command {
     /// The plugin's hooks, which Claude Code runs with the hook's input on stdin.
     #[command(hide = true)]
     Hook {
-        #[arg(value_parser = ["subagent-stop", "stop", "session-start", "pre-tool-use"])]
+        #[arg(value_parser = ["subagent-stop", "stop", "session-start", "pre-tool-use", "post-tool-use"])]
         event: String,
         #[arg(long, default_value_t = 7357)]
         port: u16,
@@ -890,6 +890,7 @@ fn hook_command(event: &str, port: u16) -> ExitCode {
                     "subagent-stop" => tester_usage::subagent_stop(&stdin, port).await,
                     "stop" => plugin_hooks::stop(&stdin, port).await,
                     "session-start" => plugin_hooks::session_start(port).await,
+                    "post-tool-use" => plugin_hooks::post_tool_use(&stdin, port).await,
                     _ => plugin_hooks::pre_tool_use(&stdin, port).await,
                 }
             })
@@ -955,6 +956,58 @@ fn print_usage(attempts: &[soundcheck::run::usage::AttemptUsage]) {
         calls / n,
         duration(Some(ms / n))
     );
+    print_tool_times(attempts);
+}
+
+/// Each tool's calls and average time per platform, from attempts that kept their call times.
+fn print_tool_times(attempts: &[soundcheck::run::usage::AttemptUsage]) {
+    use std::collections::BTreeMap;
+
+    let mut by_tool: BTreeMap<&str, BTreeMap<&str, (u64, u64)>> = BTreeMap::new();
+    for a in attempts {
+        let platform = a.token.rsplit_once('@').map_or("?", |(_, p)| p);
+        for (tool, ms) in &a.call_ms {
+            let calls = a.calls.get(tool).copied().unwrap_or(0);
+            let entry = by_tool
+                .entry(tool)
+                .or_default()
+                .entry(platform)
+                .or_default();
+            entry.0 += u64::from(calls);
+            entry.1 += ms;
+        }
+    }
+    if by_tool.is_empty() {
+        return;
+    }
+
+    let mut platforms: Vec<&str> = by_tool.values().flat_map(|p| p.keys().copied()).collect();
+    platforms.sort();
+    platforms.dedup();
+    let mut tools: Vec<_> = by_tool.into_iter().collect();
+    tools.sort_by_key(|(_, p)| std::cmp::Reverse(p.values().map(|(_, ms)| ms).sum::<u64>()));
+
+    println!();
+    print!("{:14}", "tool");
+    for p in &platforms {
+        print!("  {:>22}", format!("{p} calls · avg · total"));
+    }
+    println!();
+    for (tool, per) in tools {
+        print!("{tool:14}");
+        for p in &platforms {
+            let cell = match per.get(p) {
+                Some(&(calls, ms)) if calls > 0 => format!(
+                    "{calls} · {:.1}s · {}",
+                    ms as f64 / calls as f64 / 1000.0,
+                    duration(Some(ms))
+                ),
+                _ => "-".into(),
+            };
+            print!("  {cell:>22}");
+        }
+        println!();
+    }
 }
 
 /// `before` and `after` paired by spec and platform, each side's last attempt; a row in only one run is left out.
@@ -1070,6 +1123,7 @@ fn import_usage(run_dir: &Path, tsv: &Path) -> Result<()> {
         events.push(Event::Usage {
             token: token.into(),
             calls: [("?".to_string(), parse(calls)? as u32)].into(),
+            call_ms: Default::default(),
             duration_ms: parse(duration_ms)?,
         });
         events.push(Event::Tokens {
