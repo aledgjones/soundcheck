@@ -24,14 +24,13 @@ struct Hold {
 
 @MainActor
 final class Reader {
-  // AXe's legacy public schema; Xcode 27 returns an empty tree when `.traits` is requested, so it's added afterwards.
-  static let outputKeys: Set<FBAXKeys> = [
+  // AXe's legacy public schema. Xcode 27.0 returned an empty tree when `.traits` was requested; 27.1 doesn't.
+  static let requestKeys: Set<FBAXKeys> = [
     .label, .frame, .value, .uniqueID, .type, .title, .frameDict, .help, .enabled, .customActions, .role,
     .roleDescription, .subrole, .contentRequired, .pid, .traits,
   ]
-  static let requestKeys = outputKeys.subtracting([.traits])
-  // What ui.mjs reads; fewer keys means fewer round trips per element.
-  static let leanKeys: Set<FBAXKeys> = [.label, .value, .uniqueID, .frame, .frameDict, .type, .enabled]
+  // What `see` reads (traits carry selected); fewer keys means fewer round trips per element.
+  static let leanKeys: Set<FBAXKeys> = [.label, .value, .uniqueID, .frame, .frameDict, .type, .enabled, .traits]
 
   let udid: String
   var simulator: FBSimulator?
@@ -86,7 +85,7 @@ final class Reader {
         with: FBAccessibilityRequestOptions(nestedFormat: true, keys: lean ? Reader.leanKeys : Reader.requestKeys)
       )
       latest = try JSONSerialization.data(
-        withJSONObject: Reader.withDefaults(response.elements), options: [.prettyPrinted]
+        withJSONObject: response.elements, options: [.prettyPrinted]
       )
       if Reader.hasDescendant(latest) {
         return latest
@@ -226,22 +225,6 @@ final class Reader {
     if !set(device, selector, enabled, 0, &error) {
       throw error ?? NSError(domain: "reader", code: 4, userInfo: [NSLocalizedDescriptionKey: "Switch refused"])
     }
-  }
-
-  static func withDefaults(_ info: Any) -> Any {
-    if let list = info as? [Any] {
-      return list.map(withDefaults)
-    }
-    guard var element = info as? [String: Any] else {
-      return info
-    }
-    for (key, value) in element {
-      element[key] = withDefaults(value)
-    }
-    if element["type"] != nil, element["traits"] == nil {
-      element["traits"] = [String]()
-    }
-    return element
   }
 
   static func hasDescendant(_ data: Data) -> Bool {
