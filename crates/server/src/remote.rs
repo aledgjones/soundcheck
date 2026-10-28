@@ -18,6 +18,8 @@ const PAGE_PATHS: &[&str] = &[
     "/icon-512.png",
 ];
 const PAGE_PREFIXES: &[&str] = &["/files/evidence/", "/runs"];
+/// Each run's page, `/{key}/`, and what it loads. RE2 has no lookahead, so `/mcp/` is shut out separately.
+const RUN_PAGE: &str = "^/[^/]+/(fragment|events|download|report[.]html|files/evidence/[^/]+)?$";
 
 /// A running tunnel; dropping it stops ngrok.
 pub struct Tunnel {
@@ -64,7 +66,7 @@ pub fn policy(allow: &[String], port: u16) -> Result<String> {
         config:
           status_code: 403
   - expressions:
-      - \"!(req.url.path in [{paths}]{prefixes})\"
+      - \"!(req.url.path in [{paths}]{prefixes} || (req.url.path.matches('{RUN_PAGE}') && !req.url.path.startsWith('/mcp/')))\"
     actions:
       - type: deny
         config:
@@ -151,9 +153,37 @@ mod tests {
             "/step-down",
         ] {
             assert!(
-                !policy.contains(&format!("'{control}")),
+                !policy.contains(&format!("'{control}'")),
                 "{control} gets through"
             );
+        }
+    }
+
+    #[test]
+    fn a_run_page_and_what_it_loads_get_through_but_no_control_does() {
+        let page = regex::Regex::new(RUN_PAGE).unwrap();
+        let allowed = |path: &str| page.is_match(path) && !path.starts_with("/mcp/");
+        for path in [
+            "/ec3b217c-c3f1-4ccd-a4b8-d230a33b8887/",
+            "/20261028-225328/fragment",
+            "/ec3b217c/events",
+            "/ec3b217c/download",
+            "/ec3b217c/report.html",
+            "/ec3b217c/files/evidence/help-002-ios-terms.webp",
+        ] {
+            assert!(allowed(path), "{path} is refused");
+        }
+        for path in [
+            "/mcp",
+            "/mcp/",
+            "/mcp/events",
+            "/next",
+            "/summary",
+            "/ready/ios",
+            "/ec3b217c/files/evidence/../x",
+            "/ec3b217c/reportxhtml",
+        ] {
+            assert!(!allowed(path), "{path} gets through");
         }
     }
 
