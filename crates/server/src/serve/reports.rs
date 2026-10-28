@@ -26,7 +26,21 @@ pub fn router(reports: Reports) -> axum::Router {
         .route("/runs/{name}/files/evidence/{file}", get(evidence))
         .route("/runs/{name}/report.html", get(exported))
         .route("/runs/{name}/download", get(download))
+        .route("/manifest.webmanifest", get(manifest))
+        .route("/icon-180.png", get(|| png(report::ICON_180)))
+        .route("/icon-512.png", get(|| png(report::ICON_512)))
         .with_state(Arc::new(reports))
+}
+
+async fn manifest() -> impl IntoResponse {
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        report::MANIFEST,
+    )
+}
+
+async fn png(bytes: &'static [u8]) -> impl IntoResponse {
+    ([(header::CONTENT_TYPE, "image/png")], bytes)
 }
 
 /// The runs in the folder, newest first, as (name, summary, link to its page if it has one).

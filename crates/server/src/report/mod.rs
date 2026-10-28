@@ -15,6 +15,11 @@ use std::path::Path;
 
 const CSS: &str = include_str!("report.css");
 const JS: &str = include_str!("report.js");
+pub const ICON_180: &[u8] = include_bytes!("icon-180.png");
+pub const ICON_512: &[u8] = include_bytes!("icon-512.png");
+/// No service worker: a live report shown stale while offline is worse than one that says it can't connect.
+pub const MANIFEST: &str = r##"{"name":"soundcheck","short_name":"soundcheck","start_url":"/","scope":"/","display":"standalone","background_color":"#f5f5f7","theme_color":"#f5f5f7","icons":[{"src":"/icon-180.png","sizes":"180x180","type":"image/png"},{"src":"/icon-512.png","sizes":"512x512","type":"image/png","purpose":"any maskable"}]}"##;
+const APP_HEAD: &str = r##"<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="soundcheck"><meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)"><meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">"##;
 /// A check waiting this long for the coordinator turns the bar amber.
 const CHECKING_WARN_MS: u64 = 5 * 60_000;
 /// No journal event for this long while specs remain turns the bar amber.
@@ -144,7 +149,7 @@ pub fn esc(s: &str) -> String {
 pub fn document(page: &Page) -> String {
     let seq = page.run.last_seq();
     format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><title>{} · soundcheck</title><style>{CSS}</style><script>try{{var t=localStorage.getItem(\"soundcheck-theme\");if(t===\"light\"||t===\"dark\")document.documentElement.dataset.theme=t}}catch(e){{}}</script></head><body><div id=\"live\" data-live=\"{}\" data-seq=\"{seq}\">{}</div><script>{JS}</script></body></html>\n",
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">{APP_HEAD}<title>{} · soundcheck</title><style>{CSS}</style><script>try{{var t=localStorage.getItem(\"soundcheck-theme\");if(t===\"light\"||t===\"dark\")document.documentElement.dataset.theme=t}}catch(e){{}}</script></head><body><div id=\"live\" data-live=\"{}\" data-seq=\"{seq}\">{}</div><script>{JS}</script></body></html>\n",
         esc(page.label),
         page.live && !page.run.state().finished,
         content(page),
@@ -1329,6 +1334,6 @@ pub fn index(runs: &[(String, serde_json::Value, Option<String>)], current: &str
         rows = "<p class=\"empty\">No runs yet.</p>".into();
     }
     format!(
-        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><title>Runs · soundcheck</title><style>{CSS}</style></head><body><div id=\"live\" data-live=\"false\"><main><header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>Runs</h1></div></header><section class=\"card runs\">{rows}</section></main></div><script>{JS}</script></body></html>\n"
+        "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1,viewport-fit=cover\">{APP_HEAD}<title>Runs · soundcheck</title><style>{CSS}</style></head><body><div id=\"live\" data-live=\"false\"><main><header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>Runs</h1></div></header><section class=\"card runs\">{rows}</section></main></div><script>{JS}</script></body></html>\n"
     )
 }
