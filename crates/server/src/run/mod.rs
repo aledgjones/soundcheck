@@ -242,6 +242,12 @@ impl Run {
         &self.plan
     }
 
+    /// The platforms the run has rows on.
+    pub fn platforms(&self) -> Vec<Platform> {
+        let on: BTreeSet<Platform> = self.state.rows.keys().map(|(_, p)| *p).collect();
+        on.into_iter().collect()
+    }
+
     pub fn state(&self) -> &State {
         &self.state
     }

@@ -192,6 +192,21 @@ pub struct Dispatched {
     pub prompt: String,
 }
 
+/// A dispatch's claim on a platform while it resets it; dropping it lets the next dispatch take the platform.
+pub struct Starting {
+    hub: Arc<Hub>,
+    platform: Platform,
+}
+
+impl Drop for Starting {
+    fn drop(&mut self) {
+        self.hub.starting().remove(&self.platform);
+    }
+}
+
+/// One platform's driver behind its own lock: empty until its first device call connects it.
+pub type DeviceSlot = Arc<tokio::sync::Mutex<Option<Driver<AnyDevice>>>>;
+
 /// What a session needs to know about the run: the SessionStart and Stop hooks read it.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Summary {
@@ -229,8 +244,9 @@ pub struct Hub {
     events: broadcast::Sender<Entry>,
     /// Platforms whose devices are left alone: specs on them seed but never touch a device (the server's own tests).
     pub without_devices: Vec<Platform>,
-    /// A driver per platform, connected on its first device call.
-    pub devices: tokio::sync::Mutex<std::collections::HashMap<Platform, Driver<AnyDevice>>>,
+    /// A driver per platform, connected on its first device call. Each has its own lock, so with platforms in parallel
+    /// one platform's long call (a `wait`, a restart) never holds up the other's.
+    pub devices: Mutex<std::collections::HashMap<Platform, DeviceSlot>>,
     pub stall_ms: u64,
     /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
     pub start_ms: u64,
@@ -242,6 +258,9 @@ pub struct Hub {
     last_restart: Mutex<std::collections::HashMap<Platform, u64>>,
     /// Platforms whose device is restarting, so their dispatches wait: platform → why.
     restarting: Mutex<std::collections::HashMap<Platform, String>>,
+    /// Platforms a dispatch is resetting for its attempt, before the run marks anything running there: another
+    /// dispatch meanwhile takes another platform, or, with platforms taking turns, none.
+    starting: Mutex<std::collections::HashSet<Platform>>,
     /// Each platform's current or just-ended wait for a busy host, until a dispatch journals it.
     waits: Mutex<std::collections::HashMap<Platform, Wait>>,
     /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
@@ -294,7 +313,7 @@ impl Hub {
             run_dir,
             run: Mutex::new(run),
             events,
-            devices: tokio::sync::Mutex::new(std::collections::HashMap::new()),
+            devices: Mutex::new(std::collections::HashMap::new()),
             without_devices: Vec::new(),
             stall_ms,
             start_ms: START_STALL_MS,
@@ -302,6 +321,7 @@ impl Hub {
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
             restarting: Mutex::new(std::collections::HashMap::new()),
+            starting: Mutex::new(std::collections::HashSet::new()),
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
@@ -608,11 +628,21 @@ impl Hub {
         if self.without_devices.contains(&platform) {
             anyhow::bail!("this server leaves {platform}'s device alone");
         }
-        let mut devices = self.devices.lock().await;
-        if let std::collections::hash_map::Entry::Vacant(slot) = devices.entry(platform) {
-            slot.insert(driver(platform, &self.suite(), self.headed).await?);
+        let slot = self
+            .devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(platform)
+            .or_default()
+            .clone();
+        let mut device = slot.lock().await;
+        if device.is_none() {
+            *device = Some(driver(platform, &self.suite(), self.headed).await?);
         }
-        Ok(op(&devices[&platform]).await?)
+        let Some(driver) = device.as_ref() else {
+            unreachable!("connected above");
+        };
+        Ok(op(driver).await?)
     }
 
     /// What every attempt, a spec's or a preparation's, starts from: online with no faults, whatever the last one
@@ -883,15 +913,32 @@ impl Hub {
             anyhow::bail!("no spec {spec} in the suite");
         }
 
-        // A platform with specs waiting is prepared before any of them; a named spec is refused until then.
-        if spec.is_none()
-            && let Some(prepare) = self.with_run(|run, _| Ok(run.next_prepare(platform)))?
-        {
-            if let Some(reason) = self.hold(prepare).await {
-                anyhow::bail!("{}", self.held(&[(prepare, reason)]));
-            }
+        // Two dispatches at once (platforms in parallel) mustn't reset the same platform: each claims one first.
+        let parallel = self.with_run(|run, _| Ok(run.plan().parallel))?;
+        if !parallel && !self.starting().is_empty() {
+            anyhow::bail!("another dispatch is starting its attempt; one spec at a time");
+        }
 
-            return self.start_prepare(prepare).await;
+        // A platform with specs waiting is prepared before any of them; a named spec is refused until then.
+        if spec.is_none() {
+            let platforms = self.with_run(|run, _| Ok(run.platforms()))?;
+            for p in platforms
+                .into_iter()
+                .filter(|p| platform.is_none_or(|w| w == *p))
+            {
+                if self.with_run(|run, _| Ok(run.next_prepare(Some(p))))? != Some(p) {
+                    continue;
+                }
+
+                let Some(_claim) = self.claim(p) else {
+                    continue;
+                };
+                if let Some(reason) = self.hold(p).await {
+                    anyhow::bail!("{}", self.held(&[(p, reason)]));
+                }
+
+                return self.start_prepare(p).await;
+            }
         }
 
         let (spec, platform) = match (spec, platform) {
@@ -907,8 +954,25 @@ impl Hub {
             }
             _ => self.pick(spec, platform).await?,
         };
+        let Some(_claim) = self.claim(platform) else {
+            anyhow::bail!(
+                "{platform} is starting another attempt; dispatch again for the next one"
+            );
+        };
 
         self.start_attempt(&spec, platform).await
+    }
+
+    fn starting(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
+        self.starting.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Claims `platform` for a dispatch's reset, or None when another dispatch has it; released when dropped.
+    fn claim(self: &Arc<Self>, platform: Platform) -> Option<Starting> {
+        self.starting().insert(platform).then(|| Starting {
+            hub: self.clone(),
+            platform,
+        })
     }
 
     /// The row `dispatch` would start next, asking each platform whether it's held at most once.
@@ -918,9 +982,10 @@ impl Hub {
         platform: Option<Platform>,
     ) -> Result<(String, Platform)> {
         let rows = self.with_run(|run, _| run.next_rows(spec, platform))?;
+        let starting = self.starting().clone();
         let mut held: Vec<(Platform, String)> = Vec::new();
         for (spec, platform) in rows {
-            if held.iter().any(|(p, _)| *p == platform) {
+            if held.iter().any(|(p, _)| *p == platform) || starting.contains(&platform) {
                 continue;
             }
 

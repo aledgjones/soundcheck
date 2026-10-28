@@ -60,8 +60,8 @@ async fn summary(port: u16, session: Option<&str>) -> Result<Option<Summary>> {
     }
 }
 
-/// Blocks the coordinator from stopping while the run has stalled: nothing is running or waiting for review, yet a
-/// row could be dispatched. Only a session that has started testers is held, and only once per stop.
+/// Blocks the coordinator from stopping while a row could be dispatched and nothing waits for review: nothing running,
+/// or with platforms in parallel, a platform left idle. Only a session that has started testers is held, and only once per stop.
 pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
     let input: StopInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
 
@@ -72,7 +72,9 @@ pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
     let Some(s) = summary(port, Some(&input.session_id)).await? else {
         return Ok(None);
     };
-    let busy = !s.running.is_empty() || !s.review.is_empty() || s.side_finds > 0;
+    // A running tester doesn't make the session busy: with platforms in parallel, another may be free, and `/next`
+    // refuses when none is.
+    let busy = !s.review.is_empty() || s.side_finds > 0;
 
     if !s.coordinator || s.finished || s.paused || busy {
         return Ok(None);
@@ -92,7 +94,7 @@ pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
         json!({
             "decision": "block",
             "reason": format!(
-                "dispatch {} on {}: nothing is running, so start its tester now",
+                "dispatch {} on {}: it could start now and nothing has started it, so start its tester now",
                 next.spec, next.platform
             ),
         })
