@@ -95,6 +95,15 @@ pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
     ))
 }
 
+/// Whether the call is an Agent call that starts a tester.
+fn is_tester(input: &ToolInput) -> bool {
+    let agent = input.tool_input["subagent_type"]
+        .as_str()
+        .unwrap_or_default();
+
+    matches!(input.tool_name.as_str(), "Agent" | "Task") && TESTERS.contains(&agent)
+}
+
 /// The row a platform could start now, or None when every platform is busy or nothing is ready.
 async fn next_row(port: u16, timeout: Duration) -> Result<Option<Next>> {
     let response = reqwest::Client::new()
@@ -114,6 +123,11 @@ async fn next_row(port: u16, timeout: Duration) -> Result<Option<Next>> {
 /// never get here, as hooks.json matches only tools they don't have.
 pub async fn post_tool_use(stdin: &str, port: u16) -> Result<Option<String>> {
     let input: ToolInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
+
+    // A dispatch's own hook can run before a parallel dispatch in the same message has taken its platform.
+    if is_tester(&input) || input.tool_name == "mcp__plugin_soundcheck_soundcheck__dispatch" {
+        return Ok(None);
+    }
 
     let Some(s) = summary(port, Some(&input.session_id)).await? else {
         return Ok(None);
@@ -192,11 +206,8 @@ pub async fn session_start(port: u16) -> Result<Option<String>> {
 /// the call with the server's reason.
 pub async fn pre_tool_use(stdin: &str, port: u16) -> Result<Option<String>> {
     let input: ToolInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
-    let agent = input.tool_input["subagent_type"]
-        .as_str()
-        .unwrap_or_default();
 
-    if !matches!(input.tool_name.as_str(), "Agent" | "Task") || !TESTERS.contains(&agent) {
+    if !is_tester(&input) {
         return Ok(None);
     }
 

@@ -1408,6 +1408,19 @@ async fn a_coordinator_mid_turn_hears_when_a_row_could_start() {
     assert_eq!(after("coordinator-1").await, None, "a tester is running");
 
     pass_draw(&client, dispatched["token"].as_str().unwrap()).await;
+    let parallel_dispatch = json!({
+        "session_id": "coordinator-1",
+        "tool_name": "Agent",
+        "tool_input": { "subagent_type": "soundcheck:soundcheck-tester", "prompt": "next" },
+    })
+    .to_string();
+    assert_eq!(
+        soundcheck::plugin_hooks::post_tool_use(&parallel_dispatch, port)
+            .await
+            .unwrap(),
+        None,
+        "a dispatch may have a parallel one the server hasn't seen yet"
+    );
     let nudge: Value = serde_json::from_str(&after("coordinator-1").await.unwrap()).unwrap();
     let text = nudge["hookSpecificOutput"]["additionalContext"]
         .as_str()

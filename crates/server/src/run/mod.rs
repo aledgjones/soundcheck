@@ -508,7 +508,12 @@ impl Run {
         match self.prep(platform) {
             Prep::Done => {}
             Prep::Failed { reason } => bail!("{platform} couldn't be prepared: {reason}"),
-            _ => bail!("{platform} isn't prepared yet: dispatch the next row, which prepares it"),
+            Prep::Running { .. } => {
+                bail!("{platform} is being prepared: wait for its tester's reply, then dispatch")
+            }
+            Prep::Waiting { .. } => {
+                bail!("{platform} isn't prepared yet: dispatch the next row, which prepares it")
+            }
         }
         let attempt = record.attempts + 1;
         if let Some(why) = self.busy(platform) {
@@ -584,7 +589,7 @@ impl Run {
                 .filter(|p| !waiting.contains(p))
                 .map(|p| p.to_string())
                 .collect();
-            if done.is_empty() {
+            if done.is_empty() || platform.is_some() {
                 return Err(busy);
             }
 

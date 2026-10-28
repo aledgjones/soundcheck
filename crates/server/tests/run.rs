@@ -1694,6 +1694,23 @@ fn the_next_rows_are_queued_ones_first_then_untested_in_spec_order() {
     );
 }
 
+#[test]
+fn a_dispatch_for_one_platform_speaks_only_of_that_platform() {
+    let path = journal("narrowed-refusal");
+    let plan = Plan {
+        prepare: true,
+        ..plan(true)
+    };
+    let mut run = Run::open(plan, &path, 0).unwrap();
+    let android = prepare(&mut run, 1, Android);
+    run.prepared(2, &android).unwrap();
+    pass(&mut run, 3, DRAW, Android);
+    pass(&mut run, 10, BACK, Android);
+    prepare(&mut run, 20, Ios);
+    let err = run.next_rows(None, Some(Ios)).unwrap_err().to_string();
+    assert!(err.starts_with("ios is being prepared"), "{err}");
+}
+
 fn prepared(name: &str) -> (Run, PathBuf) {
     let path = journal(name);
     let plan = Plan {
@@ -1715,6 +1732,11 @@ fn a_platforms_specs_wait_until_it_is_prepared() {
     let refused = run.check_dispatch(BACK, Android).unwrap_err();
     assert!(refused.to_string().contains("isn't prepared yet"));
     let token = prepare(&mut run, 1, Android);
+    let refused = run.check_dispatch(BACK, Android).unwrap_err();
+    assert!(
+        refused.to_string().contains("is being prepared: wait"),
+        "{refused}"
+    );
     assert_eq!(run.running(&token).unwrap(), (PREPARE.to_string(), Android));
     assert_eq!(run.brief(&token).unwrap(), "steps");
     assert!(run.check_dispatch(DRAW, Ios).is_err(), "one at a time");
