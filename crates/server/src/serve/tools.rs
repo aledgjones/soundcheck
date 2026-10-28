@@ -1441,14 +1441,18 @@ impl Tools {
         Parameters(p): Parameters<CheckDataParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let checked = self.hub.with_run(|run, now| {
-            run.running(&p.token)?;
+            let (_, platform) = run.running(&p.token)?;
             run.call_started(now, &p.token, "act");
-            Ok(())
+            Ok(platform)
         });
-        if let Err(e) = checked {
-            return reply(Err(e));
-        }
-        let result = self.hub.project_hook("act", &p.name, &p.args).await;
+        let result = match checked {
+            Ok(platform) => {
+                self.hub
+                    .project_hook("act", platform, &p.name, &p.args)
+                    .await
+            }
+            Err(e) => return reply(Err(e)),
+        };
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, &p.token);
             Ok(())
@@ -1464,14 +1468,18 @@ impl Tools {
         Parameters(p): Parameters<CheckDataParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let checked = self.hub.with_run(|run, now| {
-            run.running(&p.token)?;
+            let (_, platform) = run.running(&p.token)?;
             run.call_started(now, &p.token, "check_data");
-            Ok(())
+            Ok(platform)
         });
-        if let Err(e) = checked {
-            return reply(Err(e));
-        }
-        let result = self.hub.project_hook("check", &p.name, &p.args).await;
+        let result = match checked {
+            Ok(platform) => {
+                self.hub
+                    .project_hook("check", platform, &p.name, &p.args)
+                    .await
+            }
+            Err(e) => return reply(Err(e)),
+        };
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, &p.token);
             Ok(())

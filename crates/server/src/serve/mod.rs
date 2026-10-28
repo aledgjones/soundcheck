@@ -113,20 +113,20 @@ pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<D
         headed,
     )
     .await?;
-    let routes = config.and_then(crate::network::routes);
+    let routes = config.and_then(|c| crate::network::routes(c, platform));
     let (device, network) = match (device, routes) {
         (device @ AnyDevice::Web(_), _) | (device, None) => (device, None),
         (AnyDevice::Android(android), Some(routes)) => {
-            let network = crate::network::ensure(&suite.root, &routes).await?;
-            let ports: Vec<u16> = routes.iter().map(|r| r.listen).collect();
+            let network = crate::network::ensure(&suite.root, platform, &routes).await?;
+            let forwards = config.map_or_else(Vec::new, |c| crate::network::forwards(c, platform));
             (
-                AnyDevice::Android(android.forward(&ports).await?),
+                AnyDevice::Android(android.forward(&forwards).await?),
                 Some(network),
             )
         }
         (device, Some(routes)) => (
             device,
-            Some(crate::network::ensure(&suite.root, &routes).await?),
+            Some(crate::network::ensure(&suite.root, platform, &routes).await?),
         ),
     };
     Ok(Driver::new(device).with_network(network))
@@ -628,12 +628,16 @@ impl Hub {
         for _ in 0..3 {
             let attempt = async {
                 // Every spec starts online with no faults, whatever the last one left; first, since the seed may go through it.
-                if let Some(routes) = crate::network::routes(config).filter(|_| {
+                if let Some(routes) = crate::network::routes(config, platform).filter(|_| {
                     platform != Platform::Web && !self.without_devices.contains(&platform)
                 }) {
-                    crate::network::ensure(root, &routes).await?.reset().await?;
+                    crate::network::ensure(root, platform, &routes)
+                        .await?
+                        .reset()
+                        .await?;
                 }
-                hooks::run(root, &config.hooks.guard, hooks::GUARD_TIMEOUT)
+                let guard = hooks::fill(&config.hooks.guard, "", &platform.to_string());
+                hooks::run(root, &guard, hooks::GUARD_TIMEOUT)
                     .await
                     .context("the guard refused")?;
                 let seed = hooks::fill(&config.hooks.seed, &spec.front.seed, &platform.to_string());
@@ -1048,9 +1052,15 @@ impl Hub {
         suite.root.join(dir.unwrap_or_else(|| "fixtures".into()))
     }
 
-    /// Runs the project's check or act hook: `<hook> <name> <args...>`, each quoted for the shell. A failing call
-    /// is still evidence, so its exit and output come back rather than an error.
-    pub async fn project_hook(&self, kind: &str, name: &str, args: &[String]) -> Result<String> {
+    /// Runs the project's check or act hook for the tester's platform: `<hook> <name> <args...>`, each quoted for the
+    /// shell. A failing call is still evidence, so its exit and output come back rather than an error.
+    pub async fn project_hook(
+        &self,
+        kind: &str,
+        platform: Platform,
+        name: &str,
+        args: &[String],
+    ) -> Result<String> {
         let suite = self.suite();
         let config = suite
             .config
@@ -1068,6 +1078,7 @@ impl Hub {
             .chain(args.iter().map(String::as_str))
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
+        let hook = hooks::fill(hook, "", &platform.to_string());
         let command = format!("{hook} {}", quoted.join(" "));
         match hooks::run(&suite.root, &command, hooks::SEED_TIMEOUT).await {
             Ok(out) => Ok(out),

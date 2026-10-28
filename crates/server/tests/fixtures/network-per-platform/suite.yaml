@@ -1,0 +1,20 @@
+soundcheck: "0.2"
+platforms:
+  android:
+    app-id: com.example.app
+  ios:
+    app-id: com.example.app
+hooks:
+  guard: "true"
+  seed: "true # {scenario}"
+  build-identity: "true"
+  stack-up: "true"
+seeds: [empty]
+parallel: true
+network:
+  proxy:
+    android:
+      - { name: api, listen: 33000, device: 23000, upstream: 42000 }
+      - { name: bucket, listen: 23000, upstream: 42333 }
+    web:
+      - { name: api, listen: 33000, device: 24000, upstream: 41000 }

@@ -7,6 +7,7 @@ pub mod remote;
 pub mod report;
 pub mod run;
 pub mod serve;
+pub mod stack;
 pub mod suite;
 pub mod tester_usage;
 

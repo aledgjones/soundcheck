@@ -7,6 +7,7 @@ use soundcheck::{VERSION, lint, serve, suite};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use tokio::signal::unix::{SignalKind, signal};
 
 #[derive(Parser)]
 #[command(name = "soundcheck", version, about)]
@@ -93,6 +94,15 @@ enum Command {
         #[arg(long, default_value_t = 7357)]
         port: u16,
     },
+    /// Each platform's scratch backend (suite.yaml `hooks.stack-up`): a run starts and removes them; `down` removes
+    /// any a server left, and refuses while a run's server is up.
+    Stack {
+        #[arg(value_parser = ["status", "down"])]
+        action: String,
+        /// The suite folder (default: the current folder).
+        #[arg(long, default_value = ".")]
+        suite: PathBuf,
+    },
     /// The suite's network proxy (suite.yaml `network`): runs and drive commands start it when it isn't up.
     Proxy {
         #[arg(value_parser = ["serve", "status", "stop"])]
@@ -100,6 +110,9 @@ enum Command {
         /// The suite folder (default: the current folder).
         #[arg(long, default_value = ".")]
         suite: PathBuf,
+        /// The platform whose proxy it is, when each has its own (needed for `serve`; others act on every one).
+        #[arg(long)]
+        platform: Option<Platform>,
     },
 }
 
@@ -154,10 +167,15 @@ fn main() -> ExitCode {
             platform,
             wait,
         } => ready_command(&run, platform, wait),
-        Command::Proxy { action, suite } => tokio::runtime::Runtime::new()
+        Command::Proxy {
+            action,
+            suite,
+            platform,
+        } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
-            .and_then(|rt| rt.block_on(proxy_command(&action, &suite)))
+            .and_then(|rt| rt.block_on(proxy_command(&action, &suite, platform)))
             .map(|out| println!("{out}")),
+        Command::Stack { action, suite } => stack_command(&action, &suite),
         Command::Hook { event, port } => return hook_command(&event, port),
         Command::Mcp { port } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
@@ -241,17 +259,6 @@ fn run_command(args: RunArgs) -> Result<()> {
     }
     let config = suite.config.as_ref().context("suite.yaml")?;
     let remote = remote_allow(remote, config)?;
-    let guard = std::process::Command::new("sh")
-        .args(["-c", &config.hooks.guard])
-        .current_dir(root)
-        .output()
-        .context("running the guard hook")?;
-    if !guard.status.success() {
-        bail!(
-            "the guard hook refused: {}",
-            String::from_utf8_lossy(&guard.stderr).trim()
-        );
-    }
     // Preflight: every check passes before anything runs, or the run refuses with the reason.
     let mut checks = Vec::new();
     if let Some(note) = take_port(port)? {
@@ -261,15 +268,8 @@ fn run_command(args: RunArgs) -> Result<()> {
         &mut checks,
         format!("the suite lints clean ({} specs)", suite.specs.len()),
     );
-    let said = String::from_utf8_lossy(&guard.stdout).trim().to_string();
-    pass(
-        &mut checks,
-        if said.is_empty() {
-            "the guard passed".into()
-        } else {
-            format!("the guard passed: {said}")
-        },
-    );
+    // The stacks and the guard run inside the runtime, after `suite` has moved into it.
+    let stack_config = config.clone();
     // A resumed run keeps how it was started, unless told otherwise.
     let saved = resume
         .as_deref()
@@ -398,6 +398,55 @@ fn run_command(args: RunArgs) -> Result<()> {
     let root_dir = root.to_path_buf();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
+        // Each platform's blank backend, removed when this block ends, however it ends. Declared first, so it's
+        // removed last, after the server has stopped.
+        let mut _stacks = Vec::new();
+        // Caught from the start rather than left to kill the process, so the stacks come down even mid-preflight
+        // (a build takes many minutes).
+        let mut terminate = signal(SignalKind::terminate())?;
+        let mut hangup = signal(SignalKind::hangup())?;
+        let preflight = async {
+        let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
+        let starting = soundcheck::stack::Live::Wait(platforms.clone());
+        for note in soundcheck::stack::reap(&records, starting).await? {
+            pass(&mut checks, note);
+        }
+        for &platform in &platforms {
+            let started = std::time::Instant::now();
+            if let Some(stack) = soundcheck::stack::up(&root_dir, &stack_config, platform).await? {
+                _stacks.push(stack);
+                pass(
+                    &mut checks,
+                    format!(
+                        "{platform}: a blank stack is up ({} s)",
+                        started.elapsed().as_secs()
+                    ),
+                );
+            }
+        }
+        // Once per platform when the guard takes one (each its own stack), else once.
+        let guard = &stack_config.hooks.guard;
+        let per_platform = guard.contains("{platform}");
+        for &platform in platforms.iter().take(if per_platform { usize::MAX } else { 1 }) {
+            let command = serve::hooks::fill(guard, "", &platform.to_string());
+            let said = serve::hooks::run(&root_dir, &command, serve::hooks::GUARD_TIMEOUT)
+                .await
+                .context("the guard hook refused")?;
+            let said = said.trim();
+            let whose = if per_platform {
+                format!("{platform}: the guard passed")
+            } else {
+                "the guard passed".into()
+            };
+            pass(
+                &mut checks,
+                if said.is_empty() {
+                    whose
+                } else {
+                    format!("{whose}: {said}")
+                },
+            );
+        }
         // The web app under test, if the suite starts one: it runs as long as the run does.
         let _web_app = match config_web_start {
             Some((start, base_url)) if platforms.contains(&Platform::Web) => {
@@ -509,7 +558,21 @@ fn run_command(args: RunArgs) -> Result<()> {
             });
         }
         hub.with_run(|run, now| run.preflight(now, checks.clone()))?;
-        let server = serve::start(hub, port).await?;
+        anyhow::Ok((serve::start(hub, port).await?, _web_app))
+        };
+        // Whatever preflight started is dropped with it, the stacks after, as on any other way out.
+        let (server, _web_app) = tokio::select! {
+            ready = preflight => ready?,
+            stopped = tokio::signal::ctrl_c() => {
+                stopped?;
+                return Ok(());
+            }
+            _ = terminate.recv() => {
+                let _ = writeln!(std::io::stderr(), "stopped (SIGTERM) before the run started");
+                return Ok(());
+            }
+            _ = hangup.recv() => return Ok(()),
+        };
         let url = format!("http://{}", server.addr);
         let info = serde_json::json!({
             "url": url,
@@ -528,8 +591,12 @@ fn run_command(args: RunArgs) -> Result<()> {
                 .arg(format!("{url}/"))
                 .spawn();
         }
+        // Nothing is printed after a hangup: the terminal is gone, and a failed print would panic before the stacks
+        // come down.
         tokio::select! {
             stopped = tokio::signal::ctrl_c() => stopped?,
+            _ = terminate.recv() => println!("stopped (SIGTERM)"),
+            _ = hangup.recv() => {}
             _ = server.shutdown.cancelled() => println!("stepped down for a new run on the port"),
         }
         server.shutdown.cancel();
@@ -612,6 +679,11 @@ fn serve_command(
     };
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
+        let records = soundcheck::stack::records_dir(root, config);
+        match soundcheck::stack::reap(&records, soundcheck::stack::Live::Skip).await {
+            Ok(removed) => removed.iter().for_each(|note| println!("{note}")),
+            Err(why) => eprintln!("soundcheck: {why:#}"),
+        }
         let server = serve::start_reports(dir.clone(), port).await?;
         let url = format!("http://{}{path}", server.addr);
         println!(
@@ -628,6 +700,45 @@ fn serve_command(
         }
         server.shutdown.cancel();
         let _ = server.handle.await;
+        Ok(())
+    })
+}
+
+fn stack_command(action: &str, root: &Path) -> Result<()> {
+    let suite = suite::load(root);
+    let config = suite.config.as_ref().context("no suite.yaml")?;
+    let Some(down) = &config.hooks.stack_down else {
+        bail!("suite.yaml has no stack hooks");
+    };
+    let records = soundcheck::stack::records_dir(root, config);
+    if action == "status" {
+        let found = soundcheck::stack::records(&records);
+        if found.is_empty() {
+            println!("no stacks: none started by a server is still recorded");
+        }
+        for (_, record) in found {
+            let owner = if record.owner_alive() {
+                "running"
+            } else {
+                "gone, so the next run or `soundcheck stack down` removes it"
+            };
+            println!(
+                "{}: started by soundcheck pid {} ({owner})",
+                record.platform, record.pid
+            );
+        }
+        return Ok(());
+    }
+    tokio::runtime::Runtime::new()?.block_on(async {
+        for note in soundcheck::stack::reap(&records, soundcheck::stack::Live::Refuse).await? {
+            println!("{note}");
+        }
+        // Without a record too: a stack started by hand, or one whose record was lost, still goes.
+        for platform in config.platforms.keys() {
+            let command = serve::hooks::fill(down, "", &platform.to_string());
+            serve::hooks::run(root, &command, soundcheck::stack::DOWN_TIMEOUT).await?;
+            println!("{platform}: no stack left");
+        }
         Ok(())
     })
 }
@@ -1012,26 +1123,48 @@ fn pass(checks: &mut Vec<String>, check: String) {
     checks.push(check);
 }
 
-async fn proxy_command(action: &str, root: &Path) -> Result<String> {
+async fn proxy_command(action: &str, root: &Path, platform: Option<Platform>) -> Result<String> {
+    use soundcheck::suite::config::Proxy;
     use soundcheck_driver::proxy;
     let loaded = suite::load(root);
     let config = loaded.config.as_ref().context("no suite.yaml")?;
-    let routes =
-        soundcheck::network::routes(config).context("suite.yaml has no network section")?;
-    let socket = proxy::socket_path(&routes);
-    match action {
-        "serve" => {
-            if proxy::command(&socket, "status").await.is_ok() {
-                bail!("the proxy is already running ({})", socket.display());
-            }
-            proxy::serve(&routes, &socket).await?;
-            Ok("stopped".into())
+    let network = config
+        .network
+        .as_ref()
+        .context("suite.yaml has no network section")?;
+    // A shared proxy is the same one whichever platform asks.
+    let platforms: Vec<Platform> = match (&network.proxy, platform) {
+        (_, Some(p)) => vec![p],
+        (Proxy::Shared(_), None) => vec![Platform::Ios],
+        (Proxy::PerPlatform(_), None) if action == "serve" => {
+            bail!("each platform has its own proxy: pass --platform")
         }
-        "status" => Ok(proxy::command(&socket, "status")
-            .await
-            .unwrap_or_else(|_| "not running".into())),
-        _ => Ok(proxy::command(&socket, "stop")
-            .await
-            .unwrap_or_else(|_| "not running".into())),
+        (Proxy::PerPlatform(by), None) => by.keys().copied().collect(),
+    };
+    let mut said = Vec::new();
+    for p in platforms {
+        let routes = soundcheck::network::routes(config, p)
+            .with_context(|| format!("suite.yaml's network has no routes for {p}"))?;
+        let socket = proxy::socket_path(&routes);
+        let answer = match action {
+            "serve" => {
+                if proxy::command(&socket, "status").await.is_ok() {
+                    bail!("the proxy is already running ({})", socket.display());
+                }
+                proxy::serve(&routes, &socket).await?;
+                "stopped".to_string()
+            }
+            "status" => proxy::command(&socket, "status")
+                .await
+                .unwrap_or_else(|_| "not running".into()),
+            _ => proxy::command(&socket, "stop")
+                .await
+                .unwrap_or_else(|_| "not running".into()),
+        };
+        said.push(match &network.proxy {
+            Proxy::Shared(_) => answer,
+            Proxy::PerPlatform(_) => format!("{p}: {answer}"),
+        });
     }
+    Ok(said.join("\n"))
 }

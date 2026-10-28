@@ -151,7 +151,7 @@ async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline()
         async move { proxy::serve(&routes, &socket).await }
     });
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let _android = android.forward(&[18999]).await.unwrap();
+    let _android = android.forward(&[(18999, 18999)]).await.unwrap();
     assert!(adb(&["reverse", "--list"]).contains("tcp:18999 tcp:18999"));
     assert_eq!(echo_from_device(), "ping");
 

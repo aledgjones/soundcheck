@@ -75,7 +75,57 @@ pub struct Remote {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Network {
-    pub proxy: Vec<ProxyRoute>,
+    pub proxy: Proxy,
+}
+
+/// One list of routes every platform shares, or a list per platform, so each platform's app reaches its own
+/// backend through its own proxy, and taking one platform offline leaves the others alone.
+#[derive(Debug, Clone)]
+pub enum Proxy {
+    Shared(Vec<ProxyRoute>),
+    PerPlatform(BTreeMap<Platform, Vec<ProxyRoute>>),
+}
+
+// By hand rather than untagged, which would hide a route's own error (a bad upstream) behind "no variant matched".
+impl<'de> Deserialize<'de> for Proxy {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Proxy, D::Error> {
+        use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+        struct Visit;
+        impl<'de> serde::de::Visitor<'de> for Visit {
+            type Value = Proxy;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a list of routes, or a list per platform")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, seq: A) -> Result<Proxy, A::Error> {
+                Deserialize::deserialize(SeqAccessDeserializer::new(seq)).map(Proxy::Shared)
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(self, map: A) -> Result<Proxy, A::Error> {
+                Deserialize::deserialize(MapAccessDeserializer::new(map)).map(Proxy::PerPlatform)
+            }
+        }
+        d.deserialize_any(Visit)
+    }
+}
+
+impl Proxy {
+    /// The routes `platform`'s app goes through: none for a platform a per-platform proxy doesn't list.
+    pub fn routes(&self, platform: Platform) -> &[ProxyRoute] {
+        match self {
+            Proxy::Shared(routes) => routes,
+            Proxy::PerPlatform(by) => by.get(&platform).map_or(&[], Vec::as_slice),
+        }
+    }
+
+    /// Every route, with the platform it belongs to (none when shared).
+    pub fn all(&self) -> Vec<(Option<Platform>, &ProxyRoute)> {
+        match self {
+            Proxy::Shared(routes) => routes.iter().map(|r| (None, r)).collect(),
+            Proxy::PerPlatform(by) => by
+                .iter()
+                .flat_map(|(p, routes)| routes.iter().map(move |r| (Some(*p), r)))
+                .collect(),
+        }
+    }
 }
 
 /// The app's test build reaches `listen`; `upstream` really serves it.
@@ -84,8 +134,17 @@ pub struct Network {
 pub struct ProxyRoute {
     pub name: String,
     pub listen: u16,
+    /// Android only: the port the app uses on the device, forwarded to `listen` on this machine (default: the same
+    /// port). It lets each platform's proxy listen on its own ports while every build uses the same ones.
+    pub device: Option<u16>,
     #[serde(deserialize_with = "upstream")]
     pub upstream: Upstream,
+}
+
+impl ProxyRoute {
+    pub fn device_port(&self) -> u16 {
+        self.device.unwrap_or(self.listen)
+    }
 }
 
 /// A port on this machine, or a remote service's URL.
@@ -142,6 +201,10 @@ pub struct Hooks {
     pub check: Option<String>,
     /// The other side acting while a tester watches (another user revokes access): `act {name} [args]`.
     pub act: Option<String>,
+    /// Starts a blank backend for one platform (`{platform}`) and returns once it answers. Runs at server start.
+    pub stack_up: Option<String>,
+    /// Removes that platform's backend with its data; must succeed when it's already gone.
+    pub stack_down: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

@@ -84,6 +84,11 @@ Shell commands, run from the folder holding suite.yaml, in any language. Exit 0 
 | `build-identity {platform}` | At run start and after each install; within 60 s | `{"commit": "...", "fingerprint": "...", "version": "..."}` |
 | `install {platform}`        | When the coordinator installs a build   | nothing                                                     |
 | `check {name} [args]`       | When a tester asks for a data check     | the data, as JSON                                           |
+| `stack-up {platform}`       | Optional, with `stack-down`: run start, before the guard | nothing; exit once the platform's blank backend answers |
+| `stack-down {platform}`     | When the run's server stops, or after one that died | nothing; exit 0 when there's nothing to remove too |
+
+- **`{platform}` works in every hook**, filled with the platform it's for. With a stack per platform, pass it to `guard`, `seed`, `check` and `act` so each acts on that platform's stack, and give `network.proxy` a list per platform (`ios:`, `android:`), each pointing at its own stack; an Android route's `device` is the port the build uses on the device, forwarded to `listen`.
+- **Stacks make platforms independent.** With `stack-up` and `stack-down`, each platform gets its own blank backend per run (containers on their own ports, under a project name per platform) and shares no account or data with the others. Make `up` start from nothing every time and `down` remove everything, data included, and give the containers no restart policy, so nothing comes back after a crash.
 
 - **The guard is the project's safety net.** Make it refuse unless everything points at the local stack, and never weaken it to make a run start.
 - **A seed sets up state, not the app.** It resets backend data, device state or both; soundcheck relaunches the app and checks the spec's `starts-on` labels itself. A seed that clears the app's own storage or reinstalls it signs it out, and every spec then fails at its start.

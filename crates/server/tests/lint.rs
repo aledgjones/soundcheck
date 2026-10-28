@@ -124,7 +124,7 @@ fn a_network_section_is_checked() {
         [
             "suite.yaml: network.proxy.echo: listen and upstream must differ",
             "suite.yaml: network.proxy.echo: port 23000 listed twice",
-            "suite.yaml: network: one proxy serves every platform, so platforms can't run in parallel",
+            "suite.yaml: network: one proxy serves every platform, so platforms can't run in parallel; give each its own",
         ]
     );
 }
@@ -140,5 +140,23 @@ fn a_proxy_upstream_url_is_checked() {
         report[0].starts_with("suite.yaml: network.proxy")
             && report[0].contains("\"https://api.example.com/v1\" has more than a host and port"),
         "{report:?}"
+    );
+}
+
+#[test]
+fn a_proxy_per_platform_is_checked() {
+    let report: Vec<String> = problems("network-per-platform")
+        .iter()
+        .map(|p| format!("{}: {}", p.path.display(), p.message))
+        .collect();
+    assert_eq!(
+        report,
+        [
+            "suite.yaml: network.proxy.android.bucket: device port 23000 listed twice",
+            "suite.yaml: network.proxy.web.api: port 33000 listed twice",
+            "suite.yaml: network.proxy.web.api: device is for Android's routes, which forward ports from the device",
+            "suite.yaml: network.proxy: ios has no routes, so its app can't reach anything",
+            "suite.yaml: hooks: stack-up and stack-down go together, so every stack started is removed",
+        ]
     );
 }

@@ -514,14 +514,13 @@ impl Android {
         Android { headed, ..self }
     }
 
-    /// Forwards each port to the same port on this machine, where the network proxy listens; health keeps them.
-    pub async fn forward(mut self, ports: &[u16]) -> Result<Android> {
-        for &port in ports {
-            self.adb(&["reverse", &format!("tcp:{port}"), &format!("tcp:{port}")])
+    /// Forwards each (device port, port on this machine), where the network proxy listens; health keeps them.
+    pub async fn forward(mut self, forwards: &[(u16, u16)]) -> Result<Android> {
+        for &(device, host) in forwards {
+            self.adb(&["reverse", &format!("tcp:{device}"), &format!("tcp:{host}")])
                 .await?;
-            self.forwards_at_connect
-                .retain(|&(device, _)| device != port);
-            self.forwards_at_connect.push((port, port));
+            self.forwards_at_connect.retain(|&(d, _)| d != device);
+            self.forwards_at_connect.push((device, host));
         }
         Ok(self)
     }
@@ -738,19 +737,27 @@ impl Device for Android {
 
     async fn health(&self) -> Result<Health> {
         let mut health = Health::default();
-        // A reboot drops the forwards, and the app then silently shows stale data: put them back at once.
-        let present: Vec<u16> = self.forwards().await?.into_iter().map(|(d, _)| d).collect();
-        for (device_port, host) in &self.forwards_at_connect {
-            if !present.contains(device_port) {
+        // A reboot drops the forwards, and a build script may aim one elsewhere (another platform's proxy); either
+        // way the app then silently talks to the wrong backend or none: put them back at once.
+        let present = self.forwards().await?;
+        for &(device_port, host) in &self.forwards_at_connect {
+            let now = present
+                .iter()
+                .find(|(d, _)| *d == device_port)
+                .map(|&(_, h)| h);
+            if now != Some(host) {
                 self.adb(&[
                     "reverse",
                     &format!("tcp:{device_port}"),
                     &format!("tcp:{host}"),
                 ])
                 .await?;
-                health
-                    .facts
-                    .push(format!("restored the lost forward for port {device_port}"));
+                health.facts.push(match now {
+                    None => format!("restored the lost forward for port {device_port}"),
+                    Some(other) => {
+                        format!("pointed port {device_port} back at {host} (it went to {other})")
+                    }
+                });
             }
         }
         let meminfo = self.shell("cat /proc/meminfo").await?;

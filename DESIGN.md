@@ -66,8 +66,9 @@ How they talk:
 
 1. **`soundcheck run <suite>`** (the coordinator starts it) runs a **preflight**: a fixed checklist, printed as each step passes, journalled for the timeline, and refusing to start at the first failure with what to fix. Deterministic on purpose: preparation is never an agent's judgement call.
    - lint the suite and check its pinned version;
-   - run the project's `guard` hook (the project decides what "safe and up" means, e.g. local only, backend answering);
    - take the port (SA-697);
+   - with stack hooks, remove any stack a stopped server left and start a blank one per platform (3.11);
+   - run the project's `guard` hook (the project decides what "safe and up" means, e.g. local only, backend answering);
    - connect every device before anything is built: one emulator on API 34 or newer, one booted simulator, Chrome (SA-705), so a device problem shows in seconds rather than after a build;
    - wait for a settled Mac (SA-699);
    - read each platform's build identity; build and install with the `install` hook where it's unknown (every platform with `--install`), and refuse if it's still unknown;
@@ -207,6 +208,16 @@ Nothing in a run may wait for a human:
 - **A coordinator that lasts hours:** all state lives in the server, so a compacted or restarted coordinator reconnects and carries on from the journal. The coordinator reads short evidence summaries and opens a screenshot only when the summary isn't enough, and never handles a tester's brief or a long hand-back (3.2), keeping its context small.
 - **Stop is pause.** When the person asks the coordinator to stop, the run pauses with everything in the journal; `resume` continues from the next spec. That covers "big bug: fix it, then carry on" with no special case.
 
+### 3.11 Scratch stacks
+
+A suite with `stack-up` and `stack-down` hooks (5.3) gives each platform its own backend, started blank by the run and removed when its server stops (SA-779, Aled 2026-10-28). Platforms then share no account, data or network, which is what lets them run in parallel: in the v2.17.0 run, one refresh-token reuse on iOS revoked the shared account and stopped Android's sync too. Every run starts blank, a resume too; the app signs in again as the run's first step, which tests sign-in as well. What a stack is (containers, ports) is the project's business; soundcheck owns when one starts and that it's always removed.
+
+- **A record per stack** (`<reports>/.stacks/<platform>.json`) names the server that owns it (its pid and start time, read in a fixed locale and time zone, so a reused pid isn't taken for it) and the command that removes it. It's written before the stack starts, so a server killed mid-start still leaves it to be removed.
+- **On the way out:** Ctrl-C, SIGTERM, SIGHUP (the terminal closed), a step-down for a new run, and a failed preflight all remove the stacks, after the server has stopped. Signals are caught from before the stacks start, so one during a long preflight (a build) removes them too. Removal gives up after 2 minutes (a hung Docker) and keeps the record for the next try. Not when the run finishes: triage reproduces problems on the stack.
+- **After a server that couldn't** (SIGKILL, a crash, the Mac restarting): the next `run` or `serve` removes every stack whose server is gone before anything else, and `soundcheck stack down` does it by hand (it also runs `stack-down` for every platform without a record). `soundcheck stack status` lists the records. A new run waits up to 2 minutes for a server stepping down (only on the platforms it starts; another server's other platforms are left to it), which frees the port before it removes its stacks; `stack down` refuses while a server is running, rather than pull the backend from under a run.
+- **The project's stack never restarts itself** (no restart policy, data in memory), so a Docker or Mac restart doesn't bring one back, and nothing outlives its removal.
+- **Known limits:** a `stack-up` that times out may leave Docker still starting the stack after its record is gone; the next `up` or `stack down` removes it. A backend that reaches its own services through the platform's proxy (Solo Scores' API signs and calls the bucket at one address) loses them too while a spec has that platform `offline`.
+
 ---
 
 ## 4. Drivers
@@ -321,7 +332,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `parallel`: false by default.
 - `tickets`: how to link a ticket ID, for a project with a tracker; leave it out to keep findings in the report.
 - `remote`: optional. `allow` lists the Google accounts that may open the page through `--remote` (3.1); `--remote` refuses to start a tunnel without it.
-- `network`: optional. `proxy` lists routes, each `{ name, listen, upstream }`: the app's test build reaches `listen`, and `upstream` really serves it. `upstream` is a port on this machine, or a remote service's URL (`https://api.revenuecat.com`, optionally with a port; `http://` too), so `offline` can take away a service the app would otherwise reach directly, such as a store SDK pointed at the proxy. The app still talks plain HTTP to `listen`; for a URL the proxy opens TLS itself, verifying the service's certificate against Mozilla's roots, and sets `Host` to the remote host on every request of a kept-alive connection. Drops, `offline` and faults behave the same for both kinds. A URL with a path, query or user, or any scheme but `http`/`https`, fails suite.yaml's parse, so lint reports it. Soundcheck knows ports and hosts only; which services exist and why is the project's business. `soundcheck proxy serve` runs the proxies (a run or `soundcheck drive` starts it, detached, when it isn't up, and it keeps running between runs so the test build always reaches its services; one started before the installed soundcheck was built is replaced, so it never lacks a command); `status` and `stop` manage it. Android forwards each `listen` port with `adb reverse` to the same port; the iOS simulator shares the Mac's ports. One proxy serves every platform, so a suite with `network` can't run platforms in parallel.
+- `network`: optional. `proxy` lists routes, each `{ name, listen, upstream }`: the app's test build reaches `listen`, and `upstream` really serves it. `upstream` is a port on this machine, or a remote service's URL (`https://api.revenuecat.com`, optionally with a port; `http://` too), so `offline` can take away a service the app would otherwise reach directly, such as a store SDK pointed at the proxy. The app still talks plain HTTP to `listen`; for a URL the proxy opens TLS itself, verifying the service's certificate against Mozilla's roots, and sets `Host` to the remote host on every request of a kept-alive connection. Drops, `offline` and faults behave the same for both kinds. A URL with a path, query or user, or any scheme but `http`/`https`, fails suite.yaml's parse, so lint reports it. Soundcheck knows ports and hosts only; which services exist and why is the project's business. `soundcheck proxy serve` runs the proxies (a run or `soundcheck drive` starts it, detached, when it isn't up, and it keeps running between runs so the test build always reaches its services; one started before the installed soundcheck was built is replaced, so it never lacks a command); `status` and `stop` manage it. Android forwards each route with `adb reverse` from its `device` port (default: `listen`) to `listen`; the iOS simulator shares the Mac's ports. `proxy` is one list every platform shares, or a list per platform (SA-779, 2026-10-28): each platform then has its own proxy process (and command socket), so `offline`, `network-drop` and `fault` act on that platform alone, and `device` lets every build keep the same ports while each platform's proxy listens on its own. Android's health puts back a forward that was dropped or aimed elsewhere (a build script once pointed them at the other platform's proxy). A shared proxy can't run platforms in parallel, and lint says so; listen ports are unique across platforms.
 
 ### 5.3 Hooks
 
@@ -334,6 +345,10 @@ Hooks are shell commands, so a project writes them in anything. The contract is 
 | `build-identity`      | Run start and after installs (gets the driver's app facts on stdin) | `{ "commit", "fingerprint", "version" }` per platform  |
 | `install {platform}`  | Run start, for a platform whose build can't be identified (every platform with `--install`); a coordinator's `install_build` with `install: true` | ok                                                     |
 | `check {name} [args]` | When a tester calls `check-data`                                    | JSON evidence (e.g. a database check)                  |
+| `stack-up {platform}` | Optional, with `stack-down`: run start, before the guard (3.11)     | ok once the platform's blank backend answers           |
+| `stack-down {platform}` | When the run's server stops, or after one that died (3.11)        | ok, also when there's nothing to remove                |
+
+`{platform}` in any hook is filled with the platform it's for (a tester's own, for `check` and `act`), so a suite with a stack per platform points each hook at the right one; a guard with it runs once per platform at run start.
 
 Every spec starts from its own full seed: no skipping and no snapshots. A spec never relies on state another spec left behind, so a rerun is independent and results can't depend on run order.
 

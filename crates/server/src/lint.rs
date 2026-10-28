@@ -1,4 +1,4 @@
-use crate::suite::config::{Platform, compatible};
+use crate::suite::config::{Platform, Proxy, compatible};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
@@ -80,39 +80,69 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         }
     }
     if let Some(network) = &config.network {
-        if network.proxy.is_empty() {
+        let routes = network.proxy.all();
+        if routes.is_empty() {
             push(
                 CONFIG_FILE.into(),
                 "network.proxy: list at least one route".into(),
             );
         }
+        // Every proxy listens on this machine, so no two routes share a port, whichever platform they're for.
         let mut listens = BTreeSet::new();
-        for route in &network.proxy {
+        // Device ports, and whether a route named one: two implicit ones are the listen ports, already reported.
+        let mut devices = std::collections::BTreeMap::new();
+        for (platform, route) in &routes {
+            let at = match platform {
+                Some(p) => format!("network.proxy.{p}.{}", route.name),
+                None => format!("network.proxy.{}", route.name),
+            };
             if route.upstream == Upstream::Port(route.listen) {
                 push(
                     CONFIG_FILE.into(),
-                    format!(
-                        "network.proxy.{}: listen and upstream must differ",
-                        route.name
-                    ),
+                    format!("{at}: listen and upstream must differ"),
                 );
             }
             if !listens.insert(route.listen) {
                 push(
                     CONFIG_FILE.into(),
+                    format!("{at}: port {} listed twice", route.listen),
+                );
+            }
+            let explicit = route.device.is_some();
+            if let Some(earlier) = devices.insert((*platform, route.device_port()), explicit)
+                && (earlier || explicit)
+            {
+                push(
+                    CONFIG_FILE.into(),
+                    format!("{at}: device port {} listed twice", route.device_port()),
+                );
+            }
+            if route.device.is_some() && *platform != Some(Platform::Android) {
+                push(
+                    CONFIG_FILE.into(),
                     format!(
-                        "network.proxy.{}: port {} listed twice",
-                        route.name, route.listen
+                        "{at}: device is for Android's routes, which forward ports from the device"
                     ),
                 );
             }
         }
-        if config.parallel {
-            push(
+        match &network.proxy {
+            Proxy::Shared(_) if config.parallel => push(
                 CONFIG_FILE.into(),
-                "network: one proxy serves every platform, so platforms can't run in parallel"
+                "network: one proxy serves every platform, so platforms can't run in parallel; give each its own"
                     .into(),
-            );
+            ),
+            Proxy::PerPlatform(by) => {
+                for platform in config.platforms.keys().filter(|p| **p != Platform::Web) {
+                    if !by.contains_key(platform) {
+                        push(
+                            CONFIG_FILE.into(),
+                            format!("network.proxy: {platform} has no routes, so its app can't reach anything"),
+                        );
+                    }
+                }
+            }
+            Proxy::Shared(_) => {}
         }
     }
     if !config.hooks.seed.contains("{scenario}") {
@@ -120,6 +150,23 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             CONFIG_FILE.into(),
             "hooks.seed must contain {scenario}".into(),
         );
+    }
+    match (&config.hooks.stack_up, &config.hooks.stack_down) {
+        (Some(up), Some(down)) => {
+            for (name, command) in [("stack-up", up), ("stack-down", down)] {
+                if !command.contains("{platform}") {
+                    push(
+                        CONFIG_FILE.into(),
+                        format!("hooks.{name} must contain {{platform}}"),
+                    );
+                }
+            }
+        }
+        (None, None) => {}
+        _ => push(
+            CONFIG_FILE.into(),
+            "hooks: stack-up and stack-down go together, so every stack started is removed".into(),
+        ),
     }
     if config.seeds.is_empty() {
         push(CONFIG_FILE.into(), "seeds: list the seed scenarios".into());
