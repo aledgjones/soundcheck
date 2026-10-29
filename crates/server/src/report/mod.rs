@@ -185,9 +185,6 @@ pub fn content(page: &Page) -> String {
         platforms(page).len().max(1)
     );
     out.push_str(&header(page));
-    if let Some(starting) = page.starting {
-        out.push_str(&start_card(starting));
-    }
     let v = verdict(page.run.state());
     out.push_str(&summary(page, &v));
     out.push_str(&sections(page));
@@ -345,9 +342,9 @@ fn now_bar(page: &Page) -> String {
 
 fn start_bar(starting: &StartUp) -> String {
     let (live, doing) = match (&starting.failed, &starting.doing) {
-        (Some(_), _) => (
+        (Some(why), _) => (
             "<span class=\"nowbar-live warn\">Couldn't start</span>",
-            "<span class=\"muted\">The reason is below</span>".to_string(),
+            format!("<span class=\"start-failed\">{}</span>", esc(why)),
         ),
         (None, Some((step, since))) => (
             "<span class=\"nowbar-live\"><i class=\"live-dot\" aria-hidden=\"true\"></i><b>Starting</b></span>",
@@ -363,29 +360,6 @@ fn start_bar(starting: &StartUp) -> String {
     };
     format!(
         "<div class=\"nowbar\" role=\"status\"><div class=\"nowbar-in\">{live}<div class=\"nowbar-doing\">{doing}</div></div></div>"
-    )
-}
-
-/// The start's checks: each one passed, then the one under way or why the run couldn't start.
-fn start_card(starting: &StartUp) -> String {
-    let mut items: String = starting
-        .passed
-        .iter()
-        .map(|check| format!("<li class=\"done\">{}</li>", esc(check)))
-        .collect();
-    let title = match (&starting.failed, &starting.doing) {
-        (Some(why), _) => {
-            let _ = write!(items, "<li class=\"failed\">{}</li>", esc(why));
-            "The run couldn't start"
-        }
-        (None, Some((step, _))) => {
-            let _ = write!(items, "<li class=\"doing\">{}</li>", esc(step));
-            "Getting the run ready"
-        }
-        (None, None) => "Getting the run ready",
-    };
-    format!(
-        "<section class=\"card start\"><header><h3>{title}</h3></header><ul>{items}</ul></section>"
     )
 }
 

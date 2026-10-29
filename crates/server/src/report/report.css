@@ -251,13 +251,4 @@ a.run-row:hover{background:var(--fill);text-decoration:none}
 .drawer .run-verdict{grid-column:2;text-align:left}
 .drawer .run-row[aria-current="page"]{background:var(--fill)}
 .drawer .empty{padding:16px;margin:0}
-.start{margin-top:28px;padding:22px 28px}
-.start ul{list-style:none;margin:12px 0 0;padding:0;display:flex;flex-direction:column;gap:6px;font-size:15px}
-.start li{display:flex;gap:10px;align-items:baseline;overflow-wrap:anywhere}
-.start li::before{flex:none;width:16px;text-align:center;font-weight:700}
-.start li.done{color:var(--label2)}
-.start li.done::before{content:"✓";color:var(--pass)}
-.start li.doing{font-weight:600}
-.start li.doing::before{content:"●";color:var(--accent);animation:breathe 2.4s ease-in-out infinite}
-.start li.failed{color:var(--fail);white-space:pre-wrap}
-.start li.failed::before{content:"✕"}
+.start-failed{color:var(--fail);overflow-wrap:anywhere}

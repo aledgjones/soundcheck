@@ -1546,9 +1546,8 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("Getting the run ready"));
-    assert!(page.contains("<li class=\"done\">the suite lints clean</li>"));
-    assert!(page.contains("<li class=\"doing\">android: building and installing the app</li>"));
+    assert!(page.contains("<b>Starting</b>"));
+    assert!(page.contains("<b>android: building and installing the app</b>"));
 
     hub.start_failed("the install hook failed on android");
     let page = reqwest::get(format!("{url}/fragment"))
@@ -1557,8 +1556,10 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("The run couldn't start"));
-    assert!(page.contains("<li class=\"failed\">the install hook failed on android</li>"));
+    assert!(page.contains("Couldn't start"));
+    assert!(
+        page.contains("<span class=\"start-failed\">the install hook failed on android</span>")
+    );
     // A run that couldn't start makes way at once for the next.
     let stepped = reqwest::Client::new()
         .post(format!("{url}/step-down"))
