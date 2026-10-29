@@ -127,6 +127,44 @@
     show(shots.indexOf(a));
   });
 
+  // The runs drawer: an installed app has no address bar, so this is the way to the other runs.
+  let drawer = null;
+  async function openRuns() {
+    if (!drawer) {
+      drawer = document.createElement("dialog");
+      drawer.className = "drawer";
+      drawer.setAttribute("aria-label", "Runs");
+      drawer.innerHTML =
+        '<div class="drawer-head"><a href="/">Runs</a>' +
+        '<button class="drawer-close" type="button" aria-label="Close">✕</button></div>' +
+        '<section class="card runs"><p class="empty">Loading…</p></section>';
+      drawer.addEventListener("click", (e) => {
+        if (e.target.closest(".drawer-close") || e.target === drawer) drawer.close();
+      });
+      document.body.append(drawer);
+    }
+    drawer.showModal();
+    try {
+      const response = await fetch("/");
+      const list = new DOMParser()
+        .parseFromString(await response.text(), "text/html")
+        .querySelector(".runs");
+      if (!response.ok || !list) throw new Error();
+      // The list's links are relative to the list's own page.
+      for (const a of list.querySelectorAll("a[href]")) {
+        a.href = new URL(a.getAttribute("href"), response.url).href;
+        if (a.pathname === location.pathname) a.setAttribute("aria-current", "page");
+      }
+      drawer.querySelector(".runs").replaceWith(document.adoptNode(list));
+      tick();
+    } catch {
+      drawer.querySelector(".runs").innerHTML = '<p class="empty">Couldn’t load the runs.</p>';
+    }
+  }
+  document.addEventListener("click", (e) => {
+    if (e.target.closest(".runs-menu")) openRuns();
+  });
+
   tick();
   applyFilter();
   applyTheme();

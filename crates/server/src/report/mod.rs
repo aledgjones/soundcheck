@@ -405,8 +405,14 @@ fn header(page: &Page) -> String {
     } else {
         ""
     };
+    // An export has no server to list the runs.
+    let menu = if page.export.is_none() {
+        "<button class=\"runs-menu\" type=\"button\" aria-label=\"All runs\" aria-haspopup=\"dialog\"><svg viewBox=\"0 0 20 20\" aria-hidden=\"true\"><path d=\"M3 5h14M3 10h14M3 15h14\"/></svg></button>"
+    } else {
+        ""
+    };
     format!(
-        "<header class=\"head\"><div class=\"head-text\"><span class=\"eyebrow\">Soundcheck · local regression</span><h1>{}</h1><div class=\"facts\">{}</div>{download}</div></header>",
+        "<header class=\"head\"><div class=\"head-text\"><div class=\"head-top\">{menu}<span class=\"eyebrow\">Soundcheck · local regression</span></div><h1>{}</h1><div class=\"facts\">{}</div>{download}</div></header>",
         esc(page.label),
         facts.join("")
     )
