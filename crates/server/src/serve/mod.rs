@@ -274,6 +274,10 @@ pub struct Hub {
     stop: CancellationToken,
     /// The Claude Code sessions that started testers through the plugin's hook: only they are told to dispatch.
     coordinators: Mutex<std::collections::HashSet<String>>,
+    /// Set from the server's start until the run's checks pass: nothing is dispatched meanwhile.
+    start_up: Mutex<Option<report::StartUp>>,
+    /// Tells live pages to redraw for what isn't in the journal: the start's progress.
+    nudges: broadcast::Sender<()>,
 }
 
 /// How long a finished run must go without a tool call before a new run may take its port.
@@ -326,6 +330,8 @@ impl Hub {
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
             coordinators: Mutex::new(std::collections::HashSet::new()),
+            start_up: Mutex::new(None),
+            nudges: broadcast::channel(16).0,
             last_call: std::sync::atomic::AtomicU64::new(now_ms()),
             stop: CancellationToken::new(),
         })
@@ -589,6 +595,7 @@ impl Hub {
         suite: &'a Suite,
         run: &'a Run,
         export: Option<report::Export>,
+        starting: Option<&'a report::StartUp>,
     ) -> report::Page<'a> {
         report::Page {
             suite,
@@ -597,7 +604,63 @@ impl Hub {
             live: export.is_none(),
             run_dir: Some(&self.run_dir),
             export,
+            starting,
         }
+    }
+
+    fn start_up(&self) -> std::sync::MutexGuard<'_, Option<report::StartUp>> {
+        self.start_up.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn change_start(&self, change: impl FnOnce(&mut report::StartUp)) {
+        if let Some(starting) = self.start_up().as_mut() {
+            change(starting);
+        }
+        let _ = self.nudges.send(());
+    }
+
+    /// The run is starting, with these checks already passed: dispatches wait until `started`.
+    pub fn begin_start(&self, passed: Vec<String>) {
+        *self.start_up() = Some(report::StartUp {
+            passed,
+            ..Default::default()
+        });
+        let _ = self.nudges.send(());
+    }
+
+    pub fn start_step(&self, step: impl Into<String>) {
+        let step = step.into();
+        self.change_start(|s| s.doing = Some((step, now_ms())));
+    }
+
+    pub fn start_passed(&self, check: impl Into<String>) {
+        let check = check.into();
+        self.change_start(|s| {
+            s.doing = None;
+            s.passed.push(check);
+        });
+    }
+
+    pub fn start_failed(&self, why: impl Into<String>) {
+        let why = why.into();
+        self.change_start(|s| s.failed = Some(why));
+    }
+
+    /// The checks passed during the start.
+    pub fn start_checks(&self) -> Vec<String> {
+        self.start_up()
+            .as_ref()
+            .map(|s| s.passed.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn started(&self) {
+        *self.start_up() = None;
+        let _ = self.nudges.send(());
+    }
+
+    pub fn start_state(&self) -> Option<report::StartUp> {
+        self.start_up().clone()
     }
 
     /// Runs a device operation on a platform's driver, connecting it on first use: web launches its own Chrome
@@ -889,6 +952,15 @@ impl Hub {
         spec: Option<&str>,
         platform: Option<Platform>,
     ) -> Result<Dispatched> {
+        if let Some(starting) = self.start_state() {
+            let step = starting
+                .doing
+                .map_or_else(|| "its checks".to_string(), |(step, _)| step);
+            anyhow::bail!(
+                "the run is still starting ({step}); dispatch once soundcheck prints `MCP at`"
+            );
+        }
+
         if let Some(spec) = spec
             && !self.suite().specs.iter().any(|s| s.id == spec)
         {
@@ -1412,6 +1484,7 @@ impl Hub {
             &self.suite(),
             run,
             Some(report::Export { at: now, finished }),
+            None,
         ));
         let path = self.run_dir.join(EXPORT_FILE);
         std::fs::write(&path, html)?;
@@ -1587,8 +1660,16 @@ pub const SUMMARY_FILE: &str = "summary.json";
 pub const EXPORT_FILE: &str = "report.html";
 
 async fn page(State(hub): State<Arc<Hub>>) -> Response {
+    let starting = hub.start_state();
     let html = hub
-        .with_run(|run, _| Ok(report::document(&hub.page(&hub.suite(), run, None))))
+        .with_run(|run, _| {
+            Ok(report::document(&hub.page(
+                &hub.suite(),
+                run,
+                None,
+                starting.as_ref(),
+            )))
+        })
         .unwrap_or_default();
     axum::response::Html(html).into_response()
 }
@@ -1605,8 +1686,16 @@ async fn download(State(hub): State<Arc<Hub>>) -> Response {
 }
 
 async fn fragment(State(hub): State<Arc<Hub>>) -> Response {
+    let starting = hub.start_state();
     let html = hub
-        .with_run(|run, _| Ok(report::content(&hub.page(&hub.suite(), run, None))))
+        .with_run(|run, _| {
+            Ok(report::content(&hub.page(
+                &hub.suite(),
+                run,
+                None,
+                starting.as_ref(),
+            )))
+        })
         .unwrap_or_default();
     axum::response::Html(html).into_response()
 }
@@ -1654,6 +1743,10 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
 struct EventsQuery {
     #[serde(default)]
     after: u64,
+    /// The live page also hears when it should redraw for something outside the journal, as a line with the last
+    /// entry's `seq` again.
+    #[serde(default)]
+    nudge: bool,
 }
 
 /// Newline-delimited journal entries after `after`, then each new one as it's written. Replaying from a cursor
@@ -1678,9 +1771,11 @@ async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
         .with_run(|run, _| Ok(run.state().finished))
         .unwrap_or(false);
     let idle = now_ms().saturating_sub(hub.last_call.load(std::sync::atomic::Ordering::Relaxed));
+    // A run that couldn't start only stays up to show why.
+    let failed_start = hub.start_state().is_some_and(|s| s.failed.is_some());
     let folder = hub.run_dir.display();
     let pid = std::process::id();
-    if !finished {
+    if !finished && !failed_start {
         return (
             StatusCode::CONFLICT,
             format!(
@@ -1690,7 +1785,7 @@ async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
             .into_response();
     }
 
-    if idle < STEP_DOWN_IDLE_MS {
+    if !failed_start && idle < STEP_DOWN_IDLE_MS {
         return (
             StatusCode::CONFLICT,
             format!(
@@ -1808,6 +1903,8 @@ async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> R
 async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>) -> Response {
     // Subscribe before reading history, so nothing written in between is lost.
     let mut live = hub.events.subscribe();
+    let mut nudged = hub.nudges.subscribe();
+    let nudge = q.nudge;
     let history: Vec<Entry> = hub
         .with_run(|run, _| Ok(run.entries_after(q.after).to_vec()))
         .unwrap_or_default();
@@ -1831,6 +1928,12 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
             // stepping down for a new run waiting for ever (2026-10-26).
             let received = tokio::select! {
                 _ = hub.stop.cancelled() => return,
+                Ok(()) = nudged.recv(), if nudge => {
+                    if tx.send(Ok(Bytes::from(format!("{{\"seq\":{last}}}\n")))).await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 received = live.recv() => received,
             };
             match received {

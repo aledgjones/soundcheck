@@ -118,6 +118,7 @@ async fn run_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
             live: false,
             run_dir: Some(&dir),
             export: None,
+            starting: None,
         }))
     })
     .await;
@@ -184,6 +185,7 @@ async fn download(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
                 at: now_ms(),
                 finished,
             }),
+            starting: None,
         });
         anyhow::Ok((dir, html))
     })

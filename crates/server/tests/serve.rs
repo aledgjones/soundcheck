@@ -24,6 +24,19 @@ async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
 
 /// [`server_in`] with rows only on `platforms`.
 async fn server_on(platforms: &[Platform]) -> (serve::Server, String, std::path::PathBuf) {
+    let (server, url, dir, _) = server_hub(platforms).await;
+    (server, url, dir)
+}
+
+/// [`server_on`], with its hub.
+async fn server_hub(
+    platforms: &[Platform],
+) -> (
+    serve::Server,
+    String,
+    std::path::PathBuf,
+    std::sync::Arc<Hub>,
+) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     let suite = suite::load(&root);
     let plan = Plan {
@@ -54,21 +67,17 @@ async fn server_on(platforms: &[Platform]) -> (serve::Server, String, std::path:
         .join("20261021-090000");
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(
-        Hub::without_devices(
-            suite,
-            run,
-            "v0.0.0 · test".into(),
-            dir.clone(),
-            120_000,
-            vec![Platform::Android, Platform::Ios],
-        ),
-        0,
-    )
-    .await
-    .unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "v0.0.0 · test".into(),
+        dir.clone(),
+        120_000,
+        vec![Platform::Android, Platform::Ios],
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
-    (server, url, dir)
+    (server, url, dir, hub)
 }
 
 async fn client(url: &str) -> RunningService<RoleClient, ClientConfig> {
@@ -1516,4 +1525,45 @@ async fn the_run_stays_open_until_it_is_closed() {
     assert!(report.contains("Final report, exported"));
     client.cancel().await.unwrap();
     server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
+    let (_server, url, _, hub) = server_hub(&[Platform::Android]).await;
+    hub.begin_start(vec!["the suite lints clean".into()]);
+    hub.start_step("android: building and installing the app");
+    let client = client(&url).await;
+    let refused = call(&client, "dispatch", json!({})).await;
+    assert!(
+        refused
+            .as_str()
+            .is_some_and(|r| r.contains("still starting (android: building")),
+        "{refused}"
+    );
+    let page = reqwest::get(format!("{url}/fragment"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("Getting the run ready"));
+    assert!(page.contains("<li class=\"done\">the suite lints clean</li>"));
+    assert!(page.contains("<li class=\"doing\">android: building and installing the app</li>"));
+
+    hub.start_failed("the install hook failed on android");
+    let page = reqwest::get(format!("{url}/fragment"))
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(page.contains("The run couldn't start"));
+    assert!(page.contains("<li class=\"failed\">the install hook failed on android</li>"));
+    // A run that couldn't start makes way at once for the next.
+    let stepped = reqwest::Client::new()
+        .post(format!("{url}/step-down"))
+        .send()
+        .await
+        .unwrap();
+    assert!(stepped.status().is_success());
 }

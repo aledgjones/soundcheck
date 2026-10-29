@@ -119,6 +119,7 @@ fn the_page_shows_failures_findings_and_checks() {
         live: true,
         run_dir: None,
         export: None,
+        starting: None,
     });
     if let Ok(path) = std::env::var("SOUNDCHECK_REPORT_SAMPLE") {
         std::fs::write(path, &html).unwrap();
@@ -161,6 +162,7 @@ fn an_export_has_no_live_bar() {
             at: 0,
             finished: false,
         }),
+        starting: None,
     });
     assert!(!html.contains("class=\"nowbar\""));
     assert!(html.contains("data-live=\"false\""));
@@ -197,6 +199,7 @@ fn an_export_embeds_its_screenshots() {
         live: export.is_none(),
         run_dir: Some(&dir),
         export,
+        starting: None,
     };
     let live = report::document(&page(None));
     assert!(live.contains("src=\"files/evidence/back.png\""));
@@ -231,6 +234,7 @@ fn a_bare_evidence_name_from_an_older_journal_shows_its_png() {
         live: true,
         run_dir: Some(&dir),
         export: None,
+        starting: None,
     };
     let live = report::document(&page);
     assert!(live.contains("src=\"files/evidence/erased.png\""), "{live}");

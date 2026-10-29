@@ -216,7 +216,7 @@
   let after = Number(root.dataset.seq || 0);
   async function follow() {
     try {
-      const response = await fetch(`events?after=${after}`);
+      const response = await fetch(`events?after=${after}&nudge=true`);
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffered = "";

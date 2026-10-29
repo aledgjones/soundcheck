@@ -39,6 +39,17 @@ pub struct Page<'a> {
     pub run_dir: Option<&'a Path>,
     /// Set for an export: when it was made, and whether the run had finished.
     pub export: Option<Export>,
+    /// Set while the run is starting: its checks are shown in place of what is running.
+    pub starting: Option<&'a StartUp>,
+}
+
+/// A run that is starting, before any tester can go: the checks passed so far, the step under way and since when, or
+/// why it stopped.
+#[derive(Debug, Clone, Default)]
+pub struct StartUp {
+    pub passed: Vec<String>,
+    pub doing: Option<(String, u64)>,
+    pub failed: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -163,7 +174,10 @@ pub fn document(page: &Page) -> String {
 pub fn content(page: &Page) -> String {
     let mut out = String::new();
     if page.live && !page.run.state().finished {
-        out.push_str(&now_bar(page));
+        match page.starting {
+            Some(starting) => out.push_str(&start_bar(starting)),
+            None => out.push_str(&now_bar(page)),
+        }
     }
     let _ = write!(
         out,
@@ -171,6 +185,9 @@ pub fn content(page: &Page) -> String {
         platforms(page).len().max(1)
     );
     out.push_str(&header(page));
+    if let Some(starting) = page.starting {
+        out.push_str(&start_card(starting));
+    }
     let v = verdict(page.run.state());
     out.push_str(&summary(page, &v));
     out.push_str(&sections(page));
@@ -323,6 +340,52 @@ fn now_bar(page: &Page) -> String {
     format!(
         "<div class=\"nowbar\" role=\"status\"><div class=\"nowbar-in\">{live}<div class=\"nowbar-doing\">{}</div>{timer}</div></div>",
         doing.join("")
+    )
+}
+
+fn start_bar(starting: &StartUp) -> String {
+    let (live, doing) = match (&starting.failed, &starting.doing) {
+        (Some(_), _) => (
+            "<span class=\"nowbar-live warn\">Couldn't start</span>",
+            "<span class=\"muted\">The reason is below</span>".to_string(),
+        ),
+        (None, Some((step, since))) => (
+            "<span class=\"nowbar-live\"><i class=\"live-dot\" aria-hidden=\"true\"></i><b>Starting</b></span>",
+            format!(
+                "<span><b>{}</b> <span class=\"ago\" data-since=\"{since}\" data-warn=\"0\" data-label=\"· {{t}}\"></span></span>",
+                esc(step)
+            ),
+        ),
+        (None, None) => (
+            "<span class=\"nowbar-live\"><i class=\"live-dot\" aria-hidden=\"true\"></i><b>Starting</b></span>",
+            "<span class=\"muted\">Checking</span>".to_string(),
+        ),
+    };
+    format!(
+        "<div class=\"nowbar\" role=\"status\"><div class=\"nowbar-in\">{live}<div class=\"nowbar-doing\">{doing}</div></div></div>"
+    )
+}
+
+/// The start's checks: each one passed, then the one under way or why the run couldn't start.
+fn start_card(starting: &StartUp) -> String {
+    let mut items: String = starting
+        .passed
+        .iter()
+        .map(|check| format!("<li class=\"done\">{}</li>", esc(check)))
+        .collect();
+    let title = match (&starting.failed, &starting.doing) {
+        (Some(why), _) => {
+            let _ = write!(items, "<li class=\"failed\">{}</li>", esc(why));
+            "The run couldn't start"
+        }
+        (None, Some((step, _))) => {
+            let _ = write!(items, "<li class=\"doing\">{}</li>", esc(step));
+            "Getting the run ready"
+        }
+        (None, None) => "Getting the run ready",
+    };
+    format!(
+        "<section class=\"card start\"><header><h3>{title}</h3></header><ul>{items}</ul></section>"
     )
 }
 

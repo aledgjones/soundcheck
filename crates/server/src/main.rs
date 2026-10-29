@@ -207,6 +207,7 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
+        Err(e) if e.is::<AlreadySaid>() => ExitCode::FAILURE,
         Err(e) => {
             eprintln!("soundcheck: {e:#}");
             ExitCode::FAILURE
@@ -415,64 +416,6 @@ fn run_command(args: RunArgs) -> Result<()> {
         // (a build takes many minutes).
         let mut terminate = signal(SignalKind::terminate())?;
         let mut hangup = signal(SignalKind::hangup())?;
-        let preflight = async {
-        let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
-        let starting = soundcheck::stack::Live::Wait(platforms.clone());
-        for note in soundcheck::stack::reap(&records, starting).await? {
-            pass(&mut checks, note);
-        }
-        for &platform in &platforms {
-            let started = std::time::Instant::now();
-            if let Some(stack) = soundcheck::stack::up(&root_dir, &stack_config, platform).await? {
-                _stacks.push(stack);
-                pass(
-                    &mut checks,
-                    format!(
-                        "{platform}: a blank stack is up ({} s)",
-                        started.elapsed().as_secs()
-                    ),
-                );
-            }
-        }
-        // Once per platform when the guard takes one (each its own stack), else once.
-        let guard = &stack_config.hooks.guard;
-        let per_platform = guard.contains("{platform}");
-        for &platform in platforms.iter().take(if per_platform { usize::MAX } else { 1 }) {
-            let command = serve::hooks::fill(guard, "", &platform.to_string());
-            let said = serve::hooks::run(&root_dir, &command, serve::hooks::GUARD_TIMEOUT)
-                .await
-                .context("the guard hook refused")?;
-            let said = said.trim();
-            let whose = if per_platform {
-                format!("{platform}: the guard passed")
-            } else {
-                "the guard passed".into()
-            };
-            pass(
-                &mut checks,
-                if said.is_empty() {
-                    whose
-                } else {
-                    format!("{whose}: {said}")
-                },
-            );
-        }
-        // The web app under test, if the suite starts one: it runs as long as the run does.
-        let _web_app = match config_web_start {
-            Some((start, base_url)) if platforms.contains(&Platform::Web) => {
-                println!("starting the web app: {start}");
-                Some(
-                    serve::hooks::Service::start(
-                        &root_dir,
-                        &start,
-                        &base_url,
-                        serve::hooks::START_TIMEOUT,
-                    )
-                    .await?,
-                )
-            }
-            _ => None,
-        };
         let mut hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
@@ -487,21 +430,102 @@ fn run_command(args: RunArgs) -> Result<()> {
                 run.relabel(now, &new, "given on resume")
             })?;
         }
+        // The page and the remote view come up first, so a start that takes many minutes (a build) is watched there.
+        hub.begin_start(checks.clone());
+        let server = serve::start(hub.clone(), port).await?;
+        let url = format!("http://{}", server.addr);
+        let key = soundcheck::run::saved::page_key(&run_dir);
+        println!("the live page is at {url}/{key}/ while the run starts");
+        let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
+        if let Some(tunnel) = &_tunnel {
+            println!("remote: this run is at {}/{key}/", tunnel.url);
+        }
+        if open_page {
+            let _ = std::process::Command::new("open")
+                .arg(format!("{url}/{key}/"))
+                .spawn();
+        }
+        let pass = |check: String| {
+            println!("✓ {check}");
+            hub.start_passed(check);
+        };
+        let preflight = async {
+        let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
+        let starting = soundcheck::stack::Live::Wait(platforms.clone());
+        hub.start_step("clearing stacks earlier runs left");
+        for note in soundcheck::stack::reap(&records, starting).await? {
+            pass(note);
+        }
+        for &platform in &platforms {
+            let started = std::time::Instant::now();
+            hub.start_step(format!("{platform}: starting a blank stack"));
+            if let Some(stack) = soundcheck::stack::up(&root_dir, &stack_config, platform).await? {
+                _stacks.push(stack);
+                pass(format!(
+                    "{platform}: a blank stack is up ({} s)",
+                    started.elapsed().as_secs()
+                ));
+            }
+        }
+        // Once per platform when the guard takes one (each its own stack), else once.
+        let guard = &stack_config.hooks.guard;
+        let per_platform = guard.contains("{platform}");
+        for &platform in platforms.iter().take(if per_platform { usize::MAX } else { 1 }) {
+            hub.start_step(if per_platform {
+                format!("{platform}: running the guard")
+            } else {
+                "running the guard".into()
+            });
+            let command = serve::hooks::fill(guard, "", &platform.to_string());
+            let said = serve::hooks::run(&root_dir, &command, serve::hooks::GUARD_TIMEOUT)
+                .await
+                .context("the guard hook refused")?;
+            let said = said.trim();
+            let whose = if per_platform {
+                format!("{platform}: the guard passed")
+            } else {
+                "the guard passed".into()
+            };
+            pass(if said.is_empty() {
+                whose
+            } else {
+                format!("{whose}: {said}")
+            });
+        }
+        // The web app under test, if the suite starts one: it runs as long as the run does.
+        let _web_app = match config_web_start {
+            Some((start, base_url)) if platforms.contains(&Platform::Web) => {
+                println!("starting the web app: {start}");
+                hub.start_step("starting the web app");
+                Some(
+                    serve::hooks::Service::start(
+                        &root_dir,
+                        &start,
+                        &base_url,
+                        serve::hooks::START_TIMEOUT,
+                    )
+                    .await?,
+                )
+            }
+            _ => None,
+        };
         // Every device answers before anything is built, so a missing emulator or one too old shows in seconds, not
         // after a build. What needs the app (its ready labels) waits for the install.
         for &platform in &platforms {
+            hub.start_step(format!("{platform}: connecting to the device"));
             hub.on_device(platform, async |_| Ok(()))
                 .await
                 .with_context(|| format!("{platform} isn't ready to test"))?;
-            pass(
-                &mut checks,
-                format!("{platform}: the device is there and soundcheck can drive it"),
-            );
+            pass(format!(
+                "{platform}: the device is there and soundcheck can drive it"
+            ));
         }
+        hub.start_step("waiting for the Mac to settle");
         let settled = serve::wait_for_calm_host().await;
         // Results count only for an identified build, so a platform without one is built before anything runs.
         let has_install_hook = config_has_install;
         for &platform in &platforms {
+            hub.start_step(format!("{platform}: identifying the installed build"));
             let unknown = hub.read_build(platform).await.err();
             if let Some(why) = &unknown
                 && why.chain().any(|e| e.is::<serve::hooks::TimedOut>())
@@ -524,8 +548,10 @@ fn run_command(args: RunArgs) -> Result<()> {
                 }
                 _ => println!("{platform}: building and installing the current tree, which takes several minutes"),
             }
+            hub.start_step(format!("{platform}: building and installing the app"));
             hub.install(platform).await?;
         }
+        hub.start_step("identifying the builds");
         let problems = hub.read_builds(&platforms).await;
         if has_install_hook && !problems.is_empty() {
             bail!("the build can't be identified on {}", problems.join("; "));
@@ -537,21 +563,19 @@ fn run_command(args: RunArgs) -> Result<()> {
             if let Some(build) =
                 hub.with_run(|run, _| Ok(run.state().builds.get(&platform).cloned()))?
             {
-                pass(&mut checks, format!("{platform} has build {}", build.label()));
+                pass(format!("{platform} has build {}", build.label()));
             }
         }
         // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say). With a prepare
         // spec the app signs in there, on this run's stacks, so a ready label seen now would prove nothing.
         if let Some(prepare) = &stack_config.prepare {
-            pass(
-                &mut checks,
-                format!(
-                    "each platform is prepared ({}) before its specs, and its ready labels checked then",
-                    prepare.display()
-                ),
-            );
+            pass(format!(
+                "each platform is prepared ({}) before its specs, and its ready labels checked then",
+                prepare.display()
+            ));
         }
         for &platform in platforms.iter().filter(|_| stack_config.prepare.is_none()) {
+            hub.start_step(format!("{platform}: launching the app"));
             let labels = ready.get(&platform).cloned().unwrap_or_default();
             hub.on_device(platform, async |d| {
                 soundcheck_driver::Device::launch(&d.device).await?;
@@ -568,7 +592,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             })
             .await
             .with_context(|| format!("{platform} isn't ready to test"))?;
-            pass(&mut checks, if labels.is_empty() {
+            pass(if labels.is_empty() {
                 format!("{platform}: the device answers and the app launched")
             } else {
                 format!(
@@ -577,23 +601,51 @@ fn run_command(args: RunArgs) -> Result<()> {
                 )
             });
         }
-        hub.with_run(|run, now| run.preflight(now, checks.clone()))?;
-        anyhow::Ok((serve::start(hub, port).await?, _web_app))
+        hub.with_run(|run, now| run.preflight(now, hub.start_checks()))?;
+        anyhow::Ok(_web_app)
         };
         // Whatever preflight started is dropped with it, the stacks after, as on any other way out.
-        let (server, _web_app) = tokio::select! {
-            ready = preflight => ready?,
+        let started = tokio::select! {
+            ready = preflight => ready,
             stopped = tokio::signal::ctrl_c() => {
                 stopped?;
+                server.shutdown.cancel();
                 return Ok(());
             }
             _ = terminate.recv() => {
                 let _ = writeln!(std::io::stderr(), "stopped (SIGTERM) before the run started");
+                server.shutdown.cancel();
                 return Ok(());
             }
-            _ = hangup.recv() => return Ok(()),
+            _ = hangup.recv() => {
+                server.shutdown.cancel();
+                return Ok(());
+            }
         };
-        let url = format!("http://{}", server.addr);
+        let _web_app = match started {
+            Ok(web_app) => web_app,
+            Err(why) => {
+                // Said now, so whoever started the run hears at once; the page shows it until a new run takes the
+                // port, the server is stopped, or the wait runs out.
+                eprintln!("soundcheck: {why:#}");
+                hub.start_failed(format!("{why:#}"));
+                drop(_stacks);
+                if _tunnel.is_some() || open_page {
+                    println!("the page shows why for {} min", FAILED_START_SHOWN_MS / 60_000);
+                }
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = terminate.recv() => {}
+                    _ = hangup.recv() => {}
+                    _ = server.shutdown.cancelled() => {}
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(FAILED_START_SHOWN_MS)) => {}
+                }
+                server.shutdown.cancel();
+                let _ = server.handle.await;
+                return Err(AlreadySaid.into());
+            }
+        };
+        hub.started();
         let info = serde_json::json!({
             "url": url,
             "mcp": format!("{url}/mcp"),
@@ -610,17 +662,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             "soundcheck {VERSION}: run {id} in {}; open it again with --open {id}",
             run_dir.display()
         );
-        let key = soundcheck::run::saved::page_key(&run_dir);
         println!("MCP at {url}/mcp; the live page is at {url}/{key}/");
-        let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
-        if let Some(tunnel) = &_tunnel {
-            println!("remote: this run is at {}/{key}/", tunnel.url);
-        }
-        if open_page {
-            let _ = std::process::Command::new("open")
-                .arg(format!("{url}/{key}/"))
-                .spawn();
-        }
         // Nothing is printed after a hangup: the terminal is gone, and a failed print would panic before the stacks
         // come down.
         tokio::select! {
@@ -1200,6 +1242,21 @@ fn run_name() -> String {
         _ => secs.to_string(),
     }
 }
+
+/// How long the page of a run that couldn't start stays up to show why, unless a new run takes the port first.
+const FAILED_START_SHOWN_MS: u64 = 10 * 60_000;
+
+/// An error already printed where it happened: the process only exits with failure.
+#[derive(Debug)]
+struct AlreadySaid;
+
+impl std::fmt::Display for AlreadySaid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("already reported")
+    }
+}
+
+impl std::error::Error for AlreadySaid {}
 
 /// A preflight check that passed: shown as it happens, and kept for the journal.
 fn pass(checks: &mut Vec<String>, check: String) {
