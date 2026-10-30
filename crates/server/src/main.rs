@@ -316,12 +316,11 @@ fn run_command(args: RunArgs) -> Result<()> {
     let saved_label = saved.as_ref().map(|i| i.label.clone());
     let label = label.or_else(|| saved.as_ref().map(|i| i.label.clone()));
     let resuming = resume.is_some();
+    // A new run's folder is named by its id, the same key its page and `--open` use.
+    let id = soundcheck::run::saved::new_id();
     let run_dir = match resume {
         Some(dir) => dir,
-        None => {
-            let reports = suite::reports_dir(root, config);
-            reports.join(run_name())
-        }
+        None => suite::reports_dir(root, config).join(&id),
     };
     std::fs::create_dir_all(&run_dir)?;
     let run_dir = std::fs::canonicalize(&run_dir)?;
@@ -382,7 +381,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         soundcheck::run::saved::save(
             &run_dir,
             &soundcheck::run::saved::RunInfo {
-                id: soundcheck::run::saved::new_id(),
+                id: id.clone(),
                 suite: std::fs::canonicalize(root)?,
                 label: label.clone(),
                 platforms: platforms.clone(),
@@ -1230,17 +1229,6 @@ fn ready_command(run_dir: &Path, platform: Platform, wait: bool) -> Result<()> {
             tokio::time::sleep(std::time::Duration::from_millis(serve::READY_POLL_MS)).await;
         }
     })
-}
-
-fn run_name() -> String {
-    let secs = serve::now_ms() / 1000;
-    let output = std::process::Command::new("date")
-        .args(["-r", &secs.to_string(), "+%Y%m%d-%H%M%S"])
-        .output();
-    match output {
-        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout).trim().to_string(),
-        _ => secs.to_string(),
-    }
 }
 
 /// How long the page of a run that couldn't start stays up to show why, unless a new run takes the port first.

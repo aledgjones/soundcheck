@@ -1735,7 +1735,7 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
         .with_run(|run, _| Ok(report::run_summary(run, hub.label_of(run))))
         .unwrap_or_default();
     runs.push((current.clone(), live, Some(format!("{}/", hub.page_key()))));
-    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    reports::newest_first(&mut runs);
     axum::response::Html(report::index(&runs, &current)).into_response()
 }
 

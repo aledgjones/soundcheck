@@ -75,8 +75,18 @@ pub fn list(reports: &Reports) -> Vec<(String, serde_json::Value, Option<String>
         };
         runs.push((name, summary, href));
     }
-    runs.sort_by(|a, b| b.0.cmp(&a.0));
+    newest_first(&mut runs);
     runs
+}
+
+/// Newest first by start time, since a run's folder is named by its id; a run with no entries yet is the newest.
+pub fn newest_first(runs: &mut [(String, serde_json::Value, Option<String>)]) {
+    runs.sort_by(|a, b| {
+        let started = |s: &serde_json::Value| s["started"].as_u64().unwrap_or(u64::MAX);
+        started(&b.1)
+            .cmp(&started(&a.1))
+            .then_with(|| b.0.cmp(&a.0))
+    });
 }
 
 /// The run folder a page key names: a run's id, or a folder's name.
@@ -204,5 +214,29 @@ async fn exported(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
     match tokio::fs::read_to_string(dir.join(EXPORT_FILE)).await {
         Ok(html) => Html(html).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn runs_list_by_start_time_with_a_run_not_yet_started_first() {
+        let run = |name: &str, started: Option<u64>| {
+            (
+                name.to_string(),
+                serde_json::json!({ "started": started }),
+                None,
+            )
+        };
+        let mut runs = vec![
+            run("ffff-older", Some(100)),
+            run("0000-newer", Some(200)),
+            run("aaaa-just-opened", None),
+        ];
+        newest_first(&mut runs);
+        let names: Vec<&str> = runs.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["aaaa-just-opened", "0000-newer", "ffff-older"]);
     }
 }
