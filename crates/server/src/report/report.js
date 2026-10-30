@@ -137,7 +137,7 @@
       drawer.innerHTML =
         '<div class="drawer-head"><a href="/">Runs</a>' +
         '<button class="drawer-close" type="button" aria-label="Close">✕</button></div>' +
-        '<section class="card runs"><p class="empty">Loading…</p></section>';
+        '<div class="drawer-body"><section class="card runs"><p class="empty">Loading…</p></section></div>';
       drawer.addEventListener("click", (e) => {
         if (e.target.closest(".drawer-close") || e.target === drawer) drawer.close();
       });
