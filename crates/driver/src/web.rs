@@ -20,7 +20,7 @@ use chromiumoxide::cdp::browser_protocol::network::{
 use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExceptionThrown};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -43,10 +43,61 @@ pub struct Web {
     tasks: Vec<JoinHandle<()>>,
     /// Where a kept `touch` began and where it's held now, until `release`.
     held: Mutex<Option<Held>>,
+    /// This launch's own profile, removed on close.
+    profile: PathBuf,
 }
 
 /// A kept touch's start and where it is now.
 type Held = ((f64, f64), (f64, f64));
+
+/// Copies a profile, leaving out the running Chrome's locks (symlinks) and caches it rebuilds itself.
+fn copy_profile(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let kind = entry.file_type()?;
+        let skip = name.to_string_lossy().starts_with("Singleton")
+            || matches!(
+                name.to_str(),
+                Some("Cache" | "Code Cache" | "GPUCache" | "GrShaderCache" | "ShaderCache")
+            );
+        if skip || kind.is_symlink() {
+            continue;
+        }
+        let target = to.join(&name);
+        if kind.is_dir() {
+            copy_profile(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Opens Chrome on `profile` for a person to sign in to Google by hand, and returns once they quit it. It's the
+/// Chrome runs use, with the same keychain switches, so runs can read the session; but without automation, which
+/// Google's sign-in refuses.
+pub fn open_profile(profile: &Path, url: &str) -> Result<()> {
+    let chrome =
+        chromiumoxide::detection::default_executable(Default::default()).map_err(device)?;
+    std::fs::create_dir_all(profile).map_err(device)?;
+    let status = std::process::Command::new(chrome)
+        .arg(format!("--user-data-dir={}", profile.display()))
+        .args([
+            "--use-mock-keychain",
+            "--password-store=basic",
+            "--no-first-run",
+            "--disable-sync",
+            url,
+        ])
+        .status()
+        .map_err(device)?;
+    if !status.success() {
+        return Err(device(format!("Chrome exited with {status}")));
+    }
+    Ok(())
+}
 
 fn device(e: impl std::fmt::Display) -> DriverError {
     DriverError::Device(e.to_string())
@@ -110,15 +161,36 @@ impl Web {
     /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
     /// a test, so a watched window is for looking only.
     pub async fn launch(base_url: &str, width: u32, height: u32, headed: bool) -> Result<Web> {
-        let profile = std::env::temp_dir().join(format!(
+        Self::launch_from(base_url, width, height, headed, None).await
+    }
+
+    /// As [`Web::launch`], but the temporary profile starts as a copy of `profile` (one made with [`open_profile`]),
+    /// so a Google session signed in there by hand is there too, and nothing the run does goes back into it.
+    pub async fn launch_from(
+        base_url: &str,
+        width: u32,
+        height: u32,
+        headed: bool,
+        profile: Option<&Path>,
+    ) -> Result<Web> {
+        let profile_dir = std::env::temp_dir().join(format!(
             "soundcheck-chrome-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map_or(0, |d| d.as_nanos())
         ));
+        if let Some(from) = profile {
+            if !from.is_dir() {
+                return Err(device(format!(
+                    "no Chrome profile at {}: make it with `soundcheck web-profile`",
+                    from.display()
+                )));
+            }
+            copy_profile(from, &profile_dir).map_err(device)?;
+        }
         let mut builder = BrowserConfig::builder()
-            .user_data_dir(profile)
+            .user_data_dir(&profile_dir)
             .window_size(width, height);
         if headed {
             builder = builder.with_head();
@@ -129,6 +201,14 @@ impl Web {
             while handler.next().await.is_some() {}
         })];
         let page = browser.new_page("about:blank").await.map_err(device)?;
+        // Services treat "HeadlessChrome" as a bot (PostHog returns no feature flags to it), so it reads as the
+        // Chrome it is.
+        let agent = page
+            .user_agent()
+            .await
+            .map_err(device)?
+            .replace("HeadlessChrome", "Chrome");
+        page.set_user_agent(agent).await.map_err(device)?;
         page.execute(SetDeviceMetricsOverrideParams::new(
             width, height, 1.0, false,
         ))
@@ -183,6 +263,7 @@ impl Web {
             errors,
             tasks,
             held: Mutex::new(None),
+            profile: profile_dir,
         };
         web.launch().await?;
         Ok(web)
@@ -191,6 +272,7 @@ impl Web {
     pub async fn close(mut self) {
         let _ = self.browser.close().await;
         let _ = self.browser.wait().await;
+        let _ = std::fs::remove_dir_all(&self.profile);
         for t in self.tasks.drain(..) {
             t.abort();
         }
@@ -198,7 +280,27 @@ impl Web {
 
     /// Scrolls a point into the viewport if it's outside, the way a user would before touching it, and returns
     /// where it is now. The whole page is in the tree, but a click outside the viewport lands on nothing.
+    /// Where reading and input go: a window the app's page opened (Google's sign-in popup, a link to a new tab) while
+    /// it's open, as a person would be looking at it; the app's own page otherwise.
+    async fn current(&self) -> Page {
+        let main = self.page.target_id();
+        let pages = self.browser.pages().await.unwrap_or_default();
+        for page in pages
+            .into_iter()
+            .filter(|p| p.opener_id().as_ref() == Some(main))
+        {
+            // A popup that just closed itself stays listed for a moment after its session has gone, and one mid-close
+            // may never answer.
+            let alive = tokio::time::timeout(Duration::from_secs(1), page.evaluate("1")).await;
+            if matches!(alive, Ok(Ok(_))) {
+                return page;
+            }
+        }
+        self.page.clone()
+    }
+
     async fn reveal(&self, x: f64, y: f64) -> Result<(f64, f64)> {
+        let page = self.current().await;
         let script = format!(
             "(() => {{ const x = {x}, y = {y}; \
                if (y >= 0 && y < innerHeight && x >= 0 && x < innerWidth) return [x, y]; \
@@ -206,8 +308,7 @@ impl Web {
                scrollBy(x < 0 || x >= innerWidth ? x - innerWidth / 2 : 0, y < 0 || y >= innerHeight ? y - innerHeight / 2 : 0); \
                return [x - (scrollX - before[0]), y - (scrollY - before[1])]; }})()"
         );
-        let point: Vec<f64> = self
-            .page
+        let point: Vec<f64> = page
             .evaluate(script)
             .await
             .map_err(device)?
@@ -223,6 +324,7 @@ impl Web {
         y: f64,
         pressed: bool,
     ) -> Result<()> {
+        let page = self.current().await;
         let mut params = DispatchMouseEventParams::new(kind, x, y);
         params.button = Some(
             if pressed || params.r#type != DispatchMouseEventType::MouseMoved {
@@ -233,7 +335,7 @@ impl Web {
         );
         params.buttons = Some(if pressed { 1 } else { 0 });
         params.click_count = Some(1);
-        self.page.execute(params).await.map_err(device)?;
+        page.execute(params).await.map_err(device)?;
         Ok(())
     }
 
@@ -243,12 +345,13 @@ impl Web {
     }
 
     async fn key(&self, key: &str, code: i64) -> Result<()> {
+        let page = self.current().await;
         for kind in [DispatchKeyEventType::KeyDown, DispatchKeyEventType::KeyUp] {
             let mut params = DispatchKeyEventParams::new(kind);
             params.key = Some(key.into());
             params.code = Some(key.into());
             params.windows_virtual_key_code = Some(code);
-            self.page.execute(params).await.map_err(device)?;
+            page.execute(params).await.map_err(device)?;
         }
         Ok(())
     }
@@ -260,8 +363,8 @@ impl Device for Web {
     }
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {
-        let tree = self
-            .page
+        let page = self.current().await;
+        let tree = page
             .execute(GetFullAxTreeParams::default())
             .await
             .map_err(device)?;
@@ -286,7 +389,7 @@ impl Device for Web {
                 backend_node_id: Some(backend),
                 ..Default::default()
             };
-            let Ok(model) = self.page.execute(params).await else {
+            let Ok(model) = page.execute(params).await else {
                 continue;
             };
             let quad = model.result.model.border.inner();
@@ -415,24 +518,24 @@ impl Device for Web {
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
-        self.page
-            .execute(InsertTextParams::new(text))
+        let page = self.current().await;
+        page.execute(InsertTextParams::new(text))
             .await
             .map_err(device)?;
         Ok(())
     }
 
     async fn clear(&self, chars: usize) -> Result<()> {
+        let page = self.current().await;
         // Select the field's text, then delete it with real key events so the app hears an edit.
-        self.page
+        page
             .evaluate("document.activeElement && document.activeElement.select && document.activeElement.select()")
             .await
             .map_err(device)?;
         self.key("Backspace", 8).await?;
         // Fields that can't select (contenteditable) fall back to one Backspace per character.
         for _ in 0..chars.min(200) {
-            let empty: bool = self
-                .page
+            let empty: bool = page
                 .evaluate("!document.activeElement || !(document.activeElement.value ?? document.activeElement.textContent)")
                 .await
                 .map_err(device)?
@@ -447,6 +550,13 @@ impl Device for Web {
     }
 
     async fn launch(&self) -> Result<()> {
+        // A window left open by the last spec would otherwise take every read and tap.
+        let main = self.page.target_id().clone();
+        for other in self.browser.pages().await.map_err(device)? {
+            if *other.target_id() != main {
+                let _ = other.close().await;
+            }
+        }
         self.page
             .goto(self.base_url.as_str())
             .await
@@ -460,8 +570,8 @@ impl Device for Web {
     }
 
     async fn screenshot(&self, path: &Path) -> Result<()> {
-        self.page
-            .save_screenshot(ScreenshotParams::builder().build(), path)
+        let page = self.current().await;
+        page.save_screenshot(ScreenshotParams::builder().build(), path)
             .await
             .map_err(device)?;
         Ok(())
@@ -500,8 +610,8 @@ impl Device for Web {
     }
 
     async fn screen_size(&self) -> Result<(f64, f64)> {
-        let size: Vec<f64> = self
-            .page
+        let page = self.current().await;
+        let size: Vec<f64> = page
             .evaluate("[innerWidth, innerHeight]")
             .await
             .map_err(device)?

@@ -185,10 +185,33 @@ pub struct PlatformConfig {
     pub base_url: Option<String>,
     /// Web only: the command that serves the app under test.
     pub start: Option<String>,
+    /// Web only: a Chrome profile signed in to Google by hand (`soundcheck web-profile`); each run starts from a copy.
+    /// An absolute path, or `~/` for the home folder.
+    pub profile: Option<String>,
     /// Labels that prove the app is ready to test once launched (signed in, past onboarding). The run checks them
     /// before it starts, so a signed-out device stops it there rather than failing every spec.
     #[serde(default)]
     pub ready: Vec<String>,
+}
+
+impl SuiteConfig {
+    /// The account `platform` signs in with, or empty: for a hook's `{account}`.
+    pub fn account(&self, platform: Platform) -> &str {
+        self.platforms
+            .get(&platform)
+            .and_then(|p| p.account.as_deref())
+            .unwrap_or_default()
+    }
+}
+
+impl PlatformConfig {
+    pub fn profile_dir(&self) -> Option<PathBuf> {
+        let profile = self.profile.as_deref()?;
+        Some(match profile.strip_prefix("~/") {
+            Some(rest) => PathBuf::from(std::env::var_os("HOME")?).join(rest),
+            None => PathBuf::from(profile),
+        })
+    }
 }
 
 /// Shell commands: exit 0 for ok, JSON on stdout where data comes back.

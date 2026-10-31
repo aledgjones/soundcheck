@@ -37,11 +37,12 @@ fn quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-/// Fills `{scenario}` and `{platform}` in a hook's command line.
-pub fn fill(command: &str, scenario: &str, platform: &str) -> String {
+/// Fills `{scenario}`, `{platform}` and `{account}` (the platform's, or empty) in a hook's command line.
+pub fn fill(command: &str, scenario: &str, platform: &str, account: &str) -> String {
     command
         .replace("{scenario}", &quote(scenario))
         .replace("{platform}", &quote(platform))
+        .replace("{account}", &quote(account))
 }
 
 /// Runs a hook and returns its stdout. A failure carries the end of its stderr, which is where the reason is.
@@ -158,11 +159,11 @@ mod tests {
     #[test]
     fn placeholders_are_quoted() {
         assert_eq!(
-            fill("seed {scenario} --on {platform}", "viewer", "ios"),
+            fill("seed {scenario} --on {platform}", "viewer", "ios", ""),
             "seed 'viewer' --on 'ios'"
         );
         assert_eq!(
-            fill("seed {scenario}", "a'b; rm", "x"),
+            fill("seed {scenario}", "a'b; rm", "x", ""),
             r"seed 'a'\''b; rm'"
         );
     }

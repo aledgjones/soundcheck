@@ -78,7 +78,10 @@ pub async fn connect(
             let base_url = config
                 .and_then(|p| p.base_url.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-            AnyDevice::Web(Box::new(Web::launch(&base_url, 1280, 800, headed).await?))
+            let profile = config.and_then(PlatformConfig::profile_dir);
+            AnyDevice::Web(Box::new(
+                Web::launch_from(&base_url, 1280, 800, headed, profile.as_deref()).await?,
+            ))
         }
         Platform::Android => {
             let app = config
@@ -707,7 +710,12 @@ impl Hub {
                 .reset()
                 .await?;
         }
-        let guard = hooks::fill(&config.hooks.guard, "", &platform.to_string());
+        let guard = hooks::fill(
+            &config.hooks.guard,
+            "",
+            &platform.to_string(),
+            config.account(platform),
+        );
         hooks::run(root, &guard, hooks::GUARD_TIMEOUT)
             .await
             .context("the guard refused")?;
@@ -810,7 +818,12 @@ impl Hub {
         for _ in 0..3 {
             let attempt = async {
                 self.online_and_guarded(platform).await?;
-                let seed = hooks::fill(&config.hooks.seed, &spec.front.seed, &platform.to_string());
+                let seed = hooks::fill(
+                    &config.hooks.seed,
+                    &spec.front.seed,
+                    &platform.to_string(),
+                    config.account(platform),
+                );
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
                     let starts_on = spec.front.starts_on.clone();
@@ -1307,7 +1320,7 @@ impl Hub {
             .chain(args.iter().map(String::as_str))
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
-        let hook = hooks::fill(hook, "", &platform.to_string());
+        let hook = hooks::fill(hook, "", &platform.to_string(), config.account(platform));
         let command = format!("{hook} {}", quoted.join(" "));
         match hooks::run(&suite.root, &command, hooks::SEED_TIMEOUT).await {
             Ok(out) => Ok(out),
@@ -1322,7 +1335,12 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let command = hooks::fill(&config.hooks.build_identity, "", &platform.to_string());
+        let command = hooks::fill(
+            &config.hooks.build_identity,
+            "",
+            &platform.to_string(),
+            config.account(platform),
+        );
         let out = hooks::run(&suite.root, &command, hooks::BUILD_IDENTITY_TIMEOUT).await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
             format!(
@@ -1346,7 +1364,7 @@ impl Hub {
         let Some(install) = &config.hooks.install else {
             anyhow::bail!("suite.yaml has no install hook, so builds are installed by hand");
         };
-        let command = hooks::fill(install, "", &platform.to_string());
+        let command = hooks::fill(install, "", &platform.to_string(), config.account(platform));
         hooks::run(&suite.root, &command, hooks::INSTALL_TIMEOUT)
             .await
             .with_context(|| format!("the install hook failed on {platform}"))?;

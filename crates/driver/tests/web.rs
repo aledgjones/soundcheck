@@ -1,4 +1,4 @@
-//! Drives a real headless Chrome against a small local page. Skips (with a note) where Chrome isn't installed.
+//! Drivs a ral headless Chrome against a small local page. Skips (with a note) where Chrome isn't installed.
 
 use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, Driver, Matcher};
@@ -202,4 +202,78 @@ async fn headed_chrome_runs_without_headless() {
         ours.iter().filter(|l| l.contains("--headless")).count()
     );
     drop(web);
+}
+
+/// Google's sign-in opens a popup: the driver reads and taps there while it's open, then the app's page again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_popup_takes_reads_and_taps_until_it_closes() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-popup-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("popup.html"),
+        r#"<body><button onclick="opener.postMessage('chosen', '*'); window.close()">Choose account</button></body>"#,
+    )
+    .unwrap();
+    let main = dir.join("main.html");
+    std::fs::write(
+        &main,
+        r#"<body><button onclick="open('popup.html', 'signin', 'width=400,height=500')">Sign in</button>
+<button onclick="this.textContent = document.title">Show title</button>
+<script>addEventListener('message', (e) => { document.title = e.data; });</script></body>"#,
+    )
+    .unwrap();
+    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    driver.tap(&m("Sign in"), false).await.unwrap();
+    let mut seen = Vec::new();
+    for _ in 0..20 {
+        seen = driver.see(None, false).await.unwrap();
+        if seen.iter().any(|e| e.label == "Choose account") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        seen.iter().any(|e| e.label == "Choose account"),
+        "{seen:#?}"
+    );
+    driver.tap(&m("Choose account"), false).await.unwrap();
+    for _ in 0..30 {
+        let seen = driver.see(None, false).await.unwrap();
+        eprintln!(
+            "after: {:?}",
+            seen.iter().map(|e| e.label.clone()).collect::<Vec<_>>()
+        );
+        if seen.iter().any(|e| e.label == "Show title") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    driver.tap(&m("Show title"), false).await.unwrap();
+    let seen = driver.see(None, false).await.unwrap();
+    assert!(seen.iter().any(|e| e.label == "chosen"), "{seen:#?}");
+    driver.device.close().await;
+}
+
+/// PostHog returns no feature flags to a "HeadlessChrome" user agent, so the page sees an ordinary Chrome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn headless_reads_as_ordinary_chrome() {
+    let page = "data:text/html,<button id=b></button><script>b.textContent = navigator.userAgent.includes('HeadlessChrome') ? 'headless' : 'chrome'</script>";
+    let web = match Web::launch(page, 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let seen = driver.see(None, false).await.unwrap();
+    assert!(seen.iter().any(|e| e.label == "chrome"), "{seen:#?}");
+    driver.device.close().await;
 }

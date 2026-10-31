@@ -34,6 +34,12 @@ enum Command {
         #[command(subcommand)]
         action: soundcheck::drive::Action,
     },
+    /// Open Chrome on the suite's web profile to sign in to Google by hand, once; runs start from a copy of it.
+    WebProfile {
+        /// The suite folder (the one holding suite.yaml).
+        #[arg(default_value = ".")]
+        suite: PathBuf,
+    },
     /// What each tester attempt in a run cost: tokens, calls by tool and working time, with totals.
     Usage {
         /// The run's folder.
@@ -196,6 +202,7 @@ fn main() -> ExitCode {
             no_open,
             remote,
         } => serve_command(&suite, port, open, !no_open, remote),
+        Command::WebProfile { suite } => web_profile_command(&suite),
         Command::Drive {
             platform,
             suite,
@@ -232,6 +239,27 @@ fn lint_command(root: &Path) -> ExitCode {
         eprintln!("{} problems", problems.len());
         ExitCode::FAILURE
     }
+}
+
+fn web_profile_command(root: &Path) -> Result<()> {
+    let suite = suite::load(root);
+    let web = suite
+        .config
+        .as_ref()
+        .and_then(|c| c.platforms.get(&Platform::Web));
+    let profile = web
+        .and_then(suite::config::PlatformConfig::profile_dir)
+        .context("suite.yaml gives web no profile")?;
+    let account = web
+        .and_then(|w| w.account.as_deref())
+        .unwrap_or("the suite's account");
+    println!(
+        "Chrome is opening on {}: sign in to Google as {account}, then quit Chrome (⌘Q). Runs start from a copy.",
+        profile.display()
+    );
+    soundcheck_driver::web::open_profile(&profile, "https://accounts.google.com/")?;
+    println!("saved {}", profile.display());
+    Ok(())
 }
 
 fn run_command(args: RunArgs) -> Result<()> {
@@ -405,6 +433,11 @@ fn run_command(args: RunArgs) -> Result<()> {
         .platforms
         .get(&Platform::Web)
         .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)));
+    let accounts: std::collections::BTreeMap<Platform, String> = config
+        .platforms
+        .keys()
+        .map(|&p| (p, config.account(p).to_string()))
+        .collect();
     let root_dir = root.to_path_buf();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -475,7 +508,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             } else {
                 "running the guard".into()
             });
-            let command = serve::hooks::fill(guard, "", &platform.to_string());
+            let command = serve::hooks::fill(guard, "", &platform.to_string(), &accounts[&platform]);
             let said = serve::hooks::run(&root_dir, &command, serve::hooks::GUARD_TIMEOUT)
                 .await
                 .context("the guard hook refused")?;
@@ -806,7 +839,8 @@ fn stack_command(action: &str, root: &Path) -> Result<()> {
         }
         // Without a record too: a stack started by hand, or one whose record was lost, still goes.
         for platform in config.platforms.keys() {
-            let command = serve::hooks::fill(down, "", &platform.to_string());
+            let command =
+                serve::hooks::fill(down, "", &platform.to_string(), config.account(*platform));
             serve::hooks::run(root, &command, soundcheck::stack::DOWN_TIMEOUT).await?;
             println!("{platform}: no stack left");
         }

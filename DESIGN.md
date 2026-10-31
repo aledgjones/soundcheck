@@ -323,7 +323,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `soundcheck: <version>`: the pin (section 8).
 - `platforms`:
   - app IDs per platform;
-  - for web: base URL, a start hook, browsers and viewports;
+  - for web: base URL, a start hook, browsers and viewports, and optionally a Chrome `profile` signed in to Google by hand with `soundcheck web-profile`: each run starts from a copy, since Google's sign-in refuses an automated browser and its session must already be there;
   - the account each platform signs in with (the prepare brief names it);
   - `ready`: labels that prove the launched app is ready to test (signed in, past onboarding), checked by the preflight.
 - `hooks`: the commands in 5.3.
@@ -351,7 +351,7 @@ Hooks are shell commands, so a project writes them in anything. The contract is 
 | `stack-up {platform}` | Optional, with `stack-down`: run start, before the guard (3.11)     | ok once the platform's blank backend answers           |
 | `stack-down {platform}` | When the run's server stops, or after one that died (3.11)        | ok, also when there's nothing to remove                |
 
-`{platform}` in any hook is filled with the platform it's for (a tester's own, for `check` and `act`), so a suite with a stack per platform points each hook at the right one; a guard with it runs once per platform at run start.
+`{platform}` in any hook is filled with the platform it's for (a tester's own, for `check` and `act`), so a suite with a stack per platform points each hook at the right one; a guard with it runs once per platform at run start. `{account}` is that platform's `account` (empty without one), so the account is named once, in suite.yaml.
 
 Every spec starts from its own full seed: no skipping and no snapshots. A spec never relies on state another spec left behind, so a rerun is independent and results can't depend on run order.
 

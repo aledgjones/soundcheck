@@ -75,8 +75,26 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             Platform::Web => {
                 need("base-url", &p.base_url);
                 need("start", &p.start);
+                if let Some(profile) = &p.profile
+                    && !(profile.starts_with('/') || profile.starts_with("~/"))
+                {
+                    push(
+                        CONFIG_FILE.into(),
+                        format!(
+                            "platforms.web.profile: {profile} must be absolute or start with ~/"
+                        ),
+                    );
+                }
             }
-            _ => need("app-id", &p.app_id),
+            _ => {
+                need("app-id", &p.app_id);
+                if p.profile.is_some() {
+                    push(
+                        CONFIG_FILE.into(),
+                        format!("platforms.{platform}.profile: only web has a Chrome profile"),
+                    );
+                }
+            }
         }
     }
     if let Some(network) = &config.network {

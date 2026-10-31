@@ -138,11 +138,20 @@ pub async fn up(root: &Path, config: &SuiteConfig, platform: Platform) -> Result
     let (Some(up), Some(down)) = (&config.hooks.stack_up, &config.hooks.stack_down) else {
         return Ok(None);
     };
-    start(root, &records_dir(root, config), platform, up, down)
-        .await
-        .map(Some)
+    let fill =
+        |command: &str| hooks::fill(command, "", &platform.to_string(), config.account(platform));
+    start(
+        root,
+        &records_dir(root, config),
+        platform,
+        &fill(up),
+        &fill(down),
+    )
+    .await
+    .map(Some)
 }
 
+/// `up` and `down` come filled in.
 async fn start(root: &Path, dir: &Path, platform: Platform, up: &str, down: &str) -> Result<Stack> {
     std::fs::create_dir_all(dir)?;
     let pid = std::process::id();
@@ -151,19 +160,15 @@ async fn start(root: &Path, dir: &Path, platform: Platform, up: &str, down: &str
         pid,
         started: started_at(pid).context("reading this server's start time")?,
         suite: std::fs::canonicalize(root)?,
-        down: hooks::fill(down, "", &platform.to_string()),
+        down: down.to_string(),
     };
     let path = dir.join(format!("{platform}.json"));
     // Written first, so a server killed while the stack starts still leaves it to the next one to remove.
     std::fs::write(&path, serde_json::to_string_pretty(&record)?)?;
     let stack = Stack { record, path };
-    hooks::run(
-        root,
-        &hooks::fill(up, "", &platform.to_string()),
-        UP_TIMEOUT,
-    )
-    .await
-    .with_context(|| format!("{platform}: the stack didn't start"))?;
+    hooks::run(root, up, UP_TIMEOUT)
+        .await
+        .with_context(|| format!("{platform}: the stack didn't start"))?;
     Ok(stack)
 }
 
