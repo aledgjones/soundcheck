@@ -324,7 +324,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `platforms`:
   - app IDs per platform;
   - for web: base URL, a start hook, browsers and viewports;
-  - the account each platform signs in with;
+  - the account each platform signs in with (the prepare brief names it);
   - `ready`: labels that prove the launched app is ready to test (signed in, past onboarding), checked by the preflight.
 - `hooks`: the commands in 5.3.
 - `specs`: the folder holding the feature folders (default: the suite folder itself).

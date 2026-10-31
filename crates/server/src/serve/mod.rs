@@ -725,6 +725,10 @@ impl Hub {
             .context("suite.yaml has no prepare")?;
         let steps = std::fs::read_to_string(suite.root.join(file))
             .with_context(|| format!("reading {}", file.display()))?;
+        let account = config
+            .platforms
+            .get(&platform)
+            .and_then(|p| p.account.clone());
         self.online_and_guarded(platform).await?;
         if !self.without_devices.contains(&platform) {
             self.on_device(platform, async |d| Device::launch(&d.device).await)
@@ -732,7 +736,7 @@ impl Hub {
         }
         self.with_run(|run, now| {
             let token = run.dispatch_prepare(now, platform, |token| {
-                prompt::prepare(&steps, platform, token)
+                prompt::prepare(&steps, platform, account.as_deref(), token)
             })?;
             Ok(Dispatched {
                 model: Some(config.models.default.clone()),
