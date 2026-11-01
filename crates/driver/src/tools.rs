@@ -109,6 +109,11 @@ pub const TOOLS: &[Tool] = &[
         "place with a held touch, screenshot the preview, release, and compare where it was saved",
     ),
     mechanic(
+        "match",
+        ALL,
+        "screenshot an element, crop and scale it, and score it against the suite's reference image",
+    ),
+    mechanic(
         "network-drop",
         ALL,
         "freeze the network for N seconds (nothing passes, nothing closes), then let new connections through",

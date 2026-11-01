@@ -504,6 +504,57 @@ impl<D: Device> Driver<D> {
         Ok(Comparison::new(p, s, req.tolerance))
     }
 
+    /// Screenshots the screen once it holds still, crops it to `target`'s frame and scales it to `reference`'s size
+    /// (or [`crate::reference::WIDTH`] wide with none), then scores it against `reference`. With `fit` (a width and
+    /// height), the region is the largest box of that shape centred in the frame: a page fitted inside a viewer that
+    /// only labels its whole area. `exclude` areas are left out of the score. The screenshot is written to `shot`.
+    pub async fn match_reference(
+        &self,
+        target: &Matcher,
+        fit: Option<(f64, f64)>,
+        exclude: &[[f64; 4]],
+        reference: Option<&image::RgbImage>,
+        shot: &Path,
+    ) -> Result<(
+        image::RgbImage,
+        Option<(crate::reference::Score, image::RgbImage)>,
+    )> {
+        crate::reference::check_exclude(exclude)?;
+        let element = self.wait_for(target, TAP_WAIT_MS, false).await?;
+        self.settled().await?;
+        if let Some(dir) = shot.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| DriverError::Device(e.to_string()))?;
+        }
+
+        self.device.screenshot(shot).await?;
+        let img = image::open(shot)
+            .map_err(|e| DriverError::Device(format!("{}: {e}", shot.display())))?
+            .into_rgb8();
+        let (units_w, _) = self.device.screen_size().await?;
+        let scale = f64::from(img.width()) / units_w;
+        let mut f = element.frame;
+        if let Some((w, h)) = fit {
+            let s = (f.width / w).min(f.height / h);
+            f = Rect {
+                x: f.x + (f.width - w * s) / 2.0,
+                y: f.y + (f.height - h * s) / 2.0,
+                width: w * s,
+                height: h * s,
+            };
+        }
+
+        let region = PixelBox {
+            x: (f.x * scale).round() as i64,
+            y: (f.y * scale).round() as i64,
+            w: (f.width * scale).round() as i64,
+            h: (f.height * scale).round() as i64,
+        };
+        let capture =
+            crate::reference::normalise(&img, region, reference.map(image::RgbImage::dimensions))?;
+        let scored = reference.map(|r| crate::reference::score(r, &capture, exclude));
+        Ok((capture, scored))
+    }
+
     /// Looks in what a screen reader gets first, then in everything `see` shows with `all`: a view marked not
     /// important (the score's page) is still a target by its id.
     async fn find(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {

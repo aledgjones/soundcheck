@@ -360,6 +360,17 @@ pub struct PreviewCompareParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+pub struct MatchParams {
+    pub token: String,
+    /// The suite's reference image, by name (`references/<name>.png`).
+    pub name: String,
+    /// The element whose frame holds what's compared, e.g. `Page 1`.
+    pub target: String,
+    /// The shape `[width, height]` of what's compared when `target` is a larger area it's fitted inside, centred.
+    pub fit: Option<[f64; 2]>,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 pub struct BatchParams {
     pub token: String,
     /// Steps in order; the batch stops at the first that fails.
@@ -1640,6 +1651,124 @@ impl Tools {
             Ok(json!({
                 "result": result.summary(),
                 "passed": result.passed,
+                "evidence": evidence,
+            }))
+        })
+        .await
+    }
+
+    #[tool(
+        name = "match",
+        description = "Tester: does an element render like the suite's reference image? Screenshots the screen once it holds still, crops it to `target` (or to a `fit` shape centred in it), scales it to the reference and scores how much of the ink differs, leaving out any areas the reference excludes. Returns PASSED or FAILED against this platform's bar, NO REFERENCE or NO BAR (kept for a person to approve), and the evidence to attach."
+    )]
+    async fn match_reference(
+        &self,
+        Parameters(p): Parameters<MatchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let refs = self.hub.references_dir();
+        let (spec, platform, attempt) = match self.attempt_of(&p.token) {
+            Ok(row) => row,
+            Err(e) => return reply(Err(e)),
+        };
+        let base = format!(
+            "{}-{}",
+            report::evidence_base(&spec, attempt, platform),
+            p.name
+        );
+        let run = self.hub.run_dir.clone();
+        self.device("match", &p.token, async |d| {
+            let invalid = |e: anyhow::Error| DriverError::Invalid(e.to_string());
+            if !crate::references::valid_name(&p.name) {
+                return Err(DriverError::Invalid(
+                    "name: letters, digits, - and _ only".into(),
+                ));
+            }
+
+            let path = crate::references::reference_png(&refs, &p.name);
+            let (reference, reference_id) = if path.exists() {
+                let bad = |e: String| DriverError::Invalid(format!("{}: {e}", path.display()));
+                let bytes = std::fs::read(&path).map_err(|e| bad(e.to_string()))?;
+                let image = image::load_from_memory(&bytes).map_err(|e| bad(e.to_string()))?;
+                (
+                    Some(image.into_rgb8()),
+                    Some(crate::references::reference_id(&bytes)),
+                )
+            } else {
+                (None, None)
+            };
+            let bars = crate::references::load_bars(&refs, &p.name).map_err(invalid)?;
+            let bar = bars.bars.get(&platform.to_string()).copied();
+            let shot = dir.join(format!("{base}-screen.png"));
+            let matched = d
+                .match_reference(
+                    &matcher(&p.target)?,
+                    p.fit.map(|[w, h]| (w, h)),
+                    &bars.exclude,
+                    reference.as_ref(),
+                    &shot,
+                )
+                .await;
+            let _ = std::fs::remove_file(&shot);
+            let (capture, scored) = matched?;
+
+            let keep = crate::references::capture_png(&run, &p.name, platform);
+            let save = |img: &image::RgbImage, to: &std::path::Path| {
+                if let Some(parent) = to.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                img.save(to)?;
+                anyhow::Ok(())
+            };
+            save(&capture, &keep).map_err(invalid)?;
+            let captured = crate::references::Captured {
+                differs: scored.as_ref().map(|(s, _)| s.differs),
+                shift: scored.as_ref().map(|(s, _)| s.shift),
+                reference: reference_id,
+            };
+            std::fs::write(
+                crate::references::captured_json(&run, &p.name, platform),
+                serde_json::to_string(&captured).map_err(|e| invalid(e.into()))?,
+            )
+            .map_err(|e| invalid(e.into()))?;
+
+            let mut evidence = Vec::new();
+            let mut store = |img: &image::RgbImage, stage: &str| {
+                let png = dir.join(format!("{base}-{stage}.png"));
+                let kept = format!("{base}-{stage}.webp");
+                if save(img, &png).is_ok() && report::store_shot(&png, &dir.join(&kept)).is_ok() {
+                    evidence.push(kept);
+                }
+                let _ = std::fs::remove_file(&png);
+            };
+            store(&capture, "capture");
+            let result = match (&scored, bar) {
+                (None, _) => {
+                    "NO REFERENCE: the capture is kept for a person to approve as the reference".to_string()
+                }
+                (Some((s, diff)), bar) => {
+                    store(diff, "diff");
+                    if let Some(r) = &reference {
+                        store(r, "reference");
+                    }
+                    match bar {
+                        None => format!(
+                            "NO BAR: {:.2}% of the ink differs; a person sets {platform}'s bar from this run",
+                            s.differs
+                        ),
+                        Some(bar) if s.differs <= bar => {
+                            format!("PASSED: {:.2}% of the ink differs, within {bar}%", s.differs)
+                        }
+                        Some(bar) => format!(
+                            "FAILED: {:.2}% of the ink differs, over {bar}%: red in the diff is reference ink the capture misses, blue is ink of its own",
+                            s.differs
+                        ),
+                    }
+                }
+            };
+            Ok(json!({
+                "result": result,
+                "passed": result.starts_with("PASSED"),
                 "evidence": evidence,
             }))
         })

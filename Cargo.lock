@@ -1633,6 +1633,7 @@ version = "0.2.11"
 dependencies = [
  "chromiumoxide",
  "futures",
+ "image",
  "png",
  "regex",
  "serde_json",

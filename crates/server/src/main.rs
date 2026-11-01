@@ -34,6 +34,25 @@ enum Command {
         #[command(subcommand)]
         action: soundcheck::drive::Action,
     },
+    /// Manage a `match` reference: adopt a run's capture as the reference, or set the bars from a run's scores.
+    Reference {
+        /// The suite folder (the one holding suite.yaml).
+        suite: PathBuf,
+        /// The reference's name, as specs pass it to `match`.
+        name: String,
+        /// The run: its folder, or its id (or a unique start of it).
+        #[arg(long)]
+        run: PathBuf,
+        /// Make this platform's capture the reference (clears the bars).
+        #[arg(long, conflicts_with = "bars")]
+        adopt: Option<Platform>,
+        /// Set each platform's bar from what it scored in the run; a bar only tightens.
+        #[arg(long)]
+        bars: bool,
+        /// With `--bars`, let a bar rise too.
+        #[arg(long, requires = "bars")]
+        loosen: bool,
+    },
     /// Open Chrome on the suite's web profile to sign in to Google by hand, once; runs start from a copy of it.
     WebProfile {
         /// The suite folder (the one holding suite.yaml).
@@ -202,6 +221,14 @@ fn main() -> ExitCode {
             no_open,
             remote,
         } => serve_command(&suite, port, open, !no_open, remote),
+        Command::Reference {
+            suite,
+            name,
+            run,
+            adopt,
+            bars,
+            loosen,
+        } => reference_command(&suite, &name, &run, adopt, bars, loosen),
         Command::WebProfile { suite } => web_profile_command(&suite),
         Command::Drive {
             platform,
@@ -220,6 +247,41 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn reference_command(
+    root: &Path,
+    name: &str,
+    run: &Path,
+    adopt: Option<Platform>,
+    bars: bool,
+    loosen: bool,
+) -> anyhow::Result<()> {
+    use soundcheck::references;
+
+    let suite = suite::load(root);
+    let config = suite.config.as_ref().context("suite.yaml")?;
+    let run = soundcheck::run::saved::find_run(&suite::reports_dir(root, config), run)?;
+    let dir = root.join("references");
+    if !references::valid_name(name) {
+        anyhow::bail!("{name}: letters, digits, - and _ only");
+    }
+
+    match (adopt, bars) {
+        (Some(platform), _) => {
+            references::adopt(&dir, &run, name, platform)?;
+            println!(
+                "{platform}'s capture is now the {name} reference; set the bars from a run against it with --bars"
+            );
+        }
+        (None, true) => {
+            for line in references::set_bars(&dir, &run, name, loosen)? {
+                println!("{line}");
+            }
+        }
+        (None, false) => anyhow::bail!("give --adopt <platform> or --bars"),
+    }
+    Ok(())
 }
 
 fn lint_command(root: &Path) -> ExitCode {

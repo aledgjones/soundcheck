@@ -114,7 +114,7 @@ summary:focus-visible,button:focus-visible,a:focus-visible{outline:2px solid var
 .sections{display:flex;flex-direction:column;gap:24px}
 .section{padding:26px 0 10px}
 .section header{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;padding:0 28px;margin-bottom:14px}
-.checks-head,.check>summary{display:grid;grid-template-columns:52px 1fr repeat(var(--platforms,2),minmax(0,150px));gap:14px;align-items:center}
+.checks-head,.check>summary{display:grid;grid-template-columns:52px 1fr repeat(var(--platforms,2),minmax(0,104px));gap:14px;align-items:center}
 .checks-head{font-size:13px;color:var(--label2);padding:4px 28px 8px}
 .check{position:relative}
 .check::before{content:"";position:absolute;top:0;left:94px;right:0;height:1px;background:var(--sep)}

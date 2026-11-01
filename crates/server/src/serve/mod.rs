@@ -1332,6 +1332,10 @@ impl Hub {
         suite.root.join(dir.unwrap_or_else(|| "fixtures".into()))
     }
 
+    pub fn references_dir(&self) -> PathBuf {
+        self.suite().root.join("references")
+    }
+
     /// Runs the project's check or act hook for the tester's platform: `<hook> <name> <args...>`, each quoted for the
     /// shell. A failing call is still evidence, so its exit and output come back rather than an error.
     pub async fn project_hook(
