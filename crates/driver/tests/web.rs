@@ -538,3 +538,63 @@ async fn a_file_picker_offers_what_was_pushed_and_downloads_are_seen() {
     );
     driver.device.close().await;
 }
+
+/// The web app works offline through its service worker, so the worker has to run in soundcheck's Chrome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_worker_starts_and_controls_the_page() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut request = [0u8; 2048];
+            let n = stream.read(&mut request).await.unwrap_or(0);
+            let (kind, body) = if String::from_utf8_lossy(&request[..n]).starts_with("GET /sw.js") {
+                (
+                    "text/javascript",
+                    "addEventListener('install', () => skipWaiting()); addEventListener('activate', (e) => e.waitUntil(clients.claim())); addEventListener('fetch', (e) => e.request.mode === 'navigate' && e.respondWith(new Response('<p>served by the worker</p>', { headers: { 'Content-Type': 'text/html' } })));",
+                )
+            } else {
+                (
+                    "text/html",
+                    "<p id=s>uncontrolled</p><script>navigator.serviceWorker.addEventListener('controllerchange', () => s.textContent = 'controlled'); navigator.serviceWorker.register('/sw.js');</script>",
+                )
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: {kind}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    });
+    let web = match Web::launch(&format!("http://localhost:{port}/"), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let mut seen = Vec::new();
+    for _ in 0..50 {
+        seen = driver.see(None, false).await.unwrap();
+        if seen.iter().any(|e| e.label == "controlled") {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(seen.iter().any(|e| e.label == "controlled"), "{seen:#?}");
+    // A relaunch navigates a page the worker now controls.
+    driver.device.launch().await.unwrap();
+    driver.device.offline(true).await.unwrap();
+    driver.device.launch().await.unwrap();
+    let seen = driver.see(None, false).await.unwrap();
+    assert!(
+        seen.iter().any(|e| e.label == "served by the worker"),
+        "{seen:#?}"
+    );
+    driver.device.offline(false).await.unwrap();
+    driver.device.close().await;
+}

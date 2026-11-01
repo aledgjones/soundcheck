@@ -28,6 +28,9 @@ use chromiumoxide::cdp::browser_protocol::page::{
     DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
     FileChooserOpenedMode, HandleJavaScriptDialogParams, SetInterceptFileChooserDialogParams,
 };
+use chromiumoxide::cdp::browser_protocol::target::{
+    FilterEntry, SetAutoAttachParams, TargetFilter,
+};
 use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExceptionThrown};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
@@ -297,6 +300,25 @@ impl Web {
             while handler.next().await.is_some() {}
         })];
         let page = browser.new_page("about:blank").await.map_err(device)?;
+        // chromiumoxide pauses attached targets for a debugger and detaches from service workers without resuming
+        // them, so the app's service worker never runs: leave them out. Frames still need the pause.
+        let skip = |kind: &str| FilterEntry::builder().r#type(kind).exclude(true).build();
+        page.execute(
+            SetAutoAttachParams::builder()
+                .auto_attach(true)
+                .wait_for_debugger_on_start(true)
+                .flatten(true)
+                .filter(TargetFilter::new(vec![
+                    skip("service_worker"),
+                    skip("browser"),
+                    skip("tab"),
+                    FilterEntry::default(),
+                ]))
+                .build()
+                .map_err(device)?,
+        )
+        .await
+        .map_err(device)?;
         // Services treat "HeadlessChrome" as a bot (PostHog returns no feature flags to it), so it reads as the
         // Chrome it is.
         let agent = page
