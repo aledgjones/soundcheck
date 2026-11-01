@@ -250,6 +250,12 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 config.seeds.join(", ")
             ));
         }
+        if f.starts_on.is_some() {
+            push(
+                "starts-on: gone; a spec starts on the home screen, or give it a `start` link"
+                    .into(),
+            );
+        }
         for (platform, link) in &f.start {
             if !f.platforms.contains(platform) {
                 push(format!("start: {platform} isn't in platforms"));

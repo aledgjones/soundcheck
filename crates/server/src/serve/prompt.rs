@@ -114,8 +114,9 @@ As soon as you've settled an outcome, record it with `judge`: the run shows your
 
 Call `post_result` once, at the end. It takes up everything you've judged; add a judgment for any outcome you haven't, by its number:
 
-- `held`: you observed it working.
+- `held`: you observed it working, all of it.
 - `failed`: you observed it broken.
+- An outcome, or part of one, that this platform can't show (an on-screen keyboard on web, say) is never `held`: judge it `unsure` and say what the platform lacks, so the coordinator can sort out which platforms the spec is for.
 - `unsure`: you observed it but can't tell whether it's right. Say exactly what was unclear.
 - `couldnt-check`: you never got to observe it (a control you couldn't reach, a step that wouldn't work). Say why.
 

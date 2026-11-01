@@ -25,6 +25,10 @@ pub struct Frontmatter {
     /// path on the base URL's site).
     #[serde(default)]
     pub start: BTreeMap<Platform, String>,
+    /// Gone (every spec starts on the home screen or its `start` link), but read so a run's saved copy of an older
+    /// suite still opens; lint refuses it in a live suite.
+    #[serde(default)]
+    pub starts_on: Option<serde_yaml_ng::Value>,
     pub platforms: Vec<Platform>,
     pub model: Option<String>,
     #[serde(default)]
@@ -208,5 +212,15 @@ Undo twice quickly.
             problems[0].contains("unknown field `checks`"),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn a_saved_suite_from_before_start_links_still_reads() {
+        let old = GOOD.replace(
+            "platforms: [android, ios]",
+            "starts-on: [Annotate]\nplatforms: [android, ios]",
+        );
+        let spec = parse("annotations/001-draw", "annotations", &old).unwrap();
+        assert!(spec.front.starts_on.is_some());
     }
 }
