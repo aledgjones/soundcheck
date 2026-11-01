@@ -39,7 +39,7 @@ fn a_broken_suite_reports_every_rule() {
         "annotations/004-tools.spec.md: viewport: a spec that runs on web gives its page size",
         "annotations/004-tools.spec.md: platforms: ios isn't configured in suite.yaml",
         "annotations/004-tools.spec.md: tools: tap is a basic tool",
-        "annotations/004-tools.spec.md: tools: network-drop on a device needs suite.yaml's network section",
+        "annotations/004-tools.spec.md: tools: network-drop needs suite.yaml's network section",
         "annotations/003-empty.spec.md: needs a `## Goal` with text",
         "annotations/003-empty.spec.md: needs a `## Outcomes` list",
         "annotations/_feature.md: every feature needs a _feature.md",

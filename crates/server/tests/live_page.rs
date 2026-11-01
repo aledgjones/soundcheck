@@ -202,6 +202,8 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             "http://localhost:5173",
             &format!("file://{}", page.display()),
         );
+    // A file:// page reaches no service, and the fixture's proxy ports may be a real suite's.
+    let config = config.split("\nnetwork:").next().unwrap().to_string();
     std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
 
     let suite = suite::load(&suite_dir);

@@ -107,8 +107,8 @@ pub async fn connect(
     })
 }
 
-/// A platform's driver as a run uses it: its device and, on Android and iOS, the suite's network proxy (started if
-/// it isn't up), with Android's ports forwarded to it.
+/// A platform's driver as a run uses it: its device and the suite's network proxy for it (started if it isn't up),
+/// with Android's ports forwarded to it.
 pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<Driver<AnyDevice>> {
     let config = suite.config.as_ref();
     let device = connect(
@@ -119,7 +119,7 @@ pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<D
     .await?;
     let routes = config.and_then(|c| crate::network::routes(c, platform));
     let (device, network) = match (device, routes) {
-        (device @ AnyDevice::Web(_), _) | (device, None) => (device, None),
+        (device, None) => (device, None),
         (AnyDevice::Android(android), Some(routes)) => {
             let network = crate::network::ensure(&suite.root, platform, &routes).await?;
             let forwards = config.map_or_else(Vec::new, |c| crate::network::forwards(c, platform));
@@ -718,15 +718,14 @@ impl Hub {
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let root = &suite.root;
         if let Some(routes) = crate::network::routes(config, platform)
-            .filter(|_| platform != Platform::Web && !self.without_devices.contains(&platform))
+            .filter(|_| !self.without_devices.contains(&platform))
         {
             crate::network::ensure(root, platform, &routes)
                 .await?
                 .reset()
                 .await?;
-        }
-        // Web has no proxy: its network is Chrome's own switch, which outlives a page reload.
-        if platform == Platform::Web && !self.without_devices.contains(&platform) {
+        } else if platform == Platform::Web && !self.without_devices.contains(&platform) {
+            // Without a proxy, web's network is Chrome's own switch, which outlives a page reload.
             self.on_device(platform, async |d| d.device.offline(false).await)
                 .await?;
         }

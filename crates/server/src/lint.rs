@@ -322,13 +322,15 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                             push(format!("tools: {name} doesn't run on {platform}"));
                         }
                     }
-                    // Web has the browser's own switch; a device's network goes through the suite's proxy.
+                    // Without a proxy, web falls back on the browser's own switch, which can't fault one path.
                     if NETWORK_TOOLS.contains(&name.as_str())
                         && config.network.is_none()
-                        && f.platforms.iter().any(|p| *p != Platform::Web)
+                        && f.platforms
+                            .iter()
+                            .any(|p| *p != Platform::Web || name == "fault")
                     {
                         push(format!(
-                            "tools: {name} on a device needs suite.yaml's network section (the proxy it goes through)"
+                            "tools: {name} needs suite.yaml's network section (the proxy it goes through)"
                         ));
                     }
                 }

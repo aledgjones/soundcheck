@@ -495,6 +495,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         .platforms
         .get(&Platform::Web)
         .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)));
+    let web_routes = soundcheck::network::routes(config, Platform::Web);
     let accounts: std::collections::BTreeMap<Platform, String> = config
         .platforms
         .keys()
@@ -589,6 +590,10 @@ fn run_command(args: RunArgs) -> Result<()> {
         // The web app under test, if the suite starts one: it runs as long as the run does.
         let _web_app = match config_web_start {
             Some((start, base_url)) if platforms.contains(&Platform::Web) => {
+                // The run waits on `base-url`, which may itself go through the proxy.
+                if let Some(routes) = &web_routes {
+                    soundcheck::network::ensure(&root_dir, Platform::Web, routes).await?;
+                }
                 println!("starting the web app: {start}");
                 hub.start_step("starting the web app");
                 Some(

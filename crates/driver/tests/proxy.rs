@@ -336,6 +336,56 @@ async fn a_fault_answers_its_path_and_lets_the_rest_through() {
     proxy::command(&socket, "stop").await.unwrap();
 }
 
+/// Sends `raw` on a fresh connection and returns everything the proxy answers before closing.
+async fn exchange(port: u16, raw: &str) -> String {
+    let mut conn = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+    conn.write_all(raw.as_bytes()).await.unwrap();
+    let mut reply = vec![0u8; 4096];
+    let n = tokio::time::timeout(Duration::from_secs(1), conn.read(&mut reply))
+        .await
+        .unwrap()
+        .unwrap();
+    String::from_utf8_lossy(&reply[..n]).into_owned()
+}
+
+#[tokio::test]
+async fn a_fault_lets_a_browser_see_its_status() {
+    let socket = start_http(19107, 19007).await;
+    proxy::command(&socket, "fault /write 503").await.unwrap();
+
+    let preflight = exchange(
+        19107,
+        "OPTIONS /write HTTP/1.1\r\nhost: localhost\r\norigin: http://localhost:43173\r\n\r\n",
+    )
+    .await;
+    assert!(
+        preflight.contains("/write 0"),
+        "the preflight was faulted: {preflight}"
+    );
+
+    let faulted = exchange(
+        19107,
+        "POST /write HTTP/1.1\r\nhost: localhost\r\nOrigin: http://localhost:43173\r\ncontent-length: 0\r\n\r\n",
+    )
+    .await;
+    assert!(faulted.starts_with("HTTP/1.1 503"), "{faulted}");
+    assert!(
+        faulted.contains("access-control-allow-origin: http://localhost:43173\r\n"),
+        "the fault didn't allow the page's origin: {faulted}"
+    );
+
+    let unfetched = exchange(
+        19107,
+        "POST /write HTTP/1.1\r\nhost: localhost\r\ncontent-length: 0\r\n\r\n",
+    )
+    .await;
+    assert!(
+        !unfetched.contains("access-control"),
+        "a request from no page got CORS headers: {unfetched}"
+    );
+    proxy::command(&socket, "stop").await.unwrap();
+}
+
 #[tokio::test]
 async fn reset_brings_the_proxy_online_with_no_faults() {
     let socket = start_http(19105, 19005).await;

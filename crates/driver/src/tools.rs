@@ -125,7 +125,7 @@ pub const TOOLS: &[Tool] = &[
     ),
     mechanic(
         "fault",
-        &[Platform::Android, Platform::Ios],
+        ALL,
         "have a service answer requests to one path with an error status, until cleared",
     ),
 ];

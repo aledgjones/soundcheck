@@ -463,6 +463,10 @@ struct Head {
     /// After an `Upgrade` (PowerSync's websocket) the connection is no longer HTTP.
     upgrade: bool,
     expects_continue: bool,
+    /// A browser's CORS check, which passes even a faulted path: the browser needs it to see the fault at all.
+    preflight: bool,
+    /// The page a browser request came from, which a fault answer must allow or the page never sees its status.
+    origin: Option<String>,
 }
 
 enum Read {
@@ -505,7 +509,7 @@ async fn requests(
         let status = faults
             .borrow()
             .iter()
-            .find(|f| f.matches(&head.target))
+            .find(|f| !head.preflight && f.matches(&head.target))
             .map(|f| f.status);
         if let Some(status) = status.filter(|_| !frozen.load(Ordering::SeqCst)) {
             // Read to the end first: closing with a body unread resets the connection, and the client loses the
@@ -514,7 +518,7 @@ async fn requests(
                 let _ = body(&mut from, None, &head.body, &frozen).await;
             }
 
-            return Ended::Fault(answer(status));
+            return Ended::Fault(answer(status, head.origin.as_deref()));
         }
 
         if let Some(host) = host {
@@ -588,12 +592,15 @@ async fn read_head(from: &mut BufReader<OwnedReadHalf>) -> Read {
         .and_then(|l| l.split_whitespace().next())
         .unwrap_or("")
         .to_string();
+    let preflight = &bytes[..start] == b"OPTIONS";
     let mut head = Head {
         bytes,
         target,
         body: Body::None,
         upgrade: false,
         expects_continue: false,
+        preflight,
+        origin: None,
     };
     for line in lines {
         let Some((name, value)) = line.split_once(':') else {
@@ -607,6 +614,14 @@ async fn read_head(from: &mut BufReader<OwnedReadHalf>) -> Read {
             }
             "upgrade" => head.upgrade = true,
             "expect" if value == "100-continue" => head.expects_continue = true,
+            "origin" => {
+                head.origin = Some(
+                    line.split_once(':')
+                        .map_or("", |(_, v)| v)
+                        .trim()
+                        .to_string(),
+                )
+            }
             _ => {}
         }
     }
@@ -717,7 +732,7 @@ async fn finish(mut to: Upstreamed, frozen: &AtomicBool) {
 }
 
 /// A response shaped like the service's own errors (Fastify's), so the app treats it as one.
-fn answer(status: u16) -> Vec<u8> {
+fn answer(status: u16, origin: Option<&str>) -> Vec<u8> {
     let reason = match status {
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -733,10 +748,14 @@ fn answer(status: u16) -> Vec<u8> {
         504 => "Gateway Timeout",
         _ => "Error",
     };
+    // As the service's own CORS headers would, so a browser hands the page the status.
+    let cors = origin.map_or(String::new(), |o| {
+        format!("access-control-allow-origin: {o}\r\naccess-control-allow-credentials: true\r\nvary: origin\r\n")
+    });
     let body =
         format!(r#"{{"statusCode":{status},"error":"{reason}","message":"soundcheck fault"}}"#);
     format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status} {reason}\r\ncontent-type: application/json; charset=utf-8\r\ncontent-length: {}\r\n{cors}connection: close\r\n\r\n{body}",
         body.len()
     )
     .into_bytes()

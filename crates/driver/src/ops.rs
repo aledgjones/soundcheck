@@ -409,7 +409,7 @@ impl<D: Device> Driver<D> {
     }
 
     /// Has the suite's proxy answer HTTP requests to `path` (`*` for any one segment) with `status` instead of
-    /// passing them on, until cleared; returns every fault now set. Only the proxy can, so web refuses it.
+    /// passing them on, until cleared; returns every fault now set. Only the proxy can.
     pub async fn fault(&self, path: &str, status: u16) -> Result<String> {
         match &self.network {
             Some(n) => n.fault(path, status).await,
