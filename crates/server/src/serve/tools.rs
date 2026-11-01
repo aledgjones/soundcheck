@@ -284,7 +284,7 @@ pub struct HoldParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct GotoParams {
     pub token: String,
-    /// `back` or `forward`.
+    /// `back`, `forward`, or `close` for a tab the app opened.
     pub url: String,
 }
 
@@ -457,9 +457,9 @@ impl Step {
 
 /// Past its start a spec moves around as a person does: a typed URL or a deep link would skip the app's own way there.
 async fn back_or_forward(d: &Driver<AnyDevice>, url: &str) -> Result<(), DriverError> {
-    if url != "back" && url != "forward" {
+    if !matches!(url, "back" | "forward" | "close") {
         return Err(DriverError::Invalid(format!(
-            "goto only goes back or forward, not to {url:?}: reach a page through the app"
+            "goto only goes back, forward or closes a tab the app opened, not to {url:?}: reach a page through the app"
         )));
     }
     d.device.goto(url).await
@@ -1405,7 +1405,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester (web): go `back` or `forward`, as the browser's buttons do. Returns the screen once it holds still."
+        description = "Tester (web): go `back` or `forward`, or `close` a tab the app opened, as the browser's buttons do. Returns the screen once it holds still."
     )]
     async fn goto(
         &self,

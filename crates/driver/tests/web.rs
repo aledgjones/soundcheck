@@ -338,3 +338,64 @@ async fn browser_dialogs_are_seen_and_answered() {
     assert_eq!(seen, ["Later?", "OK", "Cancel"]);
     driver.device.close().await;
 }
+
+#[tokio::test]
+async fn a_swipe_scrolls_and_close_shuts_a_tab_the_page_opened() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-tab-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("terms.html"), "<body><h1>Terms</h1></body>").unwrap();
+    let main = dir.join("main.html");
+    std::fs::write(
+        &main,
+        r#"<body style="height:3000px"><button onclick="open('terms.html', '_blank', 'noopener')">Terms</button>
+<button onclick="this.textContent = 'scrolled ' + scrollY">Where</button>
+<img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width=400 height=400></body>"#,
+    )
+    .unwrap();
+    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+
+    // Starting on the image, as a drag would have pulled it out of the page.
+    driver
+        .device
+        .swipe((200.0, 300.0), (200.0, 100.0), 300)
+        .await
+        .unwrap();
+    driver
+        .device
+        .goto("close")
+        .await
+        .expect_err("the app's own tab stays");
+    driver
+        .device
+        .swipe((200.0, 300.0), (200.0, 500.0), 300)
+        .await
+        .unwrap();
+    driver
+        .device
+        .swipe((200.0, 300.0), (200.0, 100.0), 300)
+        .await
+        .unwrap();
+    driver.tap(&m("Where"), false).await.unwrap();
+    assert!(
+        driver
+            .see(None, false)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.label == "scrolled 200"),
+        "a swipe up by 200 scrolls down by 200"
+    );
+
+    driver.tap(&m("Terms"), false).await.unwrap();
+    driver.wait(&m("Terms"), 5_000).await.unwrap();
+    driver.device.goto("close").await.unwrap();
+    driver.wait(&m("scrolled 200"), 5_000).await.unwrap();
+    driver.device.close().await;
+}

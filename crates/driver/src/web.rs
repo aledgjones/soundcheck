@@ -7,6 +7,9 @@ use chromiumoxide::browser::{Browser, BrowserConfig};
 use chromiumoxide::cdp::browser_protocol::accessibility::{
     AxNode, AxPropertyName, AxValue, GetFullAxTreeParams,
 };
+use chromiumoxide::cdp::browser_protocol::browser::{
+    Bounds, GetWindowForTargetParams, SetWindowBoundsParams,
+};
 use chromiumoxide::cdp::browser_protocol::dom::GetBoxModelParams;
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::input::{
@@ -55,6 +58,8 @@ pub struct Web {
     prompt: Mutex<String>,
     /// The viewport, which can't be asked while a dialog blocks the page.
     size: Mutex<(f64, f64)>,
+    /// Headed, how much wider and taller the window is than the page it shows: its tab strip, address bar and edges.
+    frame: Option<(i64, i64)>,
 }
 
 /// A kept touch's start and where it is now.
@@ -159,6 +164,28 @@ async fn set_page_offline(page: &Page, offline: bool) -> Result<()> {
 }
 
 impl Web {
+    /// Sizes a headed window so it shows the whole viewport: Chrome counts its own toolbars in a window's size.
+    async fn fit_window(&self, width: u32, height: u32) -> Result<()> {
+        let Some((w, h)) = self.frame else {
+            return Ok(());
+        };
+        let window = self
+            .page
+            .execute(GetWindowForTargetParams::default())
+            .await
+            .map_err(device)?;
+        let bounds = Bounds {
+            width: Some(i64::from(width) + w),
+            height: Some(i64::from(height) + h),
+            ..Default::default()
+        };
+        self.page
+            .execute(SetWindowBoundsParams::new(window.result.window_id, bounds))
+            .await
+            .map_err(device)?;
+        Ok(())
+    }
+
     async fn touch_down(&self, x: f64, y: f64) -> Result<()> {
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
@@ -227,6 +254,17 @@ impl Web {
             .map_err(device)?
             .replace("HeadlessChrome", "Chrome");
         page.set_user_agent(agent).await.map_err(device)?;
+        let frame = if headed {
+            let (w, h): (i64, i64) = page
+                .evaluate("[outerWidth - innerWidth, outerHeight - innerHeight]")
+                .await
+                .map_err(device)?
+                .into_value()
+                .map_err(device)?;
+            Some((w, h))
+        } else {
+            None
+        };
         page.execute(SetDeviceMetricsOverrideParams::new(
             width, height, 1.0, false,
         ))
@@ -310,7 +348,9 @@ impl Web {
             dialog,
             prompt: Mutex::new(String::new()),
             size: Mutex::new((f64::from(width), f64::from(height))),
+            frame,
         };
+        web.fit_window(width, height).await?;
         web.launch().await?;
         Ok(web)
     }
@@ -684,20 +724,25 @@ impl Device for Web {
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
         self.blocked()?;
+        // A desktop scrolls with the wheel or trackpad, never by dragging (a drag that starts on an image or a link
+        // drags it out): so a swipe scrolls what's under its start, by as much as a finger would have moved it.
         let steps = (ms / 16).clamp(2, 60);
         self.mouse(DispatchMouseEventType::MouseMoved, from.0, from.1, false)
             .await?;
-        self.mouse(DispatchMouseEventType::MousePressed, from.0, from.1, true)
-            .await?;
-        for i in 1..=steps {
-            let t = i as f64 / steps as f64;
-            let (x, y) = (from.0 + (to.0 - from.0) * t, from.1 + (to.1 - from.1) * t);
-            self.mouse(DispatchMouseEventType::MouseMoved, x, y, true)
-                .await?;
+        let page = self.current().await;
+        let (dx, dy) = (
+            (from.0 - to.0) / steps as f64,
+            (from.1 - to.1) / steps as f64,
+        );
+        for _ in 0..steps {
+            let mut params =
+                DispatchMouseEventParams::new(DispatchMouseEventType::MouseWheel, from.0, from.1);
+            params.delta_x = Some(dx);
+            params.delta_y = Some(dy);
+            self.until_dialog(page.execute(params)).await?;
             sleep(Duration::from_millis(ms / steps)).await;
         }
-        self.mouse(DispatchMouseEventType::MouseReleased, to.0, to.1, false)
-            .await
+        Ok(())
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
@@ -835,15 +880,23 @@ impl Device for Web {
 
     async fn goto(&self, url: &str) -> Result<()> {
         self.blocked()?;
+        // Back, forward and close act on the tab in front, as the browser's own buttons do.
+        let front = self.current().await;
         match url {
             "back" => {
-                self.page.evaluate("history.back()").await.map_err(device)?;
+                front.evaluate("history.back()").await.map_err(device)?;
             }
             "forward" => {
-                self.page
-                    .evaluate("history.forward()")
-                    .await
-                    .map_err(device)?;
+                front.evaluate("history.forward()").await.map_err(device)?;
+            }
+            "close" => {
+                if front.target_id() == self.page.target_id() {
+                    return Err(DriverError::Invalid(
+                        "close shuts a tab or window the app opened; the app's own tab stays"
+                            .into(),
+                    ));
+                }
+                front.close().await.map_err(device)?;
             }
             url => {
                 self.page.goto(url).await.map_err(device)?;
@@ -863,7 +916,7 @@ impl Device for Web {
             ))
             .await
             .map_err(device)?;
-        Ok(())
+        self.fit_window(width, height).await
     }
 
     async fn offline(&self, on: bool) -> Result<()> {
