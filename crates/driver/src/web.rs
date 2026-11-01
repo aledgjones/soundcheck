@@ -17,6 +17,10 @@ use chromiumoxide::cdp::browser_protocol::network::{
     EmulateNetworkConditionsByRuleParams, EnableParams as NetworkEnable, NetworkConditions,
     OverrideNetworkStateParams,
 };
+use chromiumoxide::cdp::browser_protocol::page::{
+    DialogType, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
+    HandleJavaScriptDialogParams,
+};
 use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExceptionThrown};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
@@ -45,10 +49,24 @@ pub struct Web {
     held: Mutex<Option<Held>>,
     /// This launch's own profile, removed on close.
     profile: PathBuf,
+    /// An alert, confirm or prompt the app's page has open: it blocks the page until it's answered.
+    dialog: Arc<Mutex<Option<Dialog>>>,
+    /// What's been typed into an open prompt, sent when it's accepted.
+    prompt: Mutex<String>,
+    /// The viewport, which can't be asked while a dialog blocks the page.
+    size: Mutex<(f64, f64)>,
 }
 
 /// A kept touch's start and where it is now.
 type Held = ((f64, f64), (f64, f64));
+
+#[derive(Clone)]
+struct Dialog {
+    message: String,
+    /// Confirm and prompt have Cancel; alert has only OK.
+    cancel: bool,
+    prompt: bool,
+}
 
 /// Copies a profile, leaving out the running Chrome's locks (symlinks) and caches it rebuilds itself.
 fn copy_profile(from: &Path, to: &Path) -> std::io::Result<()> {
@@ -215,6 +233,31 @@ impl Web {
         .await
         .map_err(device)?;
 
+        let dialog = Arc::new(Mutex::new(None));
+        let mut opening = page
+            .event_listener::<EventJavascriptDialogOpening>()
+            .await
+            .map_err(device)?;
+        let sink = dialog.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(e) = opening.next().await {
+                *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(Dialog {
+                    message: e.message.clone(),
+                    cancel: e.r#type != DialogType::Alert,
+                    prompt: e.r#type == DialogType::Prompt,
+                });
+            }
+        }));
+        let mut closed = page
+            .event_listener::<EventJavascriptDialogClosed>()
+            .await
+            .map_err(device)?;
+        let sink = dialog.clone();
+        tasks.push(tokio::spawn(async move {
+            while closed.next().await.is_some() {
+                *sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            }
+        }));
         let errors = Arc::new(Mutex::new(Vec::new()));
         let mut exceptions = page
             .event_listener::<EventExceptionThrown>()
@@ -264,6 +307,9 @@ impl Web {
             tasks,
             held: Mutex::new(None),
             profile: profile_dir,
+            dialog,
+            prompt: Mutex::new(String::new()),
+            size: Mutex::new((f64::from(width), f64::from(height))),
         };
         web.launch().await?;
         Ok(web)
@@ -299,6 +345,88 @@ impl Web {
         self.page.clone()
     }
 
+    fn open_dialog(&self) -> Option<Dialog> {
+        self.dialog
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// An open dialog as `see` shows it, in place of the page it blocks: its message, a prompt's field, and its
+    /// buttons with Chrome's labels, centred as Chrome draws them.
+    fn dialog_elements(&self, dialog: &Dialog) -> Vec<Element> {
+        let (w, h) = *self.size.lock().unwrap_or_else(|e| e.into_inner());
+        let (cx, cy) = (w / 2.0, h / 2.0);
+        let mut elements = vec![Element {
+            label: dialog.message.clone(),
+            role: Some("alert".into()),
+            frame: Rect {
+                x: cx - 200.0,
+                y: cy - 80.0,
+                width: 400.0,
+                height: 40.0,
+            },
+            enabled: true,
+            ..Default::default()
+        }];
+        if dialog.prompt {
+            let typed = self.prompt.lock().unwrap_or_else(|e| e.into_inner());
+            elements.push(Element {
+                label: "Prompt".into(),
+                value: Some(typed.clone()),
+                role: Some("textbox".into()),
+                frame: Rect {
+                    x: cx - 200.0,
+                    y: cy - 30.0,
+                    width: 400.0,
+                    height: 32.0,
+                },
+                enabled: true,
+                focused: true,
+                ..Default::default()
+            });
+        }
+        let button = |label: &str, x: f64| Element {
+            label: label.into(),
+            role: Some("button".into()),
+            frame: Rect {
+                x,
+                y: cy + 20.0,
+                width: 90.0,
+                height: 32.0,
+            },
+            enabled: true,
+            ..Default::default()
+        };
+        elements.push(button("OK", cx + 10.0));
+        if dialog.cancel {
+            elements.push(button("Cancel", cx - 100.0));
+        }
+        elements
+    }
+
+    /// Answers the open dialog: OK with what's been typed into a prompt, or Cancel.
+    async fn answer_dialog(&self, accept: bool) -> Result<()> {
+        let typed = std::mem::take(&mut *self.prompt.lock().unwrap_or_else(|e| e.into_inner()));
+        let mut params = HandleJavaScriptDialogParams::new(accept);
+        params.prompt_text = Some(typed);
+        self.page.execute(params).await.map_err(device)?;
+        *self.dialog.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        Ok(())
+    }
+
+    /// While a dialog is open nothing else on the page answers, so anything but its buttons is refused clearly.
+    fn blocked(&self) -> Result<()> {
+        match self.open_dialog() {
+            Some(d) => Err(DriverError::Invalid(format!(
+                "a browser dialog is open (\"{}\"): tap {} first",
+                d.message,
+                if d.cancel { "OK or Cancel" } else { "OK" }
+            ))),
+            None => Ok(()),
+        }
+    }
+
     async fn reveal(&self, x: f64, y: f64) -> Result<(f64, f64)> {
         let page = self.current().await;
         let script = format!(
@@ -308,12 +436,10 @@ impl Web {
                scrollBy(x < 0 || x >= innerWidth ? x - innerWidth / 2 : 0, y < 0 || y >= innerHeight ? y - innerHeight / 2 : 0); \
                return [x - (scrollX - before[0]), y - (scrollY - before[1])]; }})()"
         );
-        let point: Vec<f64> = page
-            .evaluate(script)
-            .await
-            .map_err(device)?
-            .into_value()
-            .map_err(device)?;
+        let Some(point) = self.unless_dialog(page.evaluate(script)).await? else {
+            return self.blocked().map(|()| (x, y));
+        };
+        let point: Vec<f64> = point.into_value().map_err(device)?;
         Ok((point[0], point[1]))
     }
 
@@ -335,8 +461,35 @@ impl Web {
         );
         params.buttons = Some(if pressed { 1 } else { 0 });
         params.click_count = Some(1);
-        page.execute(params).await.map_err(device)?;
-        Ok(())
+        self.until_dialog(page.execute(params)).await
+    }
+
+    /// Chrome answers an input event only once the page has handled it, and a handler that opens a dialog waits on
+    /// it: so the event counts as done once a dialog opens, as a person sees the dialog and carries on.
+    async fn until_dialog<T>(
+        &self,
+        sent: impl std::future::Future<Output = std::result::Result<T, chromiumoxide::error::CdpError>>,
+    ) -> Result<()> {
+        self.unless_dialog(sent).await.map(|_| ())
+    }
+
+    /// Any page call waits while a dialog is open, and a page can open one at any moment (after an await in a tap's
+    /// handler, say), so a call in flight gives way to it: `None` once one opens.
+    async fn unless_dialog<T>(
+        &self,
+        sent: impl std::future::Future<Output = std::result::Result<T, chromiumoxide::error::CdpError>>,
+    ) -> Result<Option<T>> {
+        tokio::pin!(sent);
+        loop {
+            tokio::select! {
+                done = &mut sent => return done.map(Some).map_err(device),
+                () = sleep(Duration::from_millis(50)) => {
+                    if self.open_dialog().is_some() {
+                        return Ok(None);
+                    }
+                }
+            }
+        }
     }
 
     /// Requests fail while offline, and the page's navigator.onLine agrees.
@@ -351,7 +504,7 @@ impl Web {
             params.key = Some(key.into());
             params.code = Some(key.into());
             params.windows_virtual_key_code = Some(code);
-            page.execute(params).await.map_err(device)?;
+            self.until_dialog(page.execute(params)).await?;
         }
         Ok(())
     }
@@ -363,11 +516,18 @@ impl Device for Web {
     }
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {
+        if let Some(dialog) = self.open_dialog() {
+            return Ok(self.dialog_elements(&dialog));
+        }
         let page = self.current().await;
-        let tree = page
-            .execute(GetFullAxTreeParams::default())
-            .await
-            .map_err(device)?;
+        let Some(tree) = self
+            .unless_dialog(page.execute(GetFullAxTreeParams::default()))
+            .await?
+        else {
+            return Ok(self
+                .open_dialog()
+                .map_or_else(Vec::new, |d| self.dialog_elements(&d)));
+        };
         let mut elements: Vec<Element> = Vec::new();
         for node in &tree.result.nodes {
             if node.ignored && !all {
@@ -389,8 +549,14 @@ impl Device for Web {
                 backend_node_id: Some(backend),
                 ..Default::default()
             };
-            let Ok(model) = page.execute(params).await else {
-                continue;
+            let model = match self.unless_dialog(page.execute(params)).await {
+                Ok(Some(model)) => model,
+                Ok(None) => {
+                    return Ok(self
+                        .open_dialog()
+                        .map_or_else(Vec::new, |d| self.dialog_elements(&d)));
+                }
+                Err(_) => continue,
             };
             let quad = model.result.model.border.inner();
             let xs = [quad[0], quad[2], quad[4], quad[6]];
@@ -434,6 +600,20 @@ impl Device for Web {
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
+        if let Some(dialog) = self.open_dialog() {
+            let hit = self
+                .dialog_elements(&dialog)
+                .into_iter()
+                .filter(|e| e.role.as_deref() == Some("button"))
+                .find(|e| {
+                    let f = &e.frame;
+                    x >= f.x && x <= f.x + f.width && y >= f.y && y <= f.y + f.height
+                });
+            return match hit {
+                Some(button) => self.answer_dialog(button.label == "OK").await,
+                None => self.blocked(),
+            };
+        }
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
@@ -444,6 +624,7 @@ impl Device for Web {
     }
 
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()> {
+        self.blocked()?;
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
@@ -455,6 +636,7 @@ impl Device for Web {
     }
 
     async fn touch(&self, stops: &[Stop], keep: bool) -> Result<()> {
+        self.blocked()?;
         if self.held.lock().unwrap().is_some() {
             self.release(true).await?;
         }
@@ -501,6 +683,7 @@ impl Device for Web {
     }
 
     async fn swipe(&self, from: (f64, f64), to: (f64, f64), ms: u64) -> Result<()> {
+        self.blocked()?;
         let steps = (ms / 16).clamp(2, 60);
         self.mouse(DispatchMouseEventType::MouseMoved, from.0, from.1, false)
             .await?;
@@ -518,6 +701,16 @@ impl Device for Web {
     }
 
     async fn type_text(&self, text: &str) -> Result<()> {
+        if let Some(dialog) = self.open_dialog() {
+            if !dialog.prompt {
+                return self.blocked();
+            }
+            self.prompt
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_str(text);
+            return Ok(());
+        }
         let page = self.current().await;
         page.execute(InsertTextParams::new(text))
             .await
@@ -526,6 +719,7 @@ impl Device for Web {
     }
 
     async fn clear(&self, chars: usize) -> Result<()> {
+        self.blocked()?;
         let page = self.current().await;
         // Select the field's text, then delete it with real key events so the app hears an edit.
         page
@@ -550,6 +744,9 @@ impl Device for Web {
     }
 
     async fn launch(&self) -> Result<()> {
+        if self.open_dialog().is_some() {
+            self.answer_dialog(false).await?;
+        }
         // A window left open by the last spec would otherwise take every read and tap.
         let main = self.page.target_id().clone();
         for other in self.browser.pages().await.map_err(device)? {
@@ -570,6 +767,7 @@ impl Device for Web {
     }
 
     async fn screenshot(&self, path: &Path) -> Result<()> {
+        self.blocked()?;
         let page = self.current().await;
         page.save_screenshot(ScreenshotParams::builder().build(), path)
             .await
@@ -586,6 +784,13 @@ impl Device for Web {
     }
 
     async fn press(&self, key: &str) -> Result<()> {
+        if self.open_dialog().is_some() {
+            return match key {
+                "Enter" | "Return" => self.answer_dialog(true).await,
+                "Escape" => self.answer_dialog(false).await,
+                _ => self.blocked(),
+            };
+        }
         let code = match key {
             "Enter" => 13,
             "Escape" => 27,
@@ -611,22 +816,25 @@ impl Device for Web {
 
     async fn screen_size(&self) -> Result<(f64, f64)> {
         let page = self.current().await;
-        let size: Vec<f64> = page
-            .evaluate("[innerWidth, innerHeight]")
-            .await
-            .map_err(device)?
-            .into_value()
-            .map_err(device)?;
+        let Some(size) = self
+            .unless_dialog(page.evaluate("[innerWidth, innerHeight]"))
+            .await?
+        else {
+            return Ok(*self.size.lock().unwrap_or_else(|e| e.into_inner()));
+        };
+        let size: Vec<f64> = size.into_value().map_err(device)?;
         Ok((size[0], size[1]))
     }
 
     async fn hover_at(&self, x: f64, y: f64) -> Result<()> {
+        self.blocked()?;
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await
     }
 
     async fn goto(&self, url: &str) -> Result<()> {
+        self.blocked()?;
         match url {
             "back" => {
                 self.page.evaluate("history.back()").await.map_err(device)?;
@@ -646,6 +854,9 @@ impl Device for Web {
     }
 
     async fn viewport(&self, width: u32, height: u32) -> Result<()> {
+        self.blocked()?;
+        *self.size.lock().unwrap_or_else(|e| e.into_inner()) =
+            (f64::from(width), f64::from(height));
         self.page
             .execute(SetDeviceMetricsOverrideParams::new(
                 width, height, 1.0, false,

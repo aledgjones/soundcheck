@@ -2,6 +2,7 @@
 
 use soundcheck_driver::web::Web;
 use soundcheck_driver::{Device, Driver, Matcher};
+use std::time::Duration;
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><body>
 <main>
@@ -275,5 +276,65 @@ async fn headless_reads_as_ordinary_chrome() {
     let driver = Driver::new(web);
     let seen = driver.see(None, false).await.unwrap();
     assert!(seen.iter().any(|e| e.label == "chrome"), "{seen:#?}");
+    driver.device.close().await;
+}
+
+/// Sign Out asks with `window.confirm`: a dialog blocks the page, so the driver shows it and answers it instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn browser_dialogs_are_seen_and_answered() {
+    let page = "data:text/html,<button onclick=\"r.textContent = confirm('Sign out?') ? 'yes' : 'no'\">Sign out</button>\
+<button onclick=\"r.textContent = prompt('Name?') ?? 'none'\">Name</button>\
+<button onclick=\"alert('Saved'); r.textContent = 'alerted'\">Save</button>\
+<button onclick=\"setTimeout(() => r.textContent = confirm('Later?') ? 'yes' : 'no', 300)\">Later</button><p id=r>-</p>";
+    let web = match Web::launch(page, 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let labels = async || {
+        driver
+            .see(None, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.label)
+            .collect::<Vec<_>>()
+    };
+
+    driver.tap(&m("Sign out"), false).await.unwrap();
+    assert_eq!(labels().await, ["Sign out?", "OK", "Cancel"]);
+    assert!(
+        driver.tap(&m("Name"), false).await.is_err(),
+        "the page is blocked"
+    );
+    driver.tap(&m("Cancel"), false).await.unwrap();
+    assert!(labels().await.contains(&"no".to_string()));
+
+    driver.tap(&m("Name"), false).await.unwrap();
+    driver.device.type_text("Viola").await.unwrap();
+    driver.tap(&m("OK"), false).await.unwrap();
+    assert!(labels().await.contains(&"Viola".to_string()));
+
+    driver.tap(&m("Save"), false).await.unwrap();
+    assert_eq!(labels().await, ["Saved", "OK"]);
+    driver.tap(&m("OK"), false).await.unwrap();
+    assert!(labels().await.contains(&"alerted".to_string()));
+
+    // The app awaits its unsynced counts before confirming, so the tap returns first and the dialog opens mid-read.
+    driver.tap(&m("Later"), false).await.unwrap();
+    let seen = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let labels = labels().await;
+            if labels.contains(&"Later?".to_string()) {
+                return labels;
+            }
+        }
+    })
+    .await
+    .expect("a read that a dialog interrupts still answers");
+    assert_eq!(seen, ["Later?", "OK", "Cancel"]);
     driver.device.close().await;
 }
