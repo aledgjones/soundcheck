@@ -35,6 +35,7 @@ use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExcep
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -61,6 +62,8 @@ pub struct Web {
     profile: PathBuf,
     /// An alert, confirm or prompt the app's page has open: it blocks the page until it's answered.
     dialog: Arc<Mutex<Option<Dialog>>>,
+    /// Set while `launch` leaves the page, so a "Leave site?" it raises is answered Leave, as closing the tab would.
+    relaunching: Arc<AtomicBool>,
     /// What's been typed into an open prompt, sent when it's accepted.
     prompt: Mutex<String>,
     /// The viewport, which can't be asked while a dialog blocks the page.
@@ -100,6 +103,8 @@ struct Dialog {
     /// Confirm and prompt have Cancel; alert has only OK.
     cancel: bool,
     prompt: bool,
+    /// "Leave site?", raised by the page navigating away while it asks to be kept.
+    leaving: bool,
 }
 
 /// Copies a profile, leaving out the running Chrome's locks (symlinks) and caches it rebuilds itself.
@@ -345,16 +350,27 @@ impl Web {
         .map_err(device)?;
 
         let dialog = Arc::new(Mutex::new(None));
+        let relaunching = Arc::new(AtomicBool::new(false));
         let mut opening = page
             .event_listener::<EventJavascriptDialogOpening>()
             .await
             .map_err(device)?;
+        let leaving_now = relaunching.clone();
+        let leave_page = page.clone();
         let sink = dialog.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(e) = opening.next().await {
+                if e.r#type == DialogType::Beforeunload && leaving_now.load(Ordering::SeqCst) {
+                    let _ = leave_page
+                        .execute(HandleJavaScriptDialogParams::new(true))
+                        .await;
+                    continue;
+                }
+
                 *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(Dialog {
                     message: e.message.clone(),
                     cancel: e.r#type != DialogType::Alert,
+                    leaving: e.r#type == DialogType::Beforeunload,
                     prompt: e.r#type == DialogType::Prompt,
                 });
             }
@@ -489,6 +505,7 @@ impl Web {
             held: Mutex::new(None),
             profile: profile_dir,
             dialog,
+            relaunching,
             prompt: Mutex::new(String::new()),
             size: Mutex::new((f64::from(width), f64::from(height))),
             frame,
@@ -1079,8 +1096,9 @@ impl Device for Web {
     }
 
     async fn launch(&self) -> Result<()> {
-        if self.open_dialog().is_some() {
-            self.answer_dialog(false).await?;
+        // A relaunch leaves the page, as closing the tab would: "Leave site?" is answered Leave, anything else Cancel.
+        if let Some(dialog) = self.open_dialog() {
+            self.answer_dialog(dialog.leaving).await?;
         }
 
         *self.chooser.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -1095,11 +1113,14 @@ impl Device for Web {
                 let _ = other.close().await;
             }
         }
-        self.page
-            .goto(self.base_url.as_str())
-            .await
-            .map_err(device)?;
-        self.page.wait_for_navigation().await.map_err(device)?;
+        self.relaunching.store(true, Ordering::SeqCst);
+        let went = async {
+            self.page.goto(self.base_url.as_str()).await?;
+            self.page.wait_for_navigation().await
+        }
+        .await;
+        self.relaunching.store(false, Ordering::SeqCst);
+        went.map_err(device)?;
         self.errors
             .lock()
             .unwrap_or_else(|e| e.into_inner())
