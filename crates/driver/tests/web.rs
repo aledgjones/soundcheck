@@ -456,3 +456,85 @@ async fn a_touch_drags_what_the_page_lets_you_drag_and_drops_it() {
     );
     driver.device.close().await;
 }
+
+#[tokio::test]
+async fn a_file_picker_offers_what_was_pushed_and_downloads_are_seen() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-files-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("files.html");
+    std::fs::write(
+        &main,
+        r#"<body>
+<label>One part <input type="file" accept="application/pdf"
+  onchange="document.getElementById('one').textContent = 'Picked ' + [...this.files].map(f => f.name + ' ' + f.size).join(', ')"></label>
+<p id="one">Picked nothing</p>
+<label>Several parts <input type="file" multiple
+  onchange="document.getElementById('several').textContent = 'Picked ' + [...this.files].map(f => f.name).join(', ')"></label>
+<p id="several">Picked nothing</p>
+<button onclick="const a = document.createElement('a'); a.href = window.URL.createObjectURL(new Blob(['%PDF-1.7 running order'], {type: 'application/pdf'})); a.download = 'gala-running-order.pdf'; a.click()">Save running order</button>
+</body>"#,
+    )
+    .unwrap();
+    let pdf = dir.join("score.pdf");
+    std::fs::write(&pdf, b"%PDF-1.7 a score").unwrap();
+    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    driver.device.push_file(&pdf, "viola.pdf").await.unwrap();
+    driver.device.push_file(&pdf, "cello.pdf").await.unwrap();
+
+    // Cancelled, the page gets nothing; picked, it gets the file under its pushed name.
+    driver.tap(&m("One part"), false).await.unwrap();
+    driver.wait(&m("File picker"), 3_000).await.unwrap();
+    assert!(
+        driver.tap(&m("Save running order"), false).await.is_err(),
+        "the picker covers the page until it's answered"
+    );
+    driver.tap(&m("Cancel"), false).await.unwrap();
+    driver.wait(&m("Picked nothing"), 3_000).await.unwrap();
+    driver.tap(&m("One part"), false).await.unwrap();
+    driver.wait(&m("File picker"), 3_000).await.unwrap();
+    driver.tap(&m("viola.pdf"), false).await.unwrap();
+    driver.wait(&m("Picked viola.pdf 16"), 3_000).await.unwrap();
+
+    // A picker that takes several ticks each, then gives them all.
+    driver.tap(&m("Several parts"), false).await.unwrap();
+    driver.wait(&m("File picker"), 3_000).await.unwrap();
+    driver.tap(&m("viola.pdf"), false).await.unwrap();
+    driver.tap(&m("cello.pdf"), false).await.unwrap();
+    assert_eq!(
+        driver.expect(&m("cello.pdf")).await.unwrap().checked,
+        Some(true)
+    );
+    driver.tap(&m("Choose"), false).await.unwrap();
+    driver
+        .wait(&m("Picked viola.pdf, cello.pdf"), 3_000)
+        .await
+        .unwrap();
+
+    driver.tap(&m("Save running order"), false).await.unwrap();
+    let mut seen = None;
+    for _ in 0..50 {
+        seen = driver
+            .see(None, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|e| e.label == "Downloaded gala-running-order.pdf");
+        if seen.as_ref().and_then(|e| e.value.as_deref()) == Some("PDF, 22 bytes") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(
+        seen.and_then(|e| e.value).as_deref(),
+        Some("PDF, 22 bytes"),
+        "a finished download shows what it is"
+    );
+    driver.device.close().await;
+}

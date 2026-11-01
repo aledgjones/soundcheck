@@ -8,9 +8,13 @@ use chromiumoxide::cdp::browser_protocol::accessibility::{
     AxNode, AxPropertyName, AxValue, GetFullAxTreeParams,
 };
 use chromiumoxide::cdp::browser_protocol::browser::{
-    Bounds, GetWindowForTargetParams, SetWindowBoundsParams,
+    Bounds, DownloadProgressState, EventDownloadProgress, EventDownloadWillBegin,
+    GetWindowForTargetParams, SetDownloadBehaviorBehavior, SetDownloadBehaviorParams,
+    SetWindowBoundsParams,
 };
-use chromiumoxide::cdp::browser_protocol::dom::GetBoxModelParams;
+use chromiumoxide::cdp::browser_protocol::dom::{
+    BackendNodeId, GetBoxModelParams, SetFileInputFilesParams,
+};
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
@@ -21,8 +25,8 @@ use chromiumoxide::cdp::browser_protocol::network::{
     OverrideNetworkStateParams,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
-    DialogType, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
-    HandleJavaScriptDialogParams,
+    DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
+    FileChooserOpenedMode, HandleJavaScriptDialogParams, SetInterceptFileChooserDialogParams,
 };
 use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExceptionThrown};
 use chromiumoxide::page::{Page, ScreenshotParams};
@@ -60,10 +64,32 @@ pub struct Web {
     size: Mutex<(f64, f64)>,
     /// Headed, how much wider and taller the window is than the page it shows: its tab strip, address bar and edges.
     frame: Option<(i64, i64)>,
+    /// Files `push` has put where the file picker finds them, in the order pushed.
+    pushed: Mutex<Vec<String>>,
+    /// A file picker the page has opened, held by soundcheck in place of the system's window until it's answered.
+    chooser: Arc<Mutex<Option<Chooser>>>,
+    /// What the page has downloaded since the app last launched.
+    downloads: Arc<Mutex<Vec<Download>>>,
 }
 
 /// A kept touch's start and where it is now.
 type Held = ((f64, f64), (f64, f64));
+
+#[derive(Clone)]
+struct Chooser {
+    input: BackendNodeId,
+    multiple: bool,
+    ticked: Vec<String>,
+}
+
+#[derive(Clone)]
+struct Download {
+    guid: String,
+    name: String,
+    /// Where Chrome saved it, once it's complete.
+    path: Option<PathBuf>,
+    failed: bool,
+}
 
 #[derive(Clone)]
 struct Dialog {
@@ -161,6 +187,31 @@ async fn set_page_offline(page: &Page, offline: bool) -> Result<()> {
         .await
         .map_err(|e| device(format!("overrideNetworkState: {e}")))?;
     Ok(())
+}
+
+/// `PDF, 34 KB` once saved: its kind from the file's own first bytes, since a name can say anything.
+fn describe_download(d: &Download) -> String {
+    if d.failed {
+        return "failed".into();
+    }
+
+    let Some(path) = &d.path else {
+        return "downloading".into();
+    };
+    let Ok(bytes) = std::fs::read(path) else {
+        return "saved, but unreadable".into();
+    };
+    let kind = if bytes.starts_with(b"%PDF-") {
+        "PDF"
+    } else {
+        "file"
+    };
+    let size = match bytes.len() {
+        n if n < 1024 => format!("{n} bytes"),
+        n if n < 1024 * 1024 => format!("{} KB", n.div_ceil(1024)),
+        n => format!("{:.1} MB", n as f64 / (1024.0 * 1024.0)),
+    };
+    format!("{kind}, {size}")
 }
 
 impl Web {
@@ -296,6 +347,76 @@ impl Web {
                 *sink.lock().unwrap_or_else(|e| e.into_inner()) = None;
             }
         }));
+        let chooser = Arc::new(Mutex::new(None));
+        let mut choosing = page
+            .event_listener::<EventFileChooserOpened>()
+            .await
+            .map_err(device)?;
+        let sink = chooser.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(e) = choosing.next().await {
+                // Only an `<input type=file>` can be given files; a picker opened any other way stays unanswered.
+                if let Some(input) = e.backend_node_id {
+                    *sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(Chooser {
+                        input,
+                        multiple: e.mode == FileChooserOpenedMode::SelectMultiple,
+                        ticked: Vec::new(),
+                    });
+                }
+            }
+        }));
+        page.execute(SetInterceptFileChooserDialogParams::new(true))
+            .await
+            .map_err(device)?;
+
+        let downloads: Arc<Mutex<Vec<Download>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut starting = browser
+            .event_listener::<EventDownloadWillBegin>()
+            .await
+            .map_err(device)?;
+        let sink = downloads.clone();
+        tasks.push(tokio::spawn(async move {
+            while let Some(e) = starting.next().await {
+                sink.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Download {
+                        guid: e.guid.clone(),
+                        name: e.suggested_filename.clone(),
+                        path: None,
+                        failed: false,
+                    });
+            }
+        }));
+        let mut progress = browser
+            .event_listener::<EventDownloadProgress>()
+            .await
+            .map_err(device)?;
+        let sink = downloads.clone();
+        let saved_to = profile_dir.join("downloads");
+        tasks.push(tokio::spawn(async move {
+            while let Some(e) = progress.next().await {
+                let mut all = sink.lock().unwrap_or_else(|e| e.into_inner());
+                let Some(d) = all.iter_mut().find(|d| d.guid == e.guid) else {
+                    continue;
+                };
+                match e.state {
+                    DownloadProgressState::Completed => {
+                        d.path = Some(
+                            e.file_path
+                                .as_ref()
+                                .map_or_else(|| saved_to.join(&d.name), PathBuf::from),
+                        );
+                    }
+                    DownloadProgressState::Canceled => d.failed = true,
+                    DownloadProgressState::InProgress => {}
+                }
+            }
+        }));
+        let mut behaviour = SetDownloadBehaviorParams::new(SetDownloadBehaviorBehavior::Allow);
+        behaviour.download_path = Some(profile_dir.join("downloads").display().to_string());
+        behaviour.events_enabled = Some(true);
+        browser.execute(behaviour).await.map_err(device)?;
+
         let errors = Arc::new(Mutex::new(Vec::new()));
         let mut exceptions = page
             .event_listener::<EventExceptionThrown>()
@@ -349,6 +470,9 @@ impl Web {
             prompt: Mutex::new(String::new()),
             size: Mutex::new((f64::from(width), f64::from(height))),
             frame,
+            pushed: Mutex::new(Vec::new()),
+            chooser,
+            downloads,
         };
         web.fit_window(width, height).await?;
         web.launch().await?;
@@ -455,14 +579,148 @@ impl Web {
         Ok(())
     }
 
-    /// While a dialog is open nothing else on the page answers, so anything but its buttons is refused clearly.
+    fn open_chooser(&self) -> Option<Chooser> {
+        self.chooser
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// An open file picker as `see` shows it, in place of the page: a row for each pushed file (ticked in a picker
+    /// that takes several), then Cancel, and Choose when it takes several.
+    fn chooser_elements(&self, chooser: &Chooser) -> Vec<Element> {
+        let (w, _) = *self.size.lock().unwrap_or_else(|e| e.into_inner());
+        let x = w / 2.0 - 200.0;
+        let row = |label: &str, role: &str, y: f64| Element {
+            label: label.into(),
+            role: Some(role.into()),
+            frame: Rect {
+                x,
+                y,
+                width: 400.0,
+                height: 36.0,
+            },
+            enabled: true,
+            ..Default::default()
+        };
+        let mut elements = vec![row("File picker", "heading", 80.0)];
+        let pushed = self.pushed.lock().unwrap_or_else(|e| e.into_inner());
+        if pushed.is_empty() {
+            elements.push(row("No files: push one first", "text", 120.0));
+        }
+        for (i, name) in pushed.iter().enumerate() {
+            let mut file = row(
+                name,
+                if chooser.multiple {
+                    "checkbox"
+                } else {
+                    "button"
+                },
+                120.0 + 40.0 * i as f64,
+            );
+            if chooser.multiple {
+                file.checked = Some(chooser.ticked.contains(name));
+            }
+            elements.push(file);
+        }
+        let y = 130.0 + 40.0 * pushed.len().max(1) as f64;
+        elements.push(row("Cancel", "button", y));
+        if chooser.multiple {
+            let mut choose = row("Choose", "button", y + 40.0);
+            choose.enabled = !chooser.ticked.is_empty();
+            elements.push(choose);
+        }
+        elements
+    }
+
+    /// A tap in an open file picker: a file is picked (or ticked, when it takes several), Choose gives the page the
+    /// ticked files, and Cancel closes it with none.
+    async fn tap_chooser(&self, chooser: Chooser, x: f64, y: f64) -> Result<()> {
+        let hit = self.chooser_elements(&chooser).into_iter().find(|e| {
+            let f = &e.frame;
+            matches!(e.role.as_deref(), Some("button" | "checkbox"))
+                && x >= f.x
+                && x <= f.x + f.width
+                && y >= f.y
+                && y <= f.y + f.height
+        });
+        let Some(hit) = hit else {
+            return self.blocked();
+        };
+        let picked = match hit.label.as_str() {
+            "Cancel" => Vec::new(),
+            "Choose" if hit.enabled => chooser.ticked.clone(),
+            "Choose" => return self.blocked(),
+            name if chooser.multiple => {
+                let mut open = self.chooser.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(open) = open.as_mut() {
+                    if let Some(i) = open.ticked.iter().position(|t| t == name) {
+                        open.ticked.remove(i);
+                    } else {
+                        open.ticked.push(name.to_string());
+                    }
+                }
+
+                return Ok(());
+            }
+            name => vec![name.to_string()],
+        };
+        *self.chooser.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if picked.is_empty() {
+            return Ok(());
+        }
+
+        let folder = self.profile.join("pushed");
+        let params = SetFileInputFilesParams {
+            files: picked
+                .iter()
+                .map(|name| folder.join(name).display().to_string())
+                .collect(),
+            node_id: None,
+            backend_node_id: Some(chooser.input),
+            object_id: None,
+        };
+        self.page.execute(params).await.map_err(device)?;
+        Ok(())
+    }
+
+    /// Each download since launch as a line at the top of `see`: what it is and its size once it's saved.
+    fn download_elements(&self) -> Vec<Element> {
+        let downloads = self.downloads.lock().unwrap_or_else(|e| e.into_inner());
+        downloads
+            .iter()
+            .enumerate()
+            .map(|(i, d)| Element {
+                label: format!("Downloaded {}", d.name),
+                value: Some(describe_download(d)),
+                role: Some("status".into()),
+                frame: Rect {
+                    x: 0.0,
+                    y: 24.0 * i as f64,
+                    width: 400.0,
+                    height: 24.0,
+                },
+                enabled: true,
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// While a dialog or file picker is open nothing else on the page answers, so anything but its own controls is
+    /// refused clearly.
     fn blocked(&self) -> Result<()> {
-        match self.open_dialog() {
-            Some(d) => Err(DriverError::Invalid(format!(
+        if let Some(d) = self.open_dialog() {
+            return Err(DriverError::Invalid(format!(
                 "a browser dialog is open (\"{}\"): tap {} first",
                 d.message,
                 if d.cancel { "OK or Cancel" } else { "OK" }
-            ))),
+            )));
+        }
+
+        match self.open_chooser() {
+            Some(_) => Err(DriverError::Invalid(
+                "a file picker is open: tap a file or Cancel first".into(),
+            )),
             None => Ok(()),
         }
     }
@@ -559,6 +817,11 @@ impl Device for Web {
         if let Some(dialog) = self.open_dialog() {
             return Ok(self.dialog_elements(&dialog));
         }
+
+        if let Some(chooser) = self.open_chooser() {
+            return Ok(self.chooser_elements(&chooser));
+        }
+
         let page = self.current().await;
         let Some(tree) = self
             .unless_dialog(page.execute(GetFullAxTreeParams::default()))
@@ -568,7 +831,7 @@ impl Device for Web {
                 .open_dialog()
                 .map_or_else(Vec::new, |d| self.dialog_elements(&d)));
         };
-        let mut elements: Vec<Element> = Vec::new();
+        let mut elements = self.download_elements();
         for node in &tree.result.nodes {
             if node.ignored && !all {
                 continue;
@@ -654,6 +917,11 @@ impl Device for Web {
                 None => self.blocked(),
             };
         }
+
+        if let Some(chooser) = self.open_chooser() {
+            return self.tap_chooser(chooser, x, y).await;
+        }
+
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await?;
@@ -792,6 +1060,12 @@ impl Device for Web {
         if self.open_dialog().is_some() {
             self.answer_dialog(false).await?;
         }
+
+        *self.chooser.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.downloads
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         // A window left open by the last spec would otherwise take every read and tap.
         let main = self.page.target_id().clone();
         for other in self.browser.pages().await.map_err(device)? {
@@ -820,6 +1094,19 @@ impl Device for Web {
         Ok(())
     }
 
+    /// Staged for the file picker, which lists what's been pushed; a file pushed again under the same name replaces it.
+    async fn push_file(&self, source: &Path, name: &str) -> Result<()> {
+        let folder = self.profile.join("pushed");
+        std::fs::create_dir_all(&folder).map_err(device)?;
+        std::fs::copy(source, folder.join(name)).map_err(device)?;
+        let mut pushed = self.pushed.lock().unwrap_or_else(|e| e.into_inner());
+        if !pushed.iter().any(|p| p == name) {
+            pushed.push(name.to_string());
+        }
+
+        Ok(())
+    }
+
     async fn errors(&self) -> Result<Vec<String>> {
         Ok(self
             .errors
@@ -836,6 +1123,16 @@ impl Device for Web {
                 _ => self.blocked(),
             };
         }
+
+        if self.open_chooser().is_some() {
+            if key == "Escape" {
+                *self.chooser.lock().unwrap_or_else(|e| e.into_inner()) = None;
+                return Ok(());
+            }
+
+            return self.blocked();
+        }
+
         let code = match key {
             "Enter" => 13,
             "Escape" => 27,

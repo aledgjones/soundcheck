@@ -83,8 +83,8 @@ pub const TOOLS: &[Tool] = &[
     basic("launch", ALL, "restart the app"),
     basic(
         "push",
-        &[Platform::Android, Platform::Ios],
-        "copy a file from the suite's fixtures onto the device, under a name",
+        ALL,
+        "copy a file from the suite's fixtures onto the device, under a name, for the file picker to offer",
     ),
     basic(
         "batch",
