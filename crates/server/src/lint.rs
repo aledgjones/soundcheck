@@ -1,4 +1,4 @@
-use crate::suite::config::{Platform, Proxy, compatible};
+use crate::suite::config::{Platform, Proxy, compatible, parse_viewport};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
@@ -270,6 +270,22 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                     "start: web's link is a URL or a path from the site's root, not {link:?}"
                 ));
             }
+        }
+        let on_web = f.platforms.contains(&Platform::Web);
+        match &f.viewport {
+            None if on_web => push(
+                "viewport: a spec that runs on web gives its page size, such as 1440x900".into(),
+            ),
+            None => {}
+            Some(_) if !on_web => {
+                push("viewport: sizes web's page, so the spec must run on web".into());
+            }
+            Some(viewport) if parse_viewport(viewport).is_none() => {
+                push(format!(
+                    "viewport: {viewport} isn't WIDTHxHEIGHT, such as 1440x900"
+                ));
+            }
+            Some(_) => {}
         }
         if f.platforms.is_empty() {
             push("platforms: name at least one".into());

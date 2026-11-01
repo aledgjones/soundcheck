@@ -214,6 +214,20 @@ impl PlatformConfig {
     }
 }
 
+/// The size Chrome opens at, before a spec sets its own.
+pub const LAUNCH_VIEWPORT: (u32, u32) = (1440, 900);
+
+/// `1440x900` as a width and height, each at least 320.
+pub fn parse_viewport(text: &str) -> Option<(u32, u32)> {
+    let (width, height) = text.trim().split_once('x')?;
+    let (width, height) = (width.parse().ok()?, height.parse().ok()?);
+    if width < 320 || height < 320 {
+        return None;
+    }
+
+    Some((width, height))
+}
+
 /// Shell commands: exit 0 for ok, JSON on stdout where data comes back.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]

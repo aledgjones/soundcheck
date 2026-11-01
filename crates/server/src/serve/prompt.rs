@@ -41,6 +41,17 @@ pub fn render(
             spec.front.seed
         );
     }
+    if let Some(viewport) = spec
+        .front
+        .viewport
+        .as_deref()
+        .filter(|_| platform == Platform::Web)
+    {
+        let _ = writeln!(
+            out,
+            "The page is {viewport} for this spec, so its layout may differ from other specs'.\n"
+        );
+    }
     let _ = writeln!(out, "## Goal\n\n{}\n", spec.goal);
     let _ = writeln!(out, "## Outcomes\n");
     for (i, outcome) in spec.outcomes.iter().enumerate() {

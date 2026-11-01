@@ -1,7 +1,7 @@
-//! Drivs a ral headless Chrome against a small local page. Skips (with a note) where Chrome isn't installed.
+//! Drives a real headless Chrome against a small local page. Skips (with a note) where Chrome isn't installed.
 
 use soundcheck_driver::web::Web;
-use soundcheck_driver::{Device, Driver, Matcher};
+use soundcheck_driver::{Device, Driver, Matcher, Stop};
 use std::time::Duration;
 
 const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><body>
@@ -397,5 +397,62 @@ async fn a_swipe_scrolls_and_close_shuts_a_tab_the_page_opened() {
     driver.wait(&m("Terms"), 5_000).await.unwrap();
     driver.device.goto("close").await.unwrap();
     driver.wait(&m("scrolled 200"), 5_000).await.unwrap();
+    driver.device.close().await;
+}
+
+#[tokio::test]
+async fn a_touch_drags_what_the_page_lets_you_drag_and_drops_it() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-drag-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("drag.html");
+    std::fs::write(
+        &main,
+        r#"<body>
+<div draggable="true" ondragstart="event.dataTransfer.setData('text/x-score', 'Bach')"
+  style="position:absolute;left:20px;top:20px;width:120px;height:40px">Bach</div>
+<div ondragover="event.preventDefault()"
+  ondrop="event.preventDefault(); window.drops = (window.drops || 0) + 1; this.textContent = 'dropped ' + event.dataTransfer.getData('text/x-score') + ' ' + drops"
+  style="position:absolute;left:300px;top:300px;width:200px;height:100px">Playlist</div>
+</body>"#,
+    )
+    .unwrap();
+    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let stop = |x, y| Stop {
+        x,
+        y,
+        pause_ms: 100,
+    };
+
+    driver
+        .device
+        .touch(&[stop(80.0, 40.0), stop(400.0, 350.0)], false)
+        .await
+        .unwrap();
+    driver.wait(&m("dropped Bach 1"), 5_000).await.unwrap();
+
+    // Taken back before letting go, nothing lands.
+    driver
+        .device
+        .touch(&[stop(80.0, 40.0), stop(400.0, 350.0)], true)
+        .await
+        .unwrap();
+    driver.device.release(true).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        driver
+            .see(None, false)
+            .await
+            .unwrap()
+            .iter()
+            .any(|e| e.label == "dropped Bach 1"),
+        "a cancelled drag drops nothing"
+    );
     driver.device.close().await;
 }

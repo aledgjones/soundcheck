@@ -4,6 +4,7 @@ seed: viewer
 platforms: [ios, ios]
 tools: [back-burst]
 model: gpt
+viewport: 1440x900
 start:
   web: /x
   ios: collection

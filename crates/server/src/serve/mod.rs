@@ -12,7 +12,7 @@ use crate::run::journal::Entry;
 use crate::run::model::{Answer, Build, Posted};
 use crate::run::{Run, saved};
 use crate::suite::Suite;
-use crate::suite::config::{Platform, PlatformConfig};
+use crate::suite::config::{LAUNCH_VIEWPORT, Platform, PlatformConfig, parse_viewport};
 use crate::suite::spec::Spec;
 use anyhow::Context;
 use anyhow::Result;
@@ -79,8 +79,9 @@ pub async fn connect(
                 .and_then(|p| p.base_url.clone())
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
             let profile = config.and_then(PlatformConfig::profile_dir);
+            let (width, height) = LAUNCH_VIEWPORT;
             AnyDevice::Web(Box::new(
-                Web::launch_from(&base_url, 1280, 800, headed, profile.as_deref()).await?,
+                Web::launch_from(&base_url, width, height, headed, profile.as_deref()).await?,
             ))
         }
         Platform::Android => {
@@ -851,8 +852,19 @@ impl Hub {
                         None => None,
                     };
                     let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
+                    // Every spec sets it, so one spec's size never carries into the next.
+                    let size = (platform == Platform::Web).then(|| {
+                        spec.front
+                            .viewport
+                            .as_deref()
+                            .and_then(parse_viewport)
+                            .unwrap_or(LAUNCH_VIEWPORT)
+                    });
                     self.on_device(platform, async |d| {
                         d.device.hardware_keyboard(hardware).await?;
+                        if let Some((width, height)) = size {
+                            d.device.viewport(width, height).await?;
+                        }
                         Device::launch(&d.device).await?;
                         if let Some(link) = &link {
                             return d.device.goto(link).await;

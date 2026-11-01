@@ -30,6 +30,9 @@ pub struct Frontmatter {
     #[serde(default)]
     pub starts_on: Option<serde_yaml_ng::Value>,
     pub platforms: Vec<Platform>,
+    /// Web only: the page's size for this spec, `WIDTHxHEIGHT`, in place of the suite's (a layout only a wide or a
+    /// narrow window has).
+    pub viewport: Option<String>,
     pub model: Option<String>,
     #[serde(default)]
     pub tools: Vec<String>,
@@ -212,6 +215,21 @@ Undo twice quickly.
             problems[0].contains("unknown field `checks`"),
             "{problems:?}"
         );
+    }
+
+    #[test]
+    fn a_viewport_is_width_by_height() {
+        use crate::suite::config::parse_viewport;
+        assert_eq!(parse_viewport("1440x900"), Some((1440, 900)));
+        assert_eq!(parse_viewport("wide"), None);
+        assert_eq!(parse_viewport("100x900"), None, "narrower than any phone");
+
+        let sized = GOOD.replace(
+            "platforms: [android, ios]",
+            "platforms: [web]\nviewport: 1440x900",
+        );
+        let spec = parse("annotations/001-draw", "annotations", &sized).unwrap();
+        assert_eq!(spec.front.viewport.as_deref(), Some("1440x900"));
     }
 
     #[test]
