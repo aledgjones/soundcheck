@@ -284,7 +284,7 @@ pub struct HoldParams {
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct GotoParams {
     pub token: String,
-    /// A URL, or `back` or `forward`.
+    /// `back` or `forward`.
     pub url: String,
 }
 
@@ -455,6 +455,16 @@ impl Step {
     }
 }
 
+/// Past its start a spec moves around as a person does: a typed URL or a deep link would skip the app's own way there.
+async fn back_or_forward(d: &Driver<AnyDevice>, url: &str) -> Result<(), DriverError> {
+    if url != "back" && url != "forward" {
+        return Err(DriverError::Invalid(format!(
+            "goto only goes back or forward, not to {url:?}: reach a page through the app"
+        )));
+    }
+    d.device.goto(url).await
+}
+
 pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverError> {
     Ok(match step {
         Step::Tap { target, last } => {
@@ -543,8 +553,8 @@ pub async fn step(d: &Driver<AnyDevice>, step: &Step) -> Result<String, DriverEr
             format!("paused {ms} ms")
         }
         Step::Goto { url } => {
-            d.device.goto(url).await?;
-            format!("opened {url}")
+            back_or_forward(d, url).await?;
+            format!("went {url}")
         }
     })
 }
@@ -1395,14 +1405,14 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester (web): open a URL, or go `back` or `forward`. Returns the screen once it holds still."
+        description = "Tester (web): go `back` or `forward`, as the browser's buttons do. Returns the screen once it holds still."
     )]
     async fn goto(
         &self,
         Parameters(p): Parameters<GotoParams>,
     ) -> Result<CallToolResult, ErrorData> {
         self.device("goto", &p.token, async |d| {
-            d.device.goto(&p.url).await?;
+            back_or_forward(d, &p.url).await?;
             Ok(self.acted(&p.token, d, "opened").await)
         })
         .await

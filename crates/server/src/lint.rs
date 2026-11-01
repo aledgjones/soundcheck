@@ -250,8 +250,20 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 config.seeds.join(", ")
             ));
         }
-        if f.starts_on.is_empty() {
-            push("starts-on: name what must be on screen after the seed, so a bad reset is caught before the tester starts".into());
+        for (platform, link) in &f.start {
+            if !f.platforms.contains(platform) {
+                push(format!("start: {platform} isn't in platforms"));
+            } else if *platform != Platform::Web {
+                if !link.contains("://") {
+                    push(format!(
+                        "start: {platform}'s link is a deep link such as myapp://screen, not {link:?}"
+                    ));
+                }
+            } else if !link.starts_with('/') && !link.starts_with("http") {
+                push(format!(
+                    "start: web's link is a URL or a path from the site's root, not {link:?}"
+                ));
+            }
         }
         if f.platforms.is_empty() {
             push("platforms: name at least one".into());

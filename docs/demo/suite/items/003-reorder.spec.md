@@ -1,7 +1,6 @@
 ---
 title: Reorder items by dragging
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

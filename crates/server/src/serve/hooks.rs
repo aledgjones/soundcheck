@@ -94,6 +94,38 @@ pub fn context(stdout: &str) -> Option<String> {
     })
 }
 
+/// The ids the seed made, by name (`{"ids": {"E2E Seed Library Collection": "…"}}`), for a spec's start link.
+pub fn ids(stdout: &str) -> std::collections::BTreeMap<String, String> {
+    serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .ok()
+        .and_then(|v| serde_json::from_value(v.get("ids")?.clone()).ok())
+        .unwrap_or_default()
+}
+
+/// A start link with each `{name}` replaced by the seed's id for it; a name the seed didn't report is an error, since
+/// the link would open nothing.
+pub fn link_with_ids(
+    link: &str,
+    ids: &std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = link;
+    while let Some(open) = rest.find('{') {
+        let close = rest[open..]
+            .find('}')
+            .ok_or_else(|| format!("start link {link:?} has an unclosed `{{`"))?;
+        let name = &rest[open + 1..open + close];
+        let id = ids
+            .get(name)
+            .ok_or_else(|| format!("the seed reported no id for {name:?}"))?;
+        out.push_str(&rest[..open]);
+        out.push_str(id);
+        rest = &rest[open + close + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 /// How long a web app's dev server gets to start answering.
 pub const START_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -155,6 +187,17 @@ impl Drop for Service {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_start_link_takes_the_seeds_ids() {
+        let ids = ids(r#"{"context": "x", "ids": {"Library Collection": "c-1"}}"#);
+        assert_eq!(
+            link_with_ids("sync://collection/{Library Collection}", &ids).unwrap(),
+            "sync://collection/c-1"
+        );
+        assert_eq!(link_with_ids("/support", &ids).unwrap(), "/support");
+        assert!(link_with_ids("sync://collection/{Gone}", &ids).is_err());
+    }
 
     #[test]
     fn placeholders_are_quoted() {

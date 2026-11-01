@@ -1,7 +1,6 @@
 ---
 title: Set an item's quantity
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

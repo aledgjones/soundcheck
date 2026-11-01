@@ -995,6 +995,13 @@ impl Device for Ios {
         self.hid(&format!("k {code}")).await
     }
 
+    /// A deep link, opened in the app as a tap on it elsewhere would.
+    async fn goto(&self, url: &str) -> Result<()> {
+        run("xcrun", &["simctl", "openurl", &self.udid, url])
+            .await
+            .map(|_| ())
+    }
+
     async fn screen_size(&self) -> Result<(f64, f64)> {
         let tree: Value = serde_json::from_str(&self.screen_json(true).await?).map_err(device)?;
         let root = tree.as_array().and_then(|r| r.first()).unwrap_or(&tree);

@@ -673,13 +673,18 @@ fn a_side_find_is_reviewed_on_its_own() {
 #[test]
 fn a_reset_failure_is_blocked_without_using_an_attempt() {
     let (mut run, _) = open("reset");
-    run.reset_failed(1, DRAW, Android, "starts-on: Annotate not found")
-        .unwrap();
+    run.reset_failed(
+        1,
+        DRAW,
+        Android,
+        "the home screen's \"Library\" wasn't on screen",
+    )
+    .unwrap();
     assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
     assert_eq!(run.row(DRAW, Android).unwrap().attempts, 0);
     assert_eq!(
         run.state().notes[0].text,
-        "reset failed: starts-on: Annotate not found"
+        "reset failed: the home screen's \"Library\" wasn't on screen"
     );
 }
 

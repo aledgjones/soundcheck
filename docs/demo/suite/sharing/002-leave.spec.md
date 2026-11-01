@@ -1,7 +1,6 @@
 ---
 title: Leave a shared list
 seed: shared
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

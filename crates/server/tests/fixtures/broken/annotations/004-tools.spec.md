@@ -1,7 +1,6 @@
 ---
 title: Clear a layer and tap through it
 seed: viewer
-starts-on: [Annotate]
 platforms: [android, ios]
 tools: [tap, network-drop]
 ---

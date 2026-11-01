@@ -1,7 +1,6 @@
 ---
 title: Check items off
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

@@ -1,7 +1,6 @@
 ---
 title: Rename a list
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

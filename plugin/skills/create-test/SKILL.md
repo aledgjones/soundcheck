@@ -21,7 +21,6 @@ A spec is one thing a user does, written so an AI tester can drive the app, judg
 ---
 title: Erase part of a stroke
 seed: viewer
-starts-on: [Annotate]
 platforms: [android, ios, web]
 past-bugs: [SA-614]
 ---
@@ -46,7 +45,7 @@ Erase across two strokes at once; change the eraser width first.
 | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `title`             | The user's goal in plain words, under 80 characters. No tap paths (`A > B`), code formatting, spec or ticket IDs, flags or tool names      |
 | `seed`              | A scenario from `suite.yaml`'s `seeds`. Every spec starts from its own full seed                                                           |
-| `starts-on`         | Labels that are on screen only once the seed and launch worked. A miss is a reset error, retried by the server, never the tester's problem |
+| `start`             | Optional, per platform: where the spec starts when it isn't the home screen. A deep link on the phones (`sync://collection/{Seed Collection}`), a URL or site path on web; `{name}` is the id the seed hook reported for it. Left out, the server waits for the home screen's `ready` labels. A failed start is a reset error, retried by the server, never the tester's problem. Past the start, testers move as a person does: `goto` only goes back or forward |
 | `platforms`         | Every platform the goal applies to, `web` included. Differences go in `_feature.md` hints, not separate specs                              |
 | `model`             | Optional. Ask for `opus` only when judging needs it, e.g. visual checks; the suite's default is cheaper and faster                         |
 | `tools`             | Optional driver tools beyond the basics: `double-tap` (a quick double tap), `network-drop` (the network dies quietly, then comes back), `offline` (airplane mode until brought back), `fault` (a service answers one request path with an error status until cleared) |
@@ -68,7 +67,7 @@ Erase across two strokes at once; change the eraser width first.
 ## Isolation
 
 - A spec never relies on state another spec left behind, and never mentions another spec. A flow that builds on itself (create, rename, delete) is one spec.
-- If no seed scenario gives the starting state, add one: extend the project's seed hook, add the name to `suite.yaml`'s `seeds`, and pick `starts-on` labels unique to it. Boundaries (storage exactly full, one byte over) are seed scenarios too.
+- If no seed scenario gives the starting state, add one: extend the project's seed hook, add the name to `suite.yaml`'s `seeds`, and have the hook report the ids a `start` link needs. Boundaries (storage exactly full, one byte over) are seed scenarios too.
 - A seed can only reset what the project lets it: backend data, device state or both. Where it can't reset the data, the spec leaves the data as it found it: it only reads, or it undoes what it changed, and its outcomes say so.
 
 ## Controls without a label

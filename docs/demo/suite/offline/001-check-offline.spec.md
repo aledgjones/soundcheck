@@ -1,7 +1,6 @@
 ---
 title: Check items off with no connection
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 tools: [offline]
 ---

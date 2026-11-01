@@ -733,6 +733,23 @@ impl Device for Android {
         self.input(&format!("k {code}")).await
     }
 
+    /// A deep link, sent to the app under test only, so no chooser can take the screen.
+    async fn goto(&self, url: &str) -> Result<()> {
+        self.adb(&[
+            "shell",
+            "am",
+            "start",
+            "-W",
+            "-a",
+            "android.intent.action.VIEW",
+            "-d",
+            url,
+            &self.package,
+        ])
+        .await
+        .map(|_| ())
+    }
+
     async fn screen_size(&self) -> Result<(f64, f64)> {
         // `wm size` is the panel's natural size, landscape on a tablet even while it shows portrait; the display's
         // `cur=` size is what's on screen now, with rotation and any override applied.

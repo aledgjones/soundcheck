@@ -1,7 +1,6 @@
 ---
 title: Share a list by email
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 ---
 

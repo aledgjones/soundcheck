@@ -22,7 +22,6 @@ A spec is one Markdown file:
 ---
 title: Check items off with no connection
 seed: kitchen
-starts-on: [Weekly shop]
 platforms: [android, ios]
 tools: [offline]
 ---
@@ -37,7 +36,7 @@ Take the app offline, check off `Eggs` and `Oat milk`, then bring it back online
 - Back online, they stay checked, and a second device sees them checked.
 ```
 
-The seed hook puts the account in a known state, `starts-on` is checked before the tester begins, and `soundcheck lint` catches a vague outcome or a missing tool before anything runs. Optional sections pin exact steps (`## Pinned`) or ask the tester to probe around the goal (`## Probe around it`), which is where new bugs turn up beside old ones.
+The seed hook puts the account in a known state, the app opens on its home screen or a `start` link before the tester begins, and `soundcheck lint` catches a vague outcome or a missing tool before anything runs. Optional sections pin exact steps (`## Pinned`) or ask the tester to probe around the goal (`## Probe around it`), which is where new bugs turn up beside old ones.
 
 ## Every failure comes with its evidence
 

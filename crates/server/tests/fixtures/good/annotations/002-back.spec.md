@@ -1,7 +1,6 @@
 ---
 title: Go back from a score after annotating
 seed: viewer
-starts-on: [Annotate]
 platforms: [android]
 tools: [double-tap, offline]
 model: opus

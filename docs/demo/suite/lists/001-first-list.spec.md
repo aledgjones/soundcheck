@@ -1,7 +1,6 @@
 ---
 title: Create a first list
 seed: empty
-starts-on: [Create a list]
 platforms: [android, ios]
 ---
 

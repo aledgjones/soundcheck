@@ -1,5 +1,6 @@
 use super::config::Platform;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 
 /// One test case: `<feature>/NNN-name.spec.md`. Its path is its identity and its order.
 #[derive(Debug, Clone)]
@@ -20,9 +21,10 @@ pub struct Spec {
 pub struct Frontmatter {
     pub title: String,
     pub seed: String,
-    /// Elements that must be on screen after the seed; a miss is a reset error, not a result.
+    /// Where a platform starts when it isn't the app's home screen: a link opened after the seed (on web, a URL or a
+    /// path on the base URL's site).
     #[serde(default)]
-    pub starts_on: Vec<String>,
+    pub start: BTreeMap<Platform, String>,
     pub platforms: Vec<Platform>,
     pub model: Option<String>,
     #[serde(default)]
@@ -136,7 +138,6 @@ mod tests {
     const GOOD: &str = "---
 title: Draw a pen stroke, undo and redo it
 seed: viewer
-starts-on: [Annotate]
 platforms: [android, ios]
 ---
 
@@ -168,6 +169,22 @@ Undo twice quickly.
             ]
         );
         assert_eq!(spec.probe.as_deref(), Some("Undo twice quickly."));
+    }
+
+    #[test]
+    fn a_start_names_each_platforms_link() {
+        let home = parse("annotations/001-draw", "annotations", GOOD).unwrap();
+        assert!(home.front.start.is_empty());
+
+        let linked = GOOD.replace(
+            "platforms: [android, ios]",
+            "platforms: [android, ios]\nstart:\n  ios: sync://collection/1",
+        );
+        let spec = parse("annotations/001-draw", "annotations", &linked).unwrap();
+        assert_eq!(
+            spec.front.start.get(&Platform::Ios).map(String::as_str),
+            Some("sync://collection/1")
+        );
     }
 
     #[test]

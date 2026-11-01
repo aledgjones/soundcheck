@@ -4,6 +4,9 @@ seed: viewer
 platforms: [ios, ios]
 tools: [back-burst]
 model: gpt
+start:
+  web: /x
+  ios: collection
 ---
 
 ## Goal

@@ -135,6 +135,20 @@ pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<D
     Ok(Driver::new(device).with_network(network))
 }
 
+/// A spec's start link, with a path read from the root of the base URL's site.
+fn link_on(base_url: Option<&str>, link: &str) -> String {
+    match (link.strip_prefix('/'), base_url) {
+        (Some(path), Some(base)) => {
+            let after_scheme = base.find("://").map_or(0, |i| i + 3);
+            let origin = base[after_scheme..]
+                .find('/')
+                .map_or(base, |i| &base[..after_scheme + i]);
+            format!("{origin}/{path}")
+        }
+        _ => link.to_string(),
+    }
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -805,7 +819,7 @@ impl Hub {
         })
     }
 
-    /// Resets a platform for a spec: guard, seed, relaunch, then its starts-on labels. Tried three times; the
+    /// Resets a platform for a spec: guard, seed, relaunch, then its start: the home screen's ready labels, or its link. Tried three times; the
     /// error after the last says why, and the caller files the spec BLOCKED as a reset failure.
     pub async fn prepare(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
         let suite = self.suite();
@@ -826,17 +840,29 @@ impl Hub {
                 );
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
-                    let starts_on = spec.front.starts_on.clone();
+                    let platform_config = config.platforms.get(&platform);
+                    let ready = platform_config.map(|p| p.ready.clone()).unwrap_or_default();
+                    let link = match spec.front.start.get(&platform) {
+                        Some(link) => Some(link_on(
+                            platform_config.and_then(|p| p.base_url.as_deref()),
+                            &hooks::link_with_ids(link, &hooks::ids(&out))
+                                .map_err(|e| anyhow::anyhow!(e))?,
+                        )),
+                        None => None,
+                    };
                     let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
                     self.on_device(platform, async |d| {
                         d.device.hardware_keyboard(hardware).await?;
                         Device::launch(&d.device).await?;
-                        for label in &starts_on {
+                        if let Some(link) = &link {
+                            return d.device.goto(link).await;
+                        }
+                        for label in &ready {
                             let m = Matcher::parse(label)
                                 .map_err(|e| DriverError::Invalid(e.to_string()))?;
                             d.wait(&m, 10_000).await.map_err(|_| {
                                 DriverError::NotFound(format!(
-                                    "starts-on {label:?} wasn't on screen"
+                                    "the home screen's {label:?} wasn't on screen"
                                 ))
                             })?;
                         }
@@ -1986,4 +2012,23 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_on;
+
+    #[test]
+    fn a_start_path_is_read_from_the_sites_root() {
+        let base = Some("http://localhost:43173/app");
+        assert_eq!(link_on(base, "/support"), "http://localhost:43173/support");
+        assert_eq!(
+            link_on(base, "http://example.test/x"),
+            "http://example.test/x"
+        );
+        assert_eq!(
+            link_on(Some("http://localhost:43173"), "/app"),
+            "http://localhost:43173/app"
+        );
+    }
 }

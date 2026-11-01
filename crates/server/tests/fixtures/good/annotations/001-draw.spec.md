@@ -1,7 +1,6 @@
 ---
 title: Draw a pen stroke, undo and redo it
 seed: viewer
-starts-on: [Annotate]
 platforms: [android, ios, web]
 past-bugs: [SA-611]
 ---

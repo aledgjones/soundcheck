@@ -16,7 +16,7 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verify: Option<String>,
         prompt: String,
-        /// How long the seed, relaunch and starts-on check took; the entry is written as they finish.
+        /// How long the seed, relaunch and start took; the entry is written as they finish.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reset_ms: Option<u64>,
     },
@@ -130,7 +130,7 @@ pub enum Event {
         token: String,
         reason: String,
     },
-    /// The seed or the starts-on check kept failing: BLOCKED without using an attempt.
+    /// The seed or the start kept failing: BLOCKED without using an attempt.
     ResetFailed {
         spec: String,
         platform: Platform,

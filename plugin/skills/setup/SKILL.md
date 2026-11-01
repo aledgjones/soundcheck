@@ -92,7 +92,7 @@ Shell commands, run from the folder holding suite.yaml, in any language. Exit 0 
 - **A prepare file readies each platform on blank stacks.** Name it with `prepare: prepare.md` in suite.yaml: plain steps a tester follows before any spec on that platform (sign in, say), ending with the app ready. It isn't a spec (no outcomes, seed or row); soundcheck checks the `ready` labels once the tester says it's done, and tries again up to 3 times.
 
 - **The guard is the project's safety net.** Make it refuse unless everything points at the local stack, and never weaken it to make a run start.
-- **A seed sets up state, not the app.** It resets backend data, device state or both; soundcheck relaunches the app and checks the spec's `starts-on` labels itself. A seed that clears the app's own storage or reinstalls it signs it out, and every spec then fails at its start.
+- **A seed sets up state, not the app.** It resets backend data, device state or both; soundcheck relaunches the app and checks the home screen (or opens the spec's `start` link) itself. To let a spec start on something it seeded, print `{"ids": {name: id}}` beside the context. A seed that clears the app's own storage or reinstalls it signs it out, and every spec then fails at its start.
 - Write stubs first that exit 1 with "not written yet", then fill them in with the person, testing each on its own before the first run.
 
 ## 3. Draft the project's regression skill
