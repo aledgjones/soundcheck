@@ -741,6 +741,10 @@ fn run_command(args: RunArgs) -> Result<()> {
                 }
                 server.shutdown.cancel();
                 let _ = server.handle.await;
+                if !resuming && never_started(&run_dir) {
+                    let _ = std::fs::remove_dir_all(&run_dir);
+                }
+
                 return Err(AlreadySaid.into());
             }
         };
@@ -1334,6 +1338,12 @@ fn ready_command(run_dir: &Path, platform: Platform, wait: bool) -> Result<()> {
 
 /// How long the page of a run that couldn't start stays up to show why, unless a new run takes the port first.
 const FAILED_START_SHOWN_MS: u64 = 10 * 60_000;
+
+/// A run whose journal is still empty: nothing was tested, so a failed start leaves nothing worth keeping.
+fn never_started(run_dir: &std::path::Path) -> bool {
+    std::fs::metadata(run_dir.join(soundcheck::run::saved::JOURNAL_FILE))
+        .map_or(true, |m| m.len() == 0)
+}
 
 /// An error already printed where it happened: the process only exits with failure.
 #[derive(Debug)]

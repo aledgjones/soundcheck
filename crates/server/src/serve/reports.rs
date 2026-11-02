@@ -65,6 +65,11 @@ pub fn list(reports: &Reports) -> Vec<(String, serde_json::Value, Option<String>
             continue;
         };
         let key = saved::page_key(&entry.path());
+        // A start that failed before its first entry tested nothing; only the run starting now is listed without one.
+        if summary["started"].is_null() && reports.current.as_deref() != Some(key.as_str()) {
+            continue;
+        }
+
         let href = if entry.path().join(saved::INFO_FILE).exists() {
             Some(format!("{key}/"))
         } else if entry.path().join(EXPORT_FILE).exists() {
@@ -238,5 +243,31 @@ mod tests {
         newest_first(&mut runs);
         let names: Vec<&str> = runs.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(names, ["aaaa-just-opened", "0000-newer", "ffff-older"]);
+    }
+
+    #[test]
+    fn leaves_out_runs_that_never_started_except_the_one_starting_now() {
+        let dir = std::env::temp_dir().join(format!("soundcheck-reports-{}", now_ms()));
+        for (name, started) in [
+            ("tested", Some(100)),
+            ("failed-start", None),
+            ("starting", None),
+        ] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+            std::fs::write(
+                dir.join(name).join(SUMMARY_FILE),
+                serde_json::json!({ "started": started }).to_string(),
+            )
+            .unwrap();
+        }
+
+        let runs = list(&Reports {
+            dir: dir.clone(),
+            current: Some("starting".into()),
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let names: Vec<&str> = runs.iter().map(|r| r.0.as_str()).collect();
+        assert_eq!(names, ["starting", "tested"]);
     }
 }
