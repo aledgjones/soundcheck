@@ -44,7 +44,7 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: false,
@@ -214,7 +214,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: true,
@@ -457,7 +457,7 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: false,

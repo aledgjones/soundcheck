@@ -7,7 +7,7 @@ pub mod saved;
 pub mod usage;
 pub mod verdict;
 
-use crate::suite::config::Platform;
+use crate::suite::{config::Platform, spec::Spec};
 use anyhow::{Context, Result, bail};
 use event::{Event, ResultCounts, RowRef};
 use journal::{Entry, Journal};
@@ -22,7 +22,32 @@ pub const MAX_ATTEMPTS: u32 = 3;
 pub struct PlannedSpec {
     pub id: String,
     pub platforms: Vec<Platform>,
-    pub outcomes: Vec<String>,
+    /// Per platform, since a spec's lines can be tagged for some platforms only.
+    pub outcomes: BTreeMap<Platform, Vec<String>>,
+}
+
+impl PlannedSpec {
+    pub fn new(spec: &Spec, platforms: Vec<Platform>) -> PlannedSpec {
+        PlannedSpec {
+            id: spec.id.clone(),
+            outcomes: outcomes_by_platform(spec, &platforms),
+            platforms,
+        }
+    }
+
+    pub fn outcomes(&self, platform: Platform) -> &[String] {
+        self.outcomes.get(&platform).map_or(&[], Vec::as_slice)
+    }
+}
+
+pub fn outcomes_by_platform(
+    spec: &Spec,
+    platforms: &[Platform],
+) -> BTreeMap<Platform, Vec<String>> {
+    platforms
+        .iter()
+        .map(|&p| (p, spec.for_platform(p).outcomes))
+        .collect()
 }
 
 #[derive(Debug, Clone)]
@@ -608,7 +633,7 @@ impl Run {
     pub fn judge(&mut self, now: u64, token: &str, judgment: Judgment) -> Result<usize> {
         self.open_for_commands()?;
         let (spec, platform) = self.running(token)?;
-        let outcomes = self.planned(&spec)?.outcomes.len();
+        let outcomes = self.planned(&spec)?.outcomes(platform).len();
         if judgment.outcome >= outcomes {
             bail!(
                 "outcome {} doesn't exist: the spec has {outcomes}",
@@ -646,14 +671,14 @@ impl Run {
             }
         }
         posted.judgments.sort_by_key(|j| j.outcome);
-        let planned = self.planned(&spec)?;
+        let planned = self.planned(&spec)?.outcomes(platform);
         let mut seen = BTreeSet::new();
         for j in &posted.judgments {
-            if j.outcome >= planned.outcomes.len() {
+            if j.outcome >= planned.len() {
                 bail!(
                     "outcome {} doesn't exist: the spec has {}",
                     j.outcome,
-                    planned.outcomes.len()
+                    planned.len()
                 );
             }
             if !seen.insert(j.outcome) {
@@ -663,10 +688,10 @@ impl Run {
                 bail!("outcome {} needs what you observed", j.outcome);
             }
         }
-        if let Some(missing) = (0..planned.outcomes.len()).find(|i| !seen.contains(i)) {
+        if let Some(missing) = (0..planned.len()).find(|i| !seen.contains(i)) {
             bail!(
                 "outcome {missing} ({:?}) isn't judged; judge every outcome",
-                planned.outcomes[missing]
+                planned[missing]
             );
         }
         if let Some(find) = posted
@@ -690,7 +715,7 @@ impl Run {
         let find_ids = (0..posted.side_finds.len() as u32)
             .map(|i| self.state.next_id + i)
             .collect();
-        let outcomes = planned.outcomes.clone();
+        let outcomes = planned.to_vec();
         self.commit(
             now,
             Event::Posted {
@@ -1356,7 +1381,12 @@ impl Run {
     }
 
     /// Takes up a spec's new text, read from disk when it was queued again; later attempts judge `outcomes`.
-    pub fn spec_changed(&mut self, now: u64, spec: &str, outcomes: Vec<String>) -> Result<()> {
+    pub fn spec_changed(
+        &mut self,
+        now: u64,
+        spec: &str,
+        outcomes: BTreeMap<Platform, Vec<String>>,
+    ) -> Result<()> {
         let Some(planned) = self.plan.specs.iter_mut().find(|s| s.id == spec) else {
             bail!("no spec {spec} in this run");
         };
@@ -1722,7 +1752,7 @@ impl State {
                         .specs
                         .iter()
                         .find(|s| &s.id == spec)
-                        .map(|s| s.outcomes.clone())
+                        .map(|s| s.outcomes(*platform).to_vec())
                         .unwrap_or_default(),
                 };
                 let summary = |answers: &[Answer]| -> String {

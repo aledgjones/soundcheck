@@ -34,7 +34,7 @@ fn sample() -> (suite::Suite, Run) {
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: false,

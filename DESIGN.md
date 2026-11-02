@@ -394,7 +394,7 @@ Undo straight after the first stroke; undo twice quickly.
 - **A seen bug gets a regression spec:** more specific instructions, plus a probe around the old failure. Mechanics an agent can't do are driver tools the spec names; boundaries are seed scenarios.
 - **The title is the user's goal.** No tap paths or tool commands.
 - **Outcomes are what a user would notice.** Exact copy only for destructive or blocking messages, and no layout details a design tweak would break.
-- **Platform differences go in `_feature.md` hints,** not separate specs.
+- **Platform differences go in `_feature.md` hints,** not separate specs. Where a spec's own wording differs (web ticks a box where the app organises first), a line starting with a tag, `[web]` or `- [android, ios]`, in any section, reaches only those platforms' testers; untagged lines reach every platform (Aled, 2026-11-02, SA-829: testers misread "(on web, …)" asides as applying to them). Each platform's outcomes are numbered on their own, which is safe because every result keeps the wording it judged. Lint refuses a tag naming a platform the spec doesn't list or naming all of them, and a platform left with no outcome.
 
 ### 5.5 Lint
 

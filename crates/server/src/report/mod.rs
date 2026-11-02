@@ -784,6 +784,7 @@ fn waiting(r: &RowRecord) -> bool {
 
 /// The outcomes of a row with no result yet, so a reader can see what it will check while it waits or runs.
 fn pending(spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
+    let spec = &spec.for_platform(platform);
     let so_far = if r.provisional.is_empty() {
         String::new()
     } else {
@@ -860,6 +861,7 @@ fn judged_as<'a>(spec: &'a Spec, r: &'a RowRecord, i: usize) -> &'a str {
 }
 
 fn detail(page: &Page, spec: &Spec, platform: Platform, r: &RowRecord, label: bool) -> String {
+    let spec = &spec.for_platform(platform);
     let mut out = String::new();
     let name = platform_name(platform);
     if label {

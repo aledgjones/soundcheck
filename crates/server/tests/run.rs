@@ -3,6 +3,7 @@ use soundcheck::run::model::*;
 use soundcheck::run::usage;
 use soundcheck::run::{MAX_ATTEMPTS, PREPARE, Plan, PlannedSpec, Row, Run};
 use soundcheck::suite::config::Platform::{self, Android, Ios};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -20,18 +21,28 @@ fn brief(_token: &str, _verify: Option<&str>) -> String {
     "brief".into()
 }
 
+fn on(platforms: &[Platform], outcomes: &[&str]) -> BTreeMap<Platform, Vec<String>> {
+    platforms
+        .iter()
+        .map(|&p| (p, outcomes.iter().map(|o| o.to_string()).collect()))
+        .collect()
+}
+
 fn plan(parallel: bool) -> Plan {
     Plan {
         specs: vec![
             PlannedSpec {
                 id: DRAW.into(),
                 platforms: vec![Android, Ios],
-                outcomes: vec!["Undo removes the stroke".into(), "Redo restores it".into()],
+                outcomes: on(
+                    &[Android, Ios],
+                    &["Undo removes the stroke", "Redo restores it"],
+                ),
             },
             PlannedSpec {
                 id: BACK.into(),
                 platforms: vec![Android],
-                outcomes: vec!["The collection shows".into()],
+                outcomes: on(&[Android], &["The collection shows"]),
             },
         ],
         parallel,
@@ -1402,7 +1413,9 @@ fn a_problem_keeps_the_wording_it_was_judged_against() {
     drop(run);
     // The spec is reworded, and the run resumed with the new text.
     let mut reworded = plan(false);
-    reworded.specs[0].outcomes[0] = "Undo takes the stroke away".into();
+    for outcomes in reworded.specs[0].outcomes.values_mut() {
+        outcomes[0] = "Undo takes the stroke away".into();
+    }
     let run = Run::open(reworded, &path, 0).unwrap();
     let detail = &run.state().problems[0].detail;
     assert!(detail.starts_with("Undo removes the stroke: "), "{detail}");
@@ -1795,4 +1808,28 @@ fn a_new_server_prepares_every_platform_again() {
     let run = Run::open(plan, &path, 100).unwrap();
     assert!(run.check_dispatch(BACK, Android).is_err());
     assert_eq!(run.next_prepare(Some(Android)), Some(Android));
+}
+
+#[test]
+fn each_platform_judges_its_own_outcomes() {
+    let mut plan = plan(false);
+    plan.specs[0]
+        .outcomes
+        .insert(Ios, vec!["Undo removes the stroke".into()]);
+    let mut run = Run::open(plan, &journal("per-platform"), 0).unwrap();
+
+    let t = run.dispatch(1, DRAW, Ios, brief).unwrap();
+    assert!(
+        run.post(2, &t, judged(&[Answer::Held, Answer::Held]))
+            .is_err()
+    );
+    run.post(3, &t, judged(&[Answer::Held])).unwrap();
+    assert_eq!(
+        run.row(DRAW, Ios).unwrap().judged_against,
+        vec!["Undo removes the stroke"]
+    );
+
+    let t = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let err = run.post(5, &t, judged(&[Answer::Held])).unwrap_err();
+    assert!(err.to_string().contains("outcome 1"), "{err}");
 }

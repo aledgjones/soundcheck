@@ -52,7 +52,7 @@ async fn server_hub(
                     .filter(|p| platforms.contains(p))
                     .copied()
                     .collect(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: false,
@@ -687,7 +687,7 @@ async fn the_build_identity_hook_records_each_platforms_build() {
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: false,
@@ -768,7 +768,7 @@ async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything()
             .map(|s| PlannedSpec {
                 id: s.id.clone(),
                 platforms: s.front.platforms.clone(),
-                outcomes: s.outcomes.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
         parallel: true,

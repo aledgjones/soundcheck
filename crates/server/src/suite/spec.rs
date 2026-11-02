@@ -110,10 +110,19 @@ pub fn parse(id: &str, feature: &str, text: &str) -> Result<Spec, Vec<String>> {
     if outcomes.is_empty() {
         problems.push("needs a `## Outcomes` list with at least one `- ` bullet".into());
     }
-    if !problems.is_empty() {
-        return Err(problems);
+    // An outcome is judged whole, so a tag inside one would reach every platform as text.
+    for line in outcomes_text.iter().flat_map(|t| t.lines()) {
+        let nested = line.starts_with(' ').then(|| line.trim_start());
+        if let Some(body) = nested.map(|b| b.strip_prefix("- ").unwrap_or(b))
+            && tag(body).is_some()
+        {
+            problems.push(format!(
+                "tag a whole outcome, not a line inside one: {:?}",
+                line.trim()
+            ));
+        }
     }
-    Ok(Spec {
+    let spec = Spec {
         id: id.into(),
         feature: feature.into(),
         front,
@@ -121,7 +130,126 @@ pub fn parse(id: &str, feature: &str, text: &str) -> Result<Spec, Vec<String>> {
         outcomes,
         probe,
         pinned,
-    })
+    };
+    if problems.is_empty() {
+        problems.extend(spec.tag_problems());
+    }
+    if !problems.is_empty() {
+        return Err(problems);
+    }
+    Ok(spec)
+}
+
+impl Spec {
+    /// The spec as a tester on `platform` reads it: lines tagged for other platforms gone, its own tags removed.
+    pub fn for_platform(&self, platform: Platform) -> Spec {
+        let keep = |text: &str| filter_lines(text, platform);
+        Spec {
+            goal: keep(&self.goal),
+            outcomes: self
+                .outcomes
+                .iter()
+                .filter_map(|o| match tag(o) {
+                    Some((Ok(tagged), rest)) if tagged.contains(&platform) => {
+                        Some(rest.to_string())
+                    }
+                    Some(_) => None,
+                    None => Some(o.clone()),
+                })
+                .collect(),
+            probe: self.probe.as_deref().map(keep).filter(|p| !p.is_empty()),
+            pinned: self.pinned.as_deref().map(keep).filter(|p| !p.is_empty()),
+            ..self.clone()
+        }
+    }
+
+    fn tag_problems(&self) -> Vec<String> {
+        let mut problems = Vec::new();
+        let sections = [Some(&self.goal), self.probe.as_ref(), self.pinned.as_ref()];
+        let lines = sections
+            .into_iter()
+            .flatten()
+            .flat_map(|t| t.lines())
+            .map(|l| l.trim_start().strip_prefix("- ").unwrap_or(l.trim_start()))
+            .chain(self.outcomes.iter().map(String::as_str));
+        for line in lines {
+            let Some((tagged, _)) = tag(line) else {
+                continue;
+            };
+            match tagged {
+                Err(unknown) => problems.push(format!(
+                    "`[{unknown}]` isn't a platform tag (tags are android, ios, web, separated by commas)"
+                )),
+                Ok(tagged) => {
+                    if let Some(p) = tagged.iter().find(|p| !self.front.platforms.contains(p)) {
+                        problems.push(format!(
+                            "a line is tagged `{p}`, which the spec doesn't run on: {line:?}"
+                        ));
+                    } else if self.front.platforms.iter().all(|p| tagged.contains(p)) {
+                        problems.push(format!(
+                            "a line is tagged with every platform the spec runs on; leave the tag off: {line:?}"
+                        ));
+                    }
+                }
+            }
+        }
+        if problems.is_empty() {
+            for &p in &self.front.platforms {
+                let seen = self.for_platform(p);
+                if seen.goal.is_empty() {
+                    problems.push(format!("no goal is left for {p}"));
+                }
+                if seen.outcomes.is_empty() {
+                    problems.push(format!("no outcome is left for {p}"));
+                }
+            }
+        }
+        problems
+    }
+}
+
+/// A leading `[web]` or `[android, ios]`: the platforms (or the tag's text when one isn't a platform) and the rest.
+/// A `[text](link)` isn't a tag.
+fn tag(line: &str) -> Option<(Result<Vec<Platform>, String>, &str)> {
+    let inner = line.strip_prefix('[')?;
+    let (inside, rest) = inner.split_once(']')?;
+    if rest.starts_with('(') {
+        return None;
+    }
+    let platforms = inside
+        .split(',')
+        .map(|p| p.trim().parse::<Platform>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| inside.to_string());
+    Some((platforms, rest.trim_start()))
+}
+
+/// Keeps a section's untagged lines and those tagged for `platform`. A dropped line takes the lines indented
+/// deeper below it.
+fn filter_lines(text: &str, platform: Platform) -> String {
+    let mut out: Vec<String> = Vec::new();
+    let mut dropped_at: Option<usize> = None;
+    for line in text.lines() {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if dropped_at.is_some_and(|depth| indent.len() > depth) && !line.trim().is_empty() {
+            continue;
+        }
+
+        dropped_at = None;
+        let body = line.trim_start();
+        let (bullet, after) = match body.strip_prefix("- ") {
+            Some(after) => ("- ", after),
+            None => ("", body),
+        };
+        match tag(after) {
+            Some((Ok(tagged), rest)) if tagged.contains(&platform) => {
+                out.push(format!("{indent}{bullet}{rest}"));
+            }
+            Some(_) => dropped_at = Some(indent.len()),
+            None => out.push(line.to_string()),
+        }
+    }
+    out.join("\n").trim().to_string()
 }
 
 /// Top-level `- ` bullets; indented lines continue the bullet above.
@@ -230,6 +358,127 @@ Undo twice quickly.
         );
         let spec = parse("annotations/001-draw", "annotations", &sized).unwrap();
         assert_eq!(spec.front.viewport.as_deref(), Some("1440x900"));
+    }
+
+    const TAGGED: &str = "---
+title: Delete a score
+seed: library
+platforms: [android, ios, web]
+---
+
+## Goal
+
+Delete Beta while organising.
+[web] Tick its box and use the selection's Delete.
+
+## Outcomes
+
+- [android, ios] While organising, a tick box tap ticks the row
+  instead of opening it.
+- [web] A tick box tap ticks the row.
+- Beta is gone.
+
+## Probe around it
+
+- Cancel once.
+- [web] Press Escape
+  on the confirm.
+";
+
+    #[test]
+    fn each_platform_reads_its_own_lines() {
+        let spec = parse("scores/005-delete", "scores", TAGGED).unwrap();
+        let ios = spec.for_platform(Platform::Ios);
+        assert_eq!(ios.goal, "Delete Beta while organising.");
+        assert_eq!(
+            ios.outcomes,
+            vec![
+                "While organising, a tick box tap ticks the row instead of opening it.",
+                "Beta is gone."
+            ]
+        );
+        assert_eq!(ios.probe.as_deref(), Some("- Cancel once."));
+
+        let web = spec.for_platform(Platform::Web);
+        assert_eq!(
+            web.goal,
+            "Delete Beta while organising.\nTick its box and use the selection's Delete."
+        );
+        assert_eq!(
+            web.outcomes,
+            vec!["A tick box tap ticks the row.", "Beta is gone."]
+        );
+        assert_eq!(
+            web.probe.as_deref(),
+            Some("- Cancel once.\n- Press Escape\n  on the confirm.")
+        );
+    }
+
+    #[test]
+    fn a_dropped_line_takes_only_deeper_lines() {
+        let nested = TAGGED.replace(
+            "- Cancel once.\n",
+            "- Drag a row\n  - [web] Hover first\n    over it.\n  - Then count the rows\n",
+        );
+        let spec = parse("scores/005-delete", "scores", &nested).unwrap();
+        assert_eq!(
+            spec.for_platform(Platform::Ios).probe.as_deref(),
+            Some("- Drag a row\n  - Then count the rows")
+        );
+    }
+
+    #[test]
+    fn a_link_at_the_start_of_a_line_isnt_a_tag() {
+        let linked = TAGGED.replace("- Beta is gone.", "- [Beta](https://x) is gone.");
+        let spec = parse("scores/005-delete", "scores", &linked).unwrap();
+        assert_eq!(spec.for_platform(Platform::Ios).outcomes.len(), 2);
+    }
+
+    #[test]
+    fn lint_checks_the_tags() {
+        let problems = |text: &str| parse("scores/005-delete", "scores", text).unwrap_err();
+
+        let unknown = problems(&TAGGED.replace("[web] Tick", "[desktop] Tick"));
+        assert!(
+            unknown[0].contains("`[desktop]` isn't a platform tag"),
+            "{unknown:?}"
+        );
+
+        let unlisted =
+            problems(&TAGGED.replace("platforms: [android, ios, web]", "platforms: [ios, web]"));
+        assert!(unlisted[0].contains("tagged `android`"), "{unlisted:?}");
+
+        let everywhere =
+            problems(&TAGGED.replace("- Beta is gone.", "- [android, ios, web] Beta is gone."));
+        assert!(everywhere[0].contains("every platform"), "{everywhere:?}");
+
+        let emptied = problems(
+            &TAGGED
+                .replace("- [web] A tick box tap ticks the row.\n", "")
+                .replace("- Beta is gone.\n", "- [ios] Beta is gone.\n"),
+        );
+        assert_eq!(emptied, vec!["no outcome is left for web"]);
+
+        let unspaced = parse(
+            "scores/005-delete",
+            "scores",
+            &TAGGED.replace("[web] Tick", "[web]Tick"),
+        )
+        .unwrap();
+        assert!(!unspaced.for_platform(Platform::Ios).goal.contains("Tick"));
+
+        let inside = problems(&TAGGED.replace("  instead of opening it.", "  - [ios] instead."));
+        assert!(inside[0].contains("tag a whole outcome"), "{inside:?}");
+
+        let goalless = problems(
+            &TAGGED
+                .replace(
+                    "Delete Beta while organising.\n",
+                    "[android, ios] Delete Beta.\n",
+                )
+                .replace("[web] Tick", "[ios] Tick"),
+        );
+        assert_eq!(goalless, vec!["no goal is left for web"]);
     }
 
     #[test]

@@ -45,16 +45,16 @@ pub fn plan_for(suite: &Suite, platforms: &[Platform], scope: &[String]) -> Resu
             .specs
             .iter()
             .filter(|s| in_scope(&s.id, &s.feature))
-            .map(|s| PlannedSpec {
-                id: s.id.clone(),
-                platforms: s
-                    .front
-                    .platforms
-                    .iter()
-                    .copied()
-                    .filter(|p| platforms.contains(p))
-                    .collect(),
-                outcomes: s.outcomes.clone(),
+            .map(|s| {
+                PlannedSpec::new(
+                    s,
+                    s.front
+                        .platforms
+                        .iter()
+                        .copied()
+                        .filter(|p| platforms.contains(p))
+                        .collect(),
+                )
             })
             .filter(|s| !s.platforms.is_empty())
             .collect(),

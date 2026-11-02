@@ -12,6 +12,7 @@ pub fn render(
     rerun: Option<&str>,
     seeded: Option<&str>,
 ) -> String {
+    let spec = &spec.for_platform(platform);
     let mut out = String::new();
     let _ = writeln!(out, "# {} ({platform})\n", spec.front.title);
     let _ = writeln!(

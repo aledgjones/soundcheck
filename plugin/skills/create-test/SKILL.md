@@ -65,6 +65,8 @@ Erase across two strokes at once; change the eraser width first.
 - **`## Probe around it`** (optional): variations to try near the goal. Agents find new bugs next to old ones, so every past bug gets one. Each must be something a person could realistically do: "tap it while the drawer is closing" asks for a tap no finger lands, and only produces findings that aren't bugs.
 - **`## Pinned`** (optional): exact steps, only where they guard a past bug or reach a control an agent can't discover.
 
+**Platform tags.** When a line only holds on some of the spec's platforms, start it with a tag: `- [web] A tick box tap ticks the row.`, `- [android, ios] While organising, …`, or `[web] Tick its box instead.` in Goal. Each tester sees only its platform's lines, with the tag removed; untagged lines reach every platform. Never write the difference as an aside ("(on web, …)"): testers on other platforms misread it.
+
 ## Isolation
 
 - A spec never relies on state another spec left behind, and never mentions another spec. A flow that builds on itself (create, rename, delete) is one spec.

@@ -703,7 +703,7 @@ impl Tools {
             .suite()
             .specs
             .iter()
-            .any(|s| s.id == spec && s.probe.is_some());
+            .any(|s| s.id == spec && s.for_platform(platform).probe.is_some());
         let claim = match self.hub.with_run(|run, now| {
             run.call_started(now, &p.token, "post_result");
             run.call_finished(now, &p.token, "post_result");
@@ -787,7 +787,7 @@ impl Tools {
                                     .specs
                                     .iter()
                                     .find(|s| s.id == *spec)
-                                    .map(|s| s.outcomes.as_slice())
+                                    .map(|s| s.outcomes(*platform))
                                     .unwrap_or_default()
                             } else {
                                 r.judged_against.as_slice()
