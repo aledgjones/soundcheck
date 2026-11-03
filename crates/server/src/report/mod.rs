@@ -580,7 +580,7 @@ fn cell(t: &Tally) -> String {
     }
     let done = t.pass;
     let (class, text) = if t.pass + t.fail + t.blocked + t.checking + t.running == 0 {
-        ("", "Not run".to_string())
+        ("", format!("Not run · 0/{}", t.total))
     } else if t.fail > 0 {
         ("fail", format!("{} failed · {done}/{}", t.fail, t.total))
     } else if t.running > 0 {
@@ -596,9 +596,9 @@ fn cell(t: &Tally) -> String {
             format!("{} blocked · {done}/{}", t.blocked, t.total),
         )
     } else if done == t.total {
-        ("pass", format!("{done}/{} passed", t.total))
+        ("pass", format!("Passed · {done}/{}", t.total))
     } else {
-        ("pass", format!("{done} of {} passed", t.total))
+        ("pass", format!("Waiting · {done}/{}", t.total))
     };
     format!(
         "<span class=\"cell {class}\"><span class=\"cell-text\"><i></i>{text}</span><span class=\"mini\"><i class=\"pass\" style=\"width:{:.0}%\"></i><i class=\"fail\" style=\"width:{:.0}%\"></i><i class=\"blocked\" style=\"width:{:.0}%\"></i><i class=\"review\" style=\"width:{:.0}%\"></i><i class=\"pending\" style=\"width:{:.0}%\"></i></span></span>",
