@@ -108,7 +108,8 @@ pub struct InstallBuildParams {
     /// asks you to install their fix rather than having installed it themselves.
     #[serde(default)]
     pub install: bool,
-    /// Rows you judge the change may affect, each with a reason. Native changes and open problems rerun anyway.
+    /// Rows you judge the change may affect, each with a reason, and a `note` for the rerun's brief when the tester
+    /// should know something. Native changes and open problems rerun anyway.
     #[serde(default)]
     pub reruns: Vec<Rerun>,
 }
@@ -1004,6 +1005,9 @@ impl Tools {
                 Err(e) => return reply(Err(e)),
             },
         };
+        if let Err(e) = self.hub.forget_old_build(p.platform).await {
+            return reply(Err(e));
+        }
         reply(self.hub.with_run(|run, now| {
             let reruns = run.install_build(now, p.platform, build.clone(), p.reruns)?;
             Ok(json!({ "build": build, "reruns": reruns }))

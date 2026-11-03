@@ -528,9 +528,8 @@ async fn a_file_picker_offers_what_was_pushed_and_downloads_are_seen() {
     driver.device.close().await;
 }
 
-/// The web app works offline through its service worker, so the worker has to run in soundcheck's Chrome.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_service_worker_starts_and_controls_the_page() {
+/// A page whose service worker answers every navigation itself once it controls the page.
+async fn worker_app() -> (u16, tokio::task::JoinHandle<()>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -557,11 +556,16 @@ async fn a_service_worker_starts_and_controls_the_page() {
             let _ = stream.write_all(response.as_bytes()).await;
         }
     });
+    (port, server)
+}
+
+/// Launches Chrome on the worker app and waits for the worker to control the page; `None` when Chrome won't start.
+async fn controlled(port: u16) -> Option<Driver<Web>> {
     let web = match Web::launch(&format!("http://localhost:{port}/"), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
-            return;
+            return None;
         }
     };
     let driver = Driver::new(web);
@@ -575,6 +579,16 @@ async fn a_service_worker_starts_and_controls_the_page() {
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     assert!(seen.iter().any(|e| e.label == "controlled"), "{seen:#?}");
+    Some(driver)
+}
+
+/// The web app works offline through its service worker, so the worker has to run in soundcheck's Chrome.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_worker_starts_and_controls_the_page() {
+    let (port, server) = worker_app().await;
+    let Some(driver) = controlled(port).await else {
+        return;
+    };
     // A relaunch navigates a page the worker now controls.
     driver.device.launch().await.unwrap();
     // With the server gone, only the worker can answer.
@@ -586,5 +600,23 @@ async fn a_service_worker_starts_and_controls_the_page() {
         seen.iter().any(|e| e.label == "served by the worker"),
         "{seen:#?}"
     );
+    driver.device.close().await;
+}
+
+/// A new build installed mid-run: the old build's worker would keep answering, so the next launch reaches the server.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_new_build_drops_the_old_builds_worker() {
+    let (port, server) = worker_app().await;
+    let Some(driver) = controlled(port).await else {
+        return;
+    };
+    driver.device.new_build().await.unwrap();
+    driver.device.launch().await.unwrap();
+    let seen = driver.see(None, false).await.unwrap();
+    assert!(
+        !seen.iter().any(|e| e.label == "served by the worker"),
+        "{seen:#?}"
+    );
+    server.abort();
     driver.device.close().await;
 }

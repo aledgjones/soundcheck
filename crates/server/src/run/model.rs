@@ -225,4 +225,7 @@ impl Build {
 pub struct Rerun {
     pub spec: String,
     pub reason: String,
+    /// For the rerun's brief, as `queue`'s note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }

@@ -1035,21 +1035,17 @@ impl Run {
             );
         }
         let mut reruns: Vec<Rerun> = Vec::new();
-        let mut add = |spec: &str, reason: String| {
-            if !reruns.iter().any(|r| r.spec == spec) {
-                reruns.push(Rerun {
-                    spec: spec.into(),
-                    reason,
-                });
-            }
-        };
         for rerun in listed {
             if rerun.reason.trim().is_empty() {
                 bail!("say why {} should rerun", rerun.spec);
             }
             match self.state.rows.get(&(rerun.spec.clone(), platform)) {
                 None => bail!("{} doesn't run on {platform}", rerun.spec),
-                Some(r) if matches!(r.row, Row::Filed { .. }) => add(&rerun.spec, rerun.reason),
+                Some(r) if matches!(r.row, Row::Filed { .. }) => {
+                    if !reruns.iter().any(|r| r.spec == rerun.spec) {
+                        reruns.push(rerun);
+                    }
+                }
                 // Not run yet, or already queued: it runs on the new build anyway.
                 Some(_) => {}
             }
@@ -2015,6 +2011,7 @@ impl State {
                         r.row = Row::Queued { verify: None };
                         r.budget = 0;
                         r.sightings = 0;
+                        r.rerun_note.clone_from(&rerun.note);
                     }
                 }
                 self.notes.extend(reruns.iter().map(|rerun| Note {

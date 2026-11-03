@@ -1422,6 +1422,27 @@ impl Hub {
         Ok(())
     }
 
+    /// A new build is on the platform: a device already connected forgets what it kept of the old one.
+    pub async fn forget_old_build(&self, platform: Platform) -> Result<()> {
+        let slot = self
+            .devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&platform)
+            .cloned();
+        if let Some(slot) = slot
+            && let Some(driver) = slot.lock().await.as_ref()
+        {
+            driver
+                .device
+                .new_build()
+                .await
+                .with_context(|| format!("couldn't clear the old build on {platform}"))?;
+        }
+
+        Ok(())
+    }
+
     /// Starts the web app with the suite's web start hook, stopping the one already running first. It runs until
     /// `stop_web_app` or the hub drops it. Without a start hook in suite.yaml there's nothing to start.
     pub async fn start_web_app(&self) -> Result<()> {

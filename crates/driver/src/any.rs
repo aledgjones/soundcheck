@@ -101,6 +101,9 @@ impl Device for AnyDevice {
     async fn network_drop(&self, seconds: u64) -> Result<()> {
         each!(self, d => d.network_drop(seconds).await)
     }
+    async fn new_build(&self) -> Result<()> {
+        each!(self, d => d.new_build().await)
+    }
     async fn health(&self) -> Result<Health> {
         each!(self, d => d.health().await)
     }

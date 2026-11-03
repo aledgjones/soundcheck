@@ -220,6 +220,11 @@ pub trait Device {
         Err(self.unsupported("offline"))
     }
 
+    /// A new build of the app is installed: forgets what the device kept of the old one, so the next launch runs it.
+    async fn new_build(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Samples the device's health, and repairs what it safely can on the spot (lost port forwards).
     async fn health(&self) -> Result<Health> {
         Ok(Health::default())

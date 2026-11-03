@@ -1159,6 +1159,7 @@ fn a_fix_build_reruns_only_the_approved_rows() {
     let approved = vec![Rerun {
         spec: DRAW.into(),
         reason: "the fix touches undo".into(),
+        note: None,
     }];
     let reruns = run
         .install_build(30, Android, build("bbbbbbb2", "fp1"), approved.clone())
@@ -1222,6 +1223,7 @@ fn a_listed_rerun_needs_a_reason() {
         vec![Rerun {
             spec: BACK.into(),
             reason: reason.into(),
+            note: None,
         }]
     };
     assert!(
@@ -1307,6 +1309,7 @@ fn a_rerun_after_finishing_opens_the_run_again() {
     let rerun = vec![Rerun {
         spec: BACK.into(),
         reason: "the harness gap that blocked it is fixed".into(),
+        note: None,
     }];
     run.install_build(5, Android, build("a1", "fp1"), rerun)
         .unwrap();
@@ -1314,6 +1317,31 @@ fn a_rerun_after_finishing_opens_the_run_again() {
     run.dispatch(6, BACK, Android, brief).unwrap();
     drop(run);
     assert!(!Run::open(plan(false), &path, 0).unwrap().state().finished);
+}
+
+#[test]
+fn a_fix_builds_rerun_note_reaches_its_brief() {
+    let path = journal("install-note");
+    let mut run = Run::open(plan(false), &path, 0).unwrap();
+    pass(&mut run, 1, BACK, Android);
+    let rerun = vec![Rerun {
+        spec: BACK.into(),
+        reason: "the fix touches the back stack".into(),
+        note: Some("screenshot the back stack as `stack`".into()),
+    }];
+    run.install_build(3, Android, build("b2", "fp1"), rerun)
+        .unwrap();
+    let note = |run: &Run| run.row(BACK, Android).unwrap().rerun_note.clone();
+    assert_eq!(
+        note(&run).as_deref(),
+        Some("screenshot the back stack as `stack`")
+    );
+    drop(run);
+    let replayed = Run::open(plan(false), &path, 0).unwrap();
+    assert_eq!(
+        note(&replayed).as_deref(),
+        Some("screenshot the back stack as `stack`")
+    );
 }
 
 fn row(spec: &str, platform: Platform) -> RowRef {
@@ -1492,6 +1520,7 @@ fn each_build_gets_a_fresh_attempt_budget() {
     let approved = vec![Rerun {
         spec: BACK.into(),
         reason: "the fix touches the back stack".into(),
+        note: None,
     }];
     run.install_build(40, Android, build("b2", "fp1"), approved)
         .unwrap();

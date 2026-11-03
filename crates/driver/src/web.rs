@@ -24,6 +24,7 @@ use chromiumoxide::cdp::browser_protocol::page::{
     DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
     FileChooserOpenedMode, HandleJavaScriptDialogParams, SetInterceptFileChooserDialogParams,
 };
+use chromiumoxide::cdp::browser_protocol::storage::ClearDataForOriginParams;
 use chromiumoxide::cdp::browser_protocol::target::{
     FilterEntry, SetAutoAttachParams, TargetFilter,
 };
@@ -150,6 +151,15 @@ pub fn open_profile(profile: &Path, url: &str) -> Result<()> {
         return Err(device(format!("Chrome exited with {status}")));
     }
     Ok(())
+}
+
+/// `http://127.0.0.1:43173/app` → `http://127.0.0.1:43173`.
+fn origin(url: &str) -> String {
+    let host_start = url.find("://").map_or(0, |i| i + 3);
+    match url[host_start..].find('/') {
+        Some(i) => url[..host_start + i].to_string(),
+        None => url.to_string(),
+    }
 }
 
 fn device(e: impl std::fmt::Display) -> DriverError {
@@ -1193,6 +1203,19 @@ impl Device for Web {
         let (x, y) = self.reveal(x, y).await?;
         self.mouse(DispatchMouseEventType::MouseMoved, x, y, false)
             .await
+    }
+
+    // A service worker serves the shell it cached from the old build, which then only offers to reload. The app's
+    // own data (sign-in, IndexedDB, OPFS) stays, as it would for a person whose browser updated the app.
+    async fn new_build(&self) -> Result<()> {
+        self.page
+            .execute(ClearDataForOriginParams::new(
+                origin(&self.base_url),
+                "service_workers,cache_storage",
+            ))
+            .await
+            .map_err(device)?;
+        Ok(())
     }
 
     async fn goto(&self, url: &str) -> Result<()> {
