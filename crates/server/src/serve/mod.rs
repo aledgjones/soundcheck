@@ -296,6 +296,8 @@ pub struct Hub {
     start_up: Mutex<Option<report::StartUp>>,
     /// Tells live pages to redraw for what isn't in the journal: the start's progress.
     nudges: broadcast::Sender<()>,
+    /// The web app the suite's start hook serves for the run, started again whenever web is installed.
+    web_app: tokio::sync::Mutex<Option<hooks::Service>>,
 }
 
 /// How long a finished run must go without a tool call before a new run may take its port.
@@ -350,6 +352,7 @@ impl Hub {
             coordinators: Mutex::new(std::collections::HashSet::new()),
             start_up: Mutex::new(None),
             nudges: broadcast::channel(16).0,
+            web_app: tokio::sync::Mutex::new(None),
             last_call: std::sync::atomic::AtomicU64::new(now_ms()),
             stop: CancellationToken::new(),
         })
@@ -1416,7 +1419,40 @@ impl Hub {
         hooks::run(&suite.root, &command, hooks::INSTALL_TIMEOUT)
             .await
             .with_context(|| format!("the install hook failed on {platform}"))?;
+        if platform == Platform::Web && self.web_app.lock().await.is_some() {
+            self.start_web_app().await?;
+        }
+
         Ok(())
+    }
+
+    /// Starts the web app with the suite's web start hook, stopping the one already running first. It runs until
+    /// `stop_web_app` or the hub drops it. Without a start hook in suite.yaml there's nothing to start.
+    pub async fn start_web_app(&self) -> Result<()> {
+        let suite = self.suite();
+        let Some((start, base_url)) = suite
+            .config
+            .as_ref()
+            .and_then(|c| c.platforms.get(&Platform::Web))
+            .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)))
+        else {
+            return Ok(());
+        };
+        let mut web_app = self.web_app.lock().await;
+        if let Some(running) = web_app.take() {
+            running.stop(&base_url, hooks::START_TIMEOUT).await?;
+        }
+        *web_app = Some(
+            hooks::Service::start(&suite.root, &start, &base_url, hooks::START_TIMEOUT).await?,
+        );
+        Ok(())
+    }
+
+    /// For a way out that can't wait: dropping the service signals it to stop. One mid-restart is left to its task.
+    pub fn stop_web_app(&self) {
+        if let Ok(mut web_app) = self.web_app.try_lock() {
+            web_app.take();
+        }
     }
 
     /// Logs the platform's build when it isn't the last one logged, whoever installed it, so every attempt belongs to

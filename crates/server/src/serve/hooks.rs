@@ -171,6 +171,28 @@ impl Service {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
     }
+
+    /// Stops the service and waits until `url` no longer answers, so a new one can take its port.
+    pub async fn stop(mut self, url: &str, timeout: Duration) -> Result<()> {
+        if let Some(pid) = self.child.id() {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &format!("-{pid}")])
+                .status();
+        }
+        let client = reqwest::Client::new();
+        let deadline = tokio::time::Instant::now() + timeout;
+        let _ = tokio::time::timeout(timeout, self.child.wait()).await;
+        while client.get(url).send().await.is_ok() {
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "{url} still answers {} s after its service was stopped",
+                    timeout.as_secs()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Service {
@@ -283,5 +305,31 @@ mod tests {
             .err()
             .unwrap();
         assert!(err.to_string().contains("stopped"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_stopped_web_app_frees_its_port_for_the_next() {
+        let dir = std::env::temp_dir().join(format!("soundcheck-restart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let command = format!("exec python3 -m http.server {port} --bind 127.0.0.1");
+        let first = Service::start(&dir, &command, &url, Duration::from_secs(20))
+            .await
+            .unwrap();
+        first.stop(&url, Duration::from_secs(10)).await.unwrap();
+        assert!(reqwest::get(&url).await.is_err(), "gone once stop returns");
+
+        std::fs::write(dir.join("index.html"), "<h1>rebuilt</h1>").unwrap();
+        let second = Service::start(&dir, &command, &url, Duration::from_secs(20))
+            .await
+            .unwrap();
+        let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
+        assert!(body.contains("<h1>rebuilt</h1>"));
+        drop(second);
     }
 }

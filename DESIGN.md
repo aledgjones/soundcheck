@@ -71,7 +71,7 @@ How they talk:
    - run the project's `guard` hook (the project decides what "safe and up" means, e.g. local only, backend answering);
    - connect every device before anything is built: one emulator on API 34 or newer, one booted simulator, Chrome (SA-705), so a device problem shows in seconds rather than after a build;
    - wait for a settled Mac (SA-699);
-   - read each platform's build identity; build and install with the `install` hook where it's unknown (every platform with `--install`), and refuse if it's still unknown;
+   - read each platform's build identity; build and install with the `install` hook where it's unknown (every platform with `--install`), and refuse if it's still unknown. Web is built the same way (SA-840, Aled 2026-11-03): the `install` hook builds the app and records it, the start hook only serves the last build, and the server starts the web app again after every web install, at run start or through `install_build`. Before this the start hook built and served in one step, so `--install` failed on any run with web and a mid-run web fix needed a new run;
    - launch the app on each device and wait for the platform's `ready` labels from `suite.yaml` (signed in, past onboarding), unless the suite has a `prepare` file: then each platform is prepared before its first spec, and the labels are checked once it is (3.11);
    - then open the live page.
 
@@ -324,7 +324,7 @@ Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but feature
 - `soundcheck: <version>`: the pin (section 8).
 - `platforms`:
   - app IDs per platform;
-  - for web: base URL, a start hook, and optionally a Chrome `profile` signed in to Google by hand with `soundcheck web-profile`: each run starts from a copy, since Google's sign-in refuses an automated browser and its session must already be there;
+  - for web: base URL, a start hook that serves the build the `install` hook made, and optionally a Chrome `profile` signed in to Google by hand with `soundcheck web-profile`: each run starts from a copy, since Google's sign-in refuses an automated browser and its session must already be there;
   - the account each platform signs in with (the prepare brief names it);
   - `ready`: labels that prove the launched app is ready to test (signed in, past onboarding), checked by the preflight.
 - `hooks`: the commands in 5.3.
@@ -480,6 +480,6 @@ Built against Solo Scores, which proves the concept; there's no separate demo ap
 - **Port:** 7357 by default. The plugin's MCP server is `soundcheck mcp`, a stdio bridge that lists the tools from the start and forwards each call to the run serving on the port, so a session opened before `soundcheck run` needs no reconnect (decided 2026-10-21, after the first run).
 - **One server holds the port** (SA-697, Aled 2026-10-25). A finished run's server stays up, so its page and triage keep working, until a new run needs the port. A new run asks first, before any hook: a finished run with no tool call for 5 minutes, or a `soundcheck serve` reports server, steps down, and its report stays under `/runs`. An unfinished run, or a finished one used in the last 5 minutes (triage may be under way), keeps the port, and the new run refuses with its folder and how to resume or stop it. Before this, a second run found the port taken only after its builds.
 - **The tester's silence timeout** before a running spec is treated as stopped.
-- **Web start hook:** a local dev server or a preview build, and how its build identity is read.
+- **Web start hook** (answered 2026-11-03, SA-840): it serves a production build that the `install` hook made, and the build identity reads that install's record, as on the phones.
 - **Android overlay gap** (answered 2026-10-21): neither timing nor the long-lived connection. The controls are drawn outside their parent's bounds, so Android reports them invisible with an empty frame to uiautomator as well; an app fix (4.2).
 - **The parity screen set** (answered 2026-10-21, 4.3): reached by hand with `drive`, since how to reach screens is the app's knowledge; a project could script it from its specs later.

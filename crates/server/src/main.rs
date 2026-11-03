@@ -173,8 +173,8 @@ struct RunArgs {
     /// rather than headless. Look only: a click or resize in one can steer a test.
     #[arg(long)]
     headed: bool,
-    /// Build and install the current tree on every platform before starting, with the suite's install hook. Without
-    /// it, only a platform whose installed build can't be identified is built.
+    /// Build and install the current tree on every platform before starting, with the suite's install hook (web's
+    /// start hook then serves the new build). Without it, only a platform whose build can't be identified is built.
     #[arg(long)]
     install: bool,
     /// Also open the live page through an ngrok tunnel, behind Google sign-in for suite.yaml's `remote.allow`.
@@ -544,6 +544,8 @@ fn run_command(args: RunArgs) -> Result<()> {
             println!("✓ {check}");
             hub.start_passed(check);
         };
+        // However the run ends, the web app stops with it.
+        let _web_app = StopsWebApp(hub.clone());
         let preflight = async {
         let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
         let starting = soundcheck::stack::Live::Wait(platforms.clone());
@@ -587,27 +589,19 @@ fn run_command(args: RunArgs) -> Result<()> {
                 format!("{whose}: {said}")
             });
         }
-        // The web app under test, if the suite starts one: it runs as long as the run does.
-        let _web_app = match config_web_start {
-            Some((start, base_url)) if platforms.contains(&Platform::Web) => {
-                // The run waits on `base-url`, which may itself go through the proxy.
-                if let Some(routes) = &web_routes {
-                    soundcheck::network::ensure(&root_dir, Platform::Web, routes).await?;
-                }
-                println!("starting the web app: {start}");
-                hub.start_step("starting the web app");
-                Some(
-                    serve::hooks::Service::start(
-                        &root_dir,
-                        &start,
-                        &base_url,
-                        serve::hooks::START_TIMEOUT,
-                    )
-                    .await?,
-                )
+        // The web app under test, if the suite starts one: the hub keeps it as long as the run, and an install of
+        // web starts it again.
+        if let Some((start, _)) = &config_web_start
+            && platforms.contains(&Platform::Web)
+        {
+            // The run waits on `base-url`, which may itself go through the proxy.
+            if let Some(routes) = &web_routes {
+                soundcheck::network::ensure(&root_dir, Platform::Web, routes).await?;
             }
-            _ => None,
-        };
+            println!("starting the web app: {start}");
+            hub.start_step("starting the web app");
+            hub.start_web_app().await?;
+        }
         // Every device answers before anything is built, so a missing emulator or one too old shows in seconds, not
         // after a build. What needs the app (its ready labels) waits for the install.
         for &platform in &platforms {
@@ -701,7 +695,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             });
         }
         hub.with_run(|run, now| run.preflight(now, hub.start_checks()))?;
-        anyhow::Ok(_web_app)
+        anyhow::Ok(())
         };
         // Whatever preflight started is dropped with it, the stacks after, as on any other way out.
         let started = tokio::select! {
@@ -721,8 +715,8 @@ fn run_command(args: RunArgs) -> Result<()> {
                 return Ok(());
             }
         };
-        let _web_app = match started {
-            Ok(web_app) => web_app,
+        match started {
+            Ok(()) => {}
             Err(why) => {
                 // Said now, so whoever started the run hears at once; the page shows it until a new run takes the
                 // port, the server is stopped, or the wait runs out.
@@ -778,6 +772,14 @@ fn run_command(args: RunArgs) -> Result<()> {
         let _ = server.handle.await;
         Ok(())
     })
+}
+
+struct StopsWebApp(std::sync::Arc<serve::Hub>);
+
+impl Drop for StopsWebApp {
+    fn drop(&mut self) {
+        self.0.stop_web_app();
+    }
 }
 
 /// The allow list `--remote` needs, refused before anything starts when suite.yaml has none.
