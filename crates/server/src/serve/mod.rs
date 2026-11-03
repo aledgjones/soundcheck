@@ -727,10 +727,6 @@ impl Hub {
                 .await?
                 .reset()
                 .await?;
-        } else if platform == Platform::Web && !self.without_devices.contains(&platform) {
-            // Without a proxy, web's network is Chrome's own switch, which outlives a page reload.
-            self.on_device(platform, async |d| d.device.offline(false).await)
-                .await?;
         }
         let guard = hooks::fill(
             &config.hooks.guard,

@@ -17,14 +17,12 @@ const PAGE: &str = r#"<!doctype html><html><head><title>Fixture</title></head><b
   <button onclick="throw new Error('boom')">Break</button>
   <button onclick="window.tapCount=(window.tapCount||0)+1;document.getElementById('taps').textContent='Taps '+window.tapCount">Tap</button>
   <p id="taps">Taps 0</p>
-  <p id="net">online</p>
   <p id="width"></p>
   <p id="key">No key</p>
 </main>
 <script>
   addEventListener('keydown', (e) => { document.getElementById('key').textContent = 'Key ' + e.key; });
   setInterval(() => {
-    document.getElementById('net').textContent = navigator.onLine ? 'online' : 'offline';
     document.getElementById('width').textContent = 'Width ' + innerWidth;
   }, 50);
 </script>
@@ -94,15 +92,6 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
 
     driver.device.viewport(500, 700).await.unwrap();
     driver.wait(&m("Width 500"), 3000).await.unwrap();
-
-    // Offline for a second, then back.
-    let drop = driver.network_drop(1);
-    let watch = async {
-        driver.wait(&m("offline"), 3000).await.unwrap();
-    };
-    let (dropped, ()) = tokio::join!(drop, watch);
-    dropped.unwrap();
-    driver.wait(&m("online"), 3000).await.unwrap();
 
     let shot = dir.join("shot.png");
     driver.device.screenshot(&shot).await.unwrap();
@@ -546,7 +535,7 @@ async fn a_service_worker_starts_and_controls_the_page() {
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
-    tokio::spawn(async move {
+    let server = tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             let mut request = [0u8; 2048];
             let n = stream.read(&mut request).await.unwrap_or(0);
@@ -588,13 +577,14 @@ async fn a_service_worker_starts_and_controls_the_page() {
     assert!(seen.iter().any(|e| e.label == "controlled"), "{seen:#?}");
     // A relaunch navigates a page the worker now controls.
     driver.device.launch().await.unwrap();
-    driver.device.offline(true).await.unwrap();
+    // With the server gone, only the worker can answer.
+    server.abort();
+    let _ = server.await;
     driver.device.launch().await.unwrap();
     let seen = driver.see(None, false).await.unwrap();
     assert!(
         seen.iter().any(|e| e.label == "served by the worker"),
         "{seen:#?}"
     );
-    driver.device.offline(false).await.unwrap();
     driver.device.close().await;
 }

@@ -94,6 +94,13 @@ async fn a_drop_freezes_then_lets_new_connections_through() {
     assert_eq!(proxy::command(&socket, "status").await.unwrap(), "online");
     let mut after = TcpStream::connect(("127.0.0.1", 19102)).await.unwrap();
     assert_eq!(ping(&mut after).await.unwrap(), "ping");
+    for (name, mut frozen) in [("before", before), ("during", during)] {
+        let closed = ping(&mut frozen).await.unwrap_err();
+        assert_ne!(
+            closed, "timed out",
+            "{name} the drop stayed frozen after it"
+        );
+    }
     proxy::command(&socket, "stop").await.unwrap();
 }
 

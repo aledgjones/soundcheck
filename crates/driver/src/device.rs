@@ -212,7 +212,7 @@ pub trait Device {
     async fn hardware_keyboard(&self, _on: bool) -> Result<()> {
         Ok(())
     }
-    /// The device's own network switch, where it has one (web); Android and iOS go through the network proxy.
+    /// Every platform's network goes through the suite's proxy; a device has no switch of its own.
     async fn network_drop(&self, _seconds: u64) -> Result<()> {
         Err(self.unsupported("network-drop"))
     }

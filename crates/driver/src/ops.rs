@@ -54,8 +54,8 @@ pub struct CheckLine {
 /// The operations every platform shares, built on a [`Device`]'s raw reads and inputs.
 pub struct Driver<D: Device> {
     pub device: D,
-    /// The proxy the app reaches its services through, when the suite configures one; otherwise the network
-    /// tools fall to the device's own switch (web).
+    /// The proxy the app reaches its services through, when the suite configures one; without it the network
+    /// tools are unsupported.
     pub network: Option<crate::proxy::Network>,
 }
 

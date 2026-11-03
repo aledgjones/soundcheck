@@ -20,10 +20,6 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
     InsertTextParams, MouseButton,
 };
-use chromiumoxide::cdp::browser_protocol::network::{
-    EmulateNetworkConditionsByRuleParams, EnableParams as NetworkEnable, NetworkConditions,
-    OverrideNetworkStateParams,
-};
 use chromiumoxide::cdp::browser_protocol::page::{
     DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
     FileChooserOpenedMode, HandleJavaScriptDialogParams, SetInterceptFileChooserDialogParams,
@@ -181,20 +177,6 @@ fn property(node: &AxNode, name: AxPropertyName) -> Option<String> {
             serde_json::Value::String(s) => s.clone(),
             other => other.to_string(),
         })
-}
-
-async fn set_page_offline(page: &Page, offline: bool) -> Result<()> {
-    let all = NetworkConditions::new("", 0.0, -1.0, -1.0);
-    page.execute(EmulateNetworkConditionsByRuleParams::new(
-        offline,
-        vec![all],
-    ))
-    .await
-    .map_err(|e| device(format!("emulateNetworkConditionsByRule: {e}")))?;
-    page.execute(OverrideNetworkStateParams::new(offline, 0.0, -1.0, -1.0))
-        .await
-        .map_err(|e| device(format!("overrideNetworkState: {e}")))?;
-    Ok(())
 }
 
 /// `PDF, 34 KB` once saved: its kind from the file's own first bytes, since a name can say anything.
@@ -829,11 +811,6 @@ impl Web {
         }
     }
 
-    /// Requests fail while offline, and the page's navigator.onLine agrees.
-    async fn set_offline(&self, offline: bool) -> Result<()> {
-        set_page_offline(&self.page, offline).await
-    }
-
     async fn key(&self, key: &str, code: i64) -> Result<()> {
         let page = self.current().await;
         for kind in [DispatchKeyEventType::KeyDown, DispatchKeyEventType::KeyUp] {
@@ -1257,28 +1234,5 @@ impl Device for Web {
             .await
             .map_err(device)?;
         self.fit_window(width, height).await
-    }
-
-    async fn offline(&self, on: bool) -> Result<()> {
-        self.page
-            .execute(NetworkEnable::default())
-            .await
-            .map_err(device)?;
-        self.set_offline(on).await
-    }
-
-    async fn network_drop(&self, seconds: u64) -> Result<()> {
-        self.page
-            .execute(NetworkEnable::default())
-            .await
-            .map_err(device)?;
-        self.set_offline(true).await?;
-        // Restore on a timer, as on Android: the call returns once the network is down.
-        let page = self.page.clone();
-        tokio::spawn(async move {
-            sleep(Duration::from_secs(seconds)).await;
-            let _ = set_page_offline(&page, false).await;
-        });
-        Ok(())
     }
 }

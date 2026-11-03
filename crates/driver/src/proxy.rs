@@ -123,7 +123,7 @@ fn tls_connector(extra: &[Vec<u8>]) -> std::io::Result<TlsConnector> {
 pub enum Mode {
     Online,
     /// Nothing passes and nothing closes, as when a phone loses the network in the background. Connections open
-    /// during a drop stay frozen; new ones get through after it.
+    /// during a drop stay frozen until it ends, and then close; new ones get through after it.
     Dropped,
     /// Connections are refused and open ones closed, as in airplane mode.
     Offline,
@@ -418,6 +418,8 @@ async fn connection(
                     match *rx.borrow() {
                         Mode::Dropped => frozen.store(true, Ordering::SeqCst),
                         Mode::Offline => return,
+                        // A real network change closes it; left frozen, it'd swallow what the app sends for good.
+                        Mode::Online if frozen.load(Ordering::SeqCst) => return,
                         Mode::Online => {}
                     }
                 }
@@ -436,7 +438,8 @@ async fn connection(
         }
         std::future::pending::<()>().await;
     };
-    // Going offline, or a fault on the request in flight, drops both halves, which closes the sockets.
+    // Going offline, the end of a drop that froze it, or a fault on the request in flight, drops both halves, which
+    // closes the sockets.
     tokio::select! {
         () = pipes => {}
         () = watch => {}

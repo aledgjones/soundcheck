@@ -92,7 +92,7 @@ pub enum Action {
         #[arg(value_parser = ["offline", "online"])]
         state: String,
     },
-    /// Freeze the network for N seconds (nothing passes, nothing closes), then let new connections through.
+    /// Freeze the network for N seconds (nothing passes, nothing closes), then close what it froze and let new connections through.
     NetworkDrop { seconds: u64 },
     /// Have a service answer requests to a path (`*` for any one segment) with an error status, through the suite's
     /// proxy, until `fault clear`.

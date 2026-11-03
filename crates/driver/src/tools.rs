@@ -116,7 +116,7 @@ pub const TOOLS: &[Tool] = &[
     mechanic(
         "network-drop",
         ALL,
-        "freeze the network for N seconds (nothing passes, nothing closes), then let new connections through",
+        "freeze the network for N seconds (nothing passes, nothing closes), then close what it froze and let new connections through",
     ),
     mechanic(
         "offline",

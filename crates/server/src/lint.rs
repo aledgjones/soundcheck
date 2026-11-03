@@ -322,15 +322,16 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                             push(format!("tools: {name} doesn't run on {platform}"));
                         }
                     }
-                    // Without a proxy, web falls back on the browser's own switch, which can't fault one path.
-                    if NETWORK_TOOLS.contains(&name.as_str())
-                        && config.network.is_none()
-                        && f.platforms
-                            .iter()
-                            .any(|p| *p != Platform::Web || name == "fault")
-                    {
+                    let unrouted: Vec<String> = f
+                        .platforms
+                        .iter()
+                        .filter(|p| crate::network::routes(config, **p).is_none())
+                        .map(ToString::to_string)
+                        .collect();
+                    if NETWORK_TOOLS.contains(&name.as_str()) && !unrouted.is_empty() {
                         push(format!(
-                            "tools: {name} needs suite.yaml's network section (the proxy it goes through)"
+                            "tools: {name} needs suite.yaml's network section to give {} routes (the proxy it goes through)",
+                            unrouted.join(", ")
                         ));
                     }
                 }
