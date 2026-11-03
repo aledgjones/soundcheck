@@ -3,7 +3,7 @@
 :root[data-theme="dark"]{--bg:#000;--card:#1c1c1e;--ink:#f5f5f7;--label2:rgba(235,235,245,.6);--label3:rgba(235,235,245,.3);--sep:rgba(84,84,88,.6);--fill:rgba(118,118,128,.24);--pass:#30d158;--fail:#ff453a;--partial:#ff9f0a;--blocked:#bf5af2;--notrun:#48484a;--accent:#2997ff;--review:#ff9f0a;--bar:rgba(0,0,0,.82);--pressed:#636366;color-scheme:dark}
 *{box-sizing:border-box}
 body{margin:0;background:var(--bg);color:var(--ink);font:17px/1.47 -apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",system-ui,sans-serif;letter-spacing:-.022em;-webkit-font-smoothing:antialiased;font-feature-settings:"tnum" 1}
-main{max-width:980px;margin:0 auto;padding-block:40px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+main{max-width:1200px;margin:0 auto;padding-block:40px 96px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 h1,h2,h3,h4{margin:0;line-height:1.1;letter-spacing:-.025em;text-wrap:balance}
 h1{font-size:48px;font-weight:700}
 h2{font-size:28px;font-weight:700}
@@ -177,7 +177,7 @@ body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset
 .nowbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;backdrop-filter:saturate(1.8) blur(16px);-webkit-backdrop-filter:saturate(1.8) blur(16px);background:var(--bar);border-bottom:1px solid var(--sep)}
 /* Installed on iOS, the system blurs a band below the status bar too: keep the bar's text clear of it. */
 @media (display-mode:standalone){body::before{height:calc(env(safe-area-inset-top,0px) + 16px)}.nowbar{top:calc(env(safe-area-inset-top,0px) + 16px)}}
-.nowbar-in{max-width:980px;margin:0 auto;display:flex;gap:6px 22px;align-items:flex-start;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.nowbar-in{max-width:1200px;margin:0 auto;display:flex;gap:6px 22px;align-items:flex-start;font-size:14px;padding-block:10px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
 .nowbar b{font-weight:600}
 .nowbar-live{flex:none}
 .nowbar-doing{flex:1;min-width:0;display:flex;flex-wrap:wrap;gap:4px 22px}
