@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Atlassian__getAccessibleAtlassianResources",
+      "mcp__Atlassian__searchJiraIssuesUsingJql",
+      "mcp__Atlassian__createJiraIssue",
+      "mcp__Atlassian__editJiraIssue"
+    ]
+  },
+  "enabledMcpjsonServers": ["Atlassian"]
+}
