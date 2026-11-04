@@ -1,0 +1,369 @@
+{
+  "bar": {
+    "doing": [
+      {
+        "checking": {
+          "label": "for {t}",
+          "since": 1792540260000,
+          "warn_ms": 300000
+        },
+        "platform": "iOS",
+        "spec": "annotations/001-draw"
+      }
+    ],
+    "idle": {
+      "label": "idle {t}: coordinator not responding",
+      "since": 1792540260000,
+      "warn_ms": 900000
+    },
+    "kind": "now",
+    "paused": false,
+    "timer": {
+      "active_ms": 260000,
+      "cap_ms": 1800000,
+      "since": 1792540260000
+    }
+  },
+  "checks": {
+    "annotations/001-draw": {
+      "anchor": "spec-annotations-001-draw",
+      "attn": true,
+      "bodies": [
+        {
+          "failure": {
+            "alone": false,
+            "call": "The screenshot shows the stroke after Undo.",
+            "shots": []
+          },
+          "findings": [],
+          "kind": "detail",
+          "label": true,
+          "outcomes": [
+            {
+              "boxed": true,
+              "class": "failed",
+              "failure": true,
+              "label": "failed",
+              "mark": "✕",
+              "observed": "The stroke stayed after Undo at 2.5× zoom.",
+              "text": "The stroke disappears on undo and returns in the same place on redo."
+            },
+            {
+              "boxed": false,
+              "class": "held",
+              "failure": false,
+              "label": "held",
+              "mark": "✓",
+              "observed": "Undo greyed out after the undo.",
+              "text": "Undo and Redo enable and disable to match."
+            }
+          ],
+          "platform": "Android"
+        },
+        {
+          "findings": [],
+          "kind": "detail",
+          "label": true,
+          "outcomes": [
+            {
+              "boxed": false,
+              "class": "unsure",
+              "failure": false,
+              "label": "unsure",
+              "mark": "?",
+              "observed": "The stroke faded but a ghost line stayed.",
+              "text": "The stroke disappears on undo and returns in the same place on redo."
+            },
+            {
+              "boxed": false,
+              "class": "held",
+              "failure": false,
+              "label": "held",
+              "mark": "✓",
+              "observed": "Fine.",
+              "text": "Undo and Redo enable and disable to match."
+            }
+          ],
+          "platform": "iOS"
+        },
+        {
+          "kind": "pending",
+          "label": true,
+          "outcomes": [
+            {
+              "text": "The stroke disappears on undo and returns in the same place on redo."
+            },
+            {
+              "text": "Undo and Redo enable and disable to match."
+            }
+          ],
+          "platform": "Web",
+          "running": false,
+          "state": "Not run yet"
+        }
+      ],
+      "cells": [
+        {
+          "class": "fail",
+          "platform": "Android",
+          "text": "Failed"
+        },
+        {
+          "class": "review",
+          "platform": "iOS",
+          "text": "Checking",
+          "title": "The tester reported a problem; the coordinator is checking it"
+        },
+        {
+          "class": "not-run",
+          "platform": "Web",
+          "text": "Not run"
+        }
+      ],
+      "number": "001",
+      "open": true,
+      "title": "Draw a pen stroke, undo and redo it"
+    },
+    "annotations/002-back": {
+      "anchor": "spec-annotations-002-back",
+      "attn": true,
+      "bodies": [
+        {
+          "findings": [
+            {
+              "detail": "Back arrow flickers: It flashed white on the third tap.",
+              "id": 2,
+              "shots": [],
+              "title": "Finding 002: The back arrow flickers on fast taps"
+            }
+          ],
+          "kind": "detail",
+          "label": false,
+          "outcomes": [
+            {
+              "boxed": false,
+              "class": "held",
+              "failure": false,
+              "label": "held",
+              "mark": "✓",
+              "observed": "The collection showed every time.",
+              "text": "The collection shows every time; the screen never goes blank."
+            }
+          ],
+          "platform": "Android"
+        }
+      ],
+      "cells": [
+        {
+          "class": "pass",
+          "platform": "Android",
+          "text": "Passed"
+        },
+        {
+          "class": "na",
+          "platform": "iOS",
+          "text": "–"
+        },
+        {
+          "class": "na",
+          "platform": "Web",
+          "text": "–"
+        }
+      ],
+      "number": "002",
+      "open": false,
+      "pill": {
+        "class": "finding",
+        "text": "1 finding"
+      },
+      "title": "Go back from a score after annotating"
+    }
+  },
+  "export": false,
+  "facts": [
+    {
+      "text": "Android"
+    },
+    {
+      "text": "iOS"
+    },
+    {
+      "text": "Web"
+    },
+    {
+      "at": 1792540000000,
+      "text": "Started"
+    },
+    {
+      "text": "Active 4 min",
+      "title": "Time the run spent working, without the gaps between sessions"
+    }
+  ],
+  "groups": [
+    {
+      "ids": [
+        "1",
+        "2"
+      ],
+      "title": "Open"
+    }
+  ],
+  "label": "v2.16.2 · candidate",
+  "platforms": [
+    "Android",
+    "iOS",
+    "Web"
+  ],
+  "problems": {
+    "1": {
+      "badge": {
+        "class": "blocks",
+        "text": "Failure"
+      },
+      "detail": "The stroke disappears on undo and returns in the same place on redo: The stroke stayed after Undo at 2.5× zoom.",
+      "number": "001",
+      "paras": [],
+      "place": "Android · Annotations",
+      "row": "spec-annotations-001-draw",
+      "shots": [],
+      "title": "Undo leaves the stroke on screen when zoomed in"
+    },
+    "2": {
+      "badge": {
+        "class": "finding",
+        "text": "Finding"
+      },
+      "detail": "Back arrow flickers: It flashed white on the third tap.",
+      "number": "002",
+      "paras": [
+        "Found while probing, outside the check itself.",
+        "No screenshot of it; the detail above is all there is."
+      ],
+      "place": "Android · Annotations",
+      "row": "spec-annotations-002-back",
+      "shots": [],
+      "title": "The back arrow flickers on fast taps"
+    }
+  },
+  "sections": [
+    {
+      "id": "annotations",
+      "name": "Annotations",
+      "specs": [
+        "annotations/001-draw",
+        "annotations/002-back"
+      ]
+    }
+  ],
+  "summary": {
+    "class": "failing",
+    "grid": [
+      {
+        "cells": [
+          {
+            "bars": [
+              50,
+              50,
+              0,
+              0,
+              0
+            ],
+            "class": "fail",
+            "text": "1 failed · 1/2"
+          },
+          {
+            "bars": [
+              0,
+              0,
+              0,
+              100,
+              0
+            ],
+            "class": "review",
+            "text": "1 checking · 0/1"
+          },
+          {
+            "bars": [
+              0,
+              0,
+              0,
+              0,
+              0
+            ],
+            "class": "",
+            "text": "Not run · 0/1"
+          }
+        ],
+        "feature": "annotations",
+        "name": "Annotations"
+      }
+    ],
+    "pct": 25,
+    "reasons": [
+      {
+        "bad": true,
+        "text": "1 failure"
+      },
+      {
+        "bad": false,
+        "text": "1 finding to decide"
+      },
+      {
+        "bad": false,
+        "text": "1 being checked"
+      },
+      {
+        "bad": false,
+        "text": "1 not run yet"
+      }
+    ],
+    "ring": [
+      {
+        "class": "pass",
+        "dash": "69.1 207.3",
+        "offset": "-0.0"
+      },
+      {
+        "class": "fail",
+        "dash": "69.1 207.3",
+        "offset": "-69.1"
+      }
+    ],
+    "word": "Failing"
+  },
+  "timeline": {
+    "1": {
+      "at": 1792540000000,
+      "text": "#1 dispatched annotations/001-draw on android (attempt 1)"
+    },
+    "2": {
+      "at": 1792540060000,
+      "text": "#2 annotations/001-draw#1@android posted FAIL: needs review"
+    },
+    "3": {
+      "at": 1792540090000,
+      "text": "#3 reviewed annotations/001-draw on android: uphold (The screenshot shows the stroke after Undo.)"
+    },
+    "4": {
+      "at": 1792540100000,
+      "text": "#4 dispatched annotations/002-back on android (attempt 1)"
+    },
+    "5": {
+      "at": 1792540160000,
+      "text": "#5 annotations/002-back#1@android posted PASS: filed; 1 side find(s) need review: id 2: Back arrow flickers"
+    },
+    "6": {
+      "at": 1792540170000,
+      "text": "#6 side find 2 is a finding: The back arrow flickers on fast taps"
+    },
+    "7": {
+      "at": 1792540200000,
+      "text": "#7 dispatched annotations/001-draw on ios (attempt 1)"
+    },
+    "8": {
+      "at": 1792540260000,
+      "text": "#8 annotations/001-draw#1@ios posted Unsure: needs review"
+    }
+  },
+  "version": "0.2.19"
+}

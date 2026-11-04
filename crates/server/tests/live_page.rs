@@ -367,18 +367,18 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             .join("annotations-001-draw-1-web-errors.txt")
             .exists()
     );
-    let html = reqwest::get(format!("{url}/run/"))
+    let view = reqwest::get(format!("{url}/run/view"))
         .await
         .unwrap()
         .text()
         .await
         .unwrap();
     assert!(
-        html.contains("src=\"files/evidence/annotations-001-draw-1-web-saved.webp\""),
+        view.contains("\"src\":\"files/evidence/annotations-001-draw-1-web-saved.webp\""),
         "the page shows the screenshot"
     );
     assert!(
-        html.contains("files/evidence/annotations-001-draw-1-web-tree.txt"),
+        view.contains("\"href\":\"files/evidence/annotations-001-draw-1-web-tree.txt\""),
         "and links the tree"
     );
 

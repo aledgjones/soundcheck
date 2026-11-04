@@ -1,3 +1,4 @@
 /target/
 .DS_Store
 /docs/demo/reports/
+/crates/server/report-app/node_modules/

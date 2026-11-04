@@ -10,8 +10,6 @@ use tokio::process::Child;
 /// The page's own GETs. The same port serves `/mcp`, `/dispatch` and `/next`, which must never leave the machine.
 const PAGE_PATHS: &[&str] = &[
     "/",
-    "/fragment",
-    "/events",
     "/download",
     "/manifest.webmanifest",
     "/icon-180.png",
@@ -19,7 +17,7 @@ const PAGE_PATHS: &[&str] = &[
 ];
 const PAGE_PREFIXES: &[&str] = &["/files/evidence/", "/runs"];
 /// Each run's page, `/{key}/`, and what it loads. RE2 has no lookahead, so `/mcp/` is shut out separately.
-const RUN_PAGE: &str = "^/[^/]+/(fragment|events|download|report[.]html|files/evidence/[^/]+)?$";
+const RUN_PAGE: &str = "^/[^/]+/(view|updates|download|report[.]html|files/evidence/[^/]+)?$";
 
 /// A running tunnel; dropping it stops ngrok.
 pub struct Tunnel {
@@ -143,7 +141,9 @@ mod tests {
     fn the_policy_signs_in_then_lets_only_the_page_through() {
         let policy = policy(&["a@example.com".into()], 7357).unwrap();
         assert!(policy.find("type: oauth") < policy.find("in ['a@example.com']"));
-        assert!(policy.contains("'/fragment'"));
+        assert!(policy.contains("'/download'"));
+        // The feed is text/event-stream, so no rule may filter on what a request accepts.
+        assert!(!policy.to_lowercase().contains("accept"));
         for control in [
             "/mcp",
             "/dispatch",
@@ -151,6 +151,7 @@ mod tests {
             "/tokens",
             "/ended",
             "/step-down",
+            "/events",
         ] {
             assert!(
                 !policy.contains(&format!("'{control}'")),
@@ -165,8 +166,8 @@ mod tests {
         let allowed = |path: &str| page.is_match(path) && !path.starts_with("/mcp/");
         for path in [
             "/ec3b217c-c3f1-4ccd-a4b8-d230a33b8887/",
-            "/20261028-225328/fragment",
-            "/ec3b217c/events",
+            "/20261028-225328/view",
+            "/ec3b217c/updates",
             "/ec3b217c/download",
             "/ec3b217c/report.html",
             "/ec3b217c/files/evidence/help-002-ios-terms.webp",
@@ -182,6 +183,8 @@ mod tests {
             "/ready/ios",
             "/ec3b217c/files/evidence/../x",
             "/ec3b217c/reportxhtml",
+            "/ec3b217c/fragment",
+            "/ec3b217c/events",
         ] {
             assert!(!allowed(path), "{path} gets through");
         }

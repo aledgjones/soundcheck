@@ -1,3 +1,4 @@
+use serde_json::{Value, json};
 use soundcheck::report::{self, Page};
 use soundcheck::run::model::*;
 use soundcheck::run::{Plan, PlannedSpec, Run};
@@ -109,71 +110,182 @@ fn sample() -> (suite::Suite, Run) {
     (suite, run)
 }
 
-#[test]
-fn the_page_shows_failures_findings_and_checks() {
-    let (suite, run) = sample();
-    let html = report::document(&Page {
-        suite: &suite,
-        run: &run,
-        label: "v2.16.2 · candidate",
-        live: true,
+fn page<'a>(suite: &'a suite::Suite, run: &'a Run, label: &'a str, live: bool) -> Page<'a> {
+    Page {
+        suite,
+        run,
+        label,
+        live,
         run_dir: None,
         export: None,
         starting: None,
-    });
+    }
+}
+
+/// The view JSON embedded in a document, as the page reads it.
+fn embedded(html: &str) -> Value {
+    let start = html
+        .find("<script type=\"application/json\" id=\"view\">")
+        .unwrap();
+    let json = &html[start..];
+    let json = &json[json.find('>').unwrap() + 1..json.find("</script>").unwrap()];
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn the_page_shows_failures_findings_and_checks() {
+    let (suite, run) = sample();
+    let view = report::view::json(&page(&suite, &run, "v2.16.2 · candidate", true));
     if let Ok(path) = std::env::var("SOUNDCHECK_REPORT_SAMPLE") {
-        std::fs::write(path, &html).unwrap();
+        std::fs::write(path, serde_json::to_string_pretty(&view).unwrap()).unwrap();
     }
-    for want in [
-        "<h1>v2.16.2 · candidate</h1>",
-        "<strong class=\"failing\">Failing</strong>",
-        "<li class=\"chip reason bad\">1 failure</li>",
-        "1 finding to decide",
-        "1 being checked",
-        "<span class=\"chip blocks\">Failure</span><",
-        "</span>Undo leaves the stroke on screen when zoomed in</h3>",
-        "<span class=\"chip finding\">Finding</span>",
-        "The stroke stayed after Undo at 2.5× zoom.",
-        "The screenshot shows the stroke after Undo.",
-        "Checking</span>",
-        "<span class=\"chip small finding\">1 finding</span>",
-        "Finding 00",
-        ": The back arrow flickers on fast taps",
-        "No screenshot of it; the detail above is all there is.",
-        "<span class=\"pid\">00",
-        "class=\"nowbar\"",
-        "checking <b>annotations/001-draw</b>",
-    ] {
-        assert!(html.contains(want), "missing {want:?}");
+
+    assert_eq!(view["label"], "v2.16.2 · candidate");
+    assert_eq!(view["summary"]["word"], "Failing");
+    assert_eq!(view["summary"]["class"], "failing");
+    let reasons = view["summary"]["reasons"].as_array().unwrap();
+    assert!(reasons.contains(&json!({ "text": "1 failure", "bad": true })));
+    for want in ["1 finding to decide", "1 being checked"] {
+        assert!(
+            reasons.iter().any(|r| r["text"] == want),
+            "missing {want:?}"
+        );
     }
-    assert!(!html.contains("severity"), "no severity anywhere");
+
+    let draw = &view["checks"]["annotations/001-draw"];
+    assert_eq!(draw["open"], true, "a failed row opens by itself");
+    let cells: Vec<(&str, &str)> = draw["cells"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| (c["platform"].as_str().unwrap(), c["text"].as_str().unwrap()))
+        .collect();
+    assert!(cells.contains(&("Android", "Failed")));
+    assert!(cells.contains(&("iOS", "Checking")));
+    let android = &draw["bodies"][0];
+    assert_eq!(
+        android["failure"]["call"],
+        "The screenshot shows the stroke after Undo."
+    );
+    assert_eq!(
+        android["outcomes"][0]["observed"],
+        "The stroke stayed after Undo at 2.5× zoom."
+    );
+    assert_eq!(android["outcomes"][0]["failure"], true);
+
+    let back = &view["checks"]["annotations/002-back"];
+    assert_eq!(
+        back["pill"],
+        json!({ "class": "finding", "text": "1 finding" })
+    );
+    let finding = &back["bodies"][0]["findings"][0];
+    let title = finding["title"].as_str().unwrap();
+    assert!(
+        title.starts_with("Finding 00")
+            && title.ends_with(": The back arrow flickers on fast taps")
+    );
+
+    let open = &view["groups"][0];
+    assert_eq!(open["title"], "Open");
+    let problems: Vec<&Value> = open["ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|id| &view["problems"][id.as_str().unwrap()])
+        .collect();
+    assert_eq!(
+        problems[0]["badge"],
+        json!({ "class": "blocks", "text": "Failure" })
+    );
+    assert_eq!(
+        problems[0]["title"],
+        "Undo leaves the stroke on screen when zoomed in"
+    );
+    assert!(problems[0]["number"].as_str().unwrap().starts_with("00"));
+    assert_eq!(
+        problems[1]["badge"],
+        json!({ "class": "finding", "text": "Finding" })
+    );
+    assert!(problems[1]["paras"].as_array().unwrap().contains(&json!(
+        "No screenshot of it; the detail above is all there is."
+    )));
+
+    assert_eq!(view["bar"]["kind"], "now");
+    let doing = &view["bar"]["doing"][0];
+    assert_eq!(doing["platform"], "iOS");
+    assert_eq!(doing["spec"], "annotations/001-draw");
+    assert!(doing["checking"]["since"].is_u64());
+    assert!(
+        !view.to_string().contains("severity"),
+        "no severity anywhere"
+    );
+    assert!(
+        !view.to_string().contains("null"),
+        "a null would delete its key in a patch"
+    );
 }
 
 #[test]
 fn an_export_has_no_live_bar() {
     let (suite, run) = sample();
     let html = report::document(&Page {
-        suite: &suite,
-        run: &run,
-        label: "v2.16.2",
-        live: false,
-        run_dir: None,
         export: Some(report::Export {
             at: 0,
             finished: false,
         }),
-        starting: None,
+        ..page(&suite, &run, "v2.16.2", false)
     });
-    assert!(!html.contains("class=\"nowbar\""));
+    let view = embedded(&html);
+    assert!(view.get("bar").is_none());
+    assert_eq!(view["export"], true);
     assert!(html.contains("data-live=\"false\""));
 }
 
 #[test]
-fn text_from_testers_is_escaped() {
+fn text_from_testers_is_data_that_cant_end_its_script() {
+    let (suite, mut run) = sample();
+    let sly = "</script><script>alert(1)</script><!-- \"x\" & 'y'";
+    let t = run
+        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .unwrap();
+    run.post(
+        2,
+        &t,
+        judged(&[(Answer::Held, sly), (Answer::Held, "fine")]),
+    )
+    .unwrap();
+    let html = report::document(&page(&suite, &run, "x", false));
+    let script = &html[html.find("id=\"view\">").unwrap()..];
+    let script = &script[..script.find("</script>").unwrap()];
+    assert!(
+        !script.contains('<'),
+        "nothing in the view can end its script"
+    );
+    let view = embedded(&html);
+    let web = view["checks"]["annotations/001-draw"]["bodies"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|b| b["platform"] == "Web")
+        .unwrap();
+    assert_eq!(
+        web["outcomes"][0]["observed"], sly,
+        "and it reads back unchanged"
+    );
+}
+
+#[test]
+fn the_runs_list_escapes_what_it_renders() {
     assert_eq!(
         report::esc("<b>\"x\" & 'y'</b>"),
         "&lt;b&gt;&quot;x&quot; &amp; &#39;y&#39;&lt;/b&gt;"
     );
+}
+
+#[test]
+fn the_app_can_sit_in_a_script_element() {
+    assert!(!report::APP.is_empty());
+    assert!(!report::APP.to_lowercase().contains("</script"));
 }
 
 #[test]
@@ -193,22 +305,38 @@ fn an_export_embeds_its_screenshots() {
     posted.judgments[0].evidence.push("back.png".into());
     run.post(2, &t, posted).unwrap();
     let page = |export: Option<report::Export>| Page {
-        suite: &suite,
-        run: &run,
-        label: "x",
         live: export.is_none(),
         run_dir: Some(&dir),
         export,
-        starting: None,
+        ..page(&suite, &run, "x", true)
     };
-    let live = report::document(&page(None));
-    assert!(live.contains("src=\"files/evidence/back.png\""));
-    let exported = report::document(&page(Some(report::Export {
+    let shots = |view: &Value| -> Vec<Value> {
+        view["checks"]["annotations/001-draw"]["bodies"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b.get("evidence"))
+            .flat_map(|e| e["shots"].as_array().unwrap().clone())
+            .collect()
+    };
+    let live = report::view::json(&page(None));
+    assert!(
+        shots(&live).contains(&json!({ "name": "back.png", "src": "files/evidence/back.png" }))
+    );
+    let exported = embedded(&report::document(&page(Some(report::Export {
         at: 3,
         finished: false,
-    })));
-    assert!(exported.contains("src=\"data:image/png;base64,iVBORw==\""));
-    assert!(exported.contains("In progress, exported"));
+    }))));
+    assert!(
+        shots(&exported)
+            .contains(&json!({ "name": "back.png", "src": "data:image/png;base64,iVBORw==" }))
+    );
+    assert!(
+        exported["facts"]
+            .as_array()
+            .unwrap()
+            .contains(&json!({ "text": "In progress, exported", "at": 3 }))
+    );
 }
 
 #[test]
@@ -227,17 +355,97 @@ fn a_bare_evidence_name_from_an_older_journal_shows_its_png() {
     let mut posted = judged(&[(Answer::Held, "fine"), (Answer::Held, "fine")]);
     posted.judgments[0].evidence.push("erased".into());
     run.post(2, &t, posted).unwrap();
-    let page = Page {
-        suite: &suite,
-        run: &run,
-        label: "x",
-        live: true,
+    let view = report::view::json(&Page {
         run_dir: Some(&dir),
-        export: None,
-        starting: None,
-    };
-    let live = report::document(&page);
-    assert!(live.contains("src=\"files/evidence/erased.png\""), "{live}");
+        ..page(&suite, &run, "x", true)
+    });
+    assert!(
+        view.to_string()
+            .contains(r#"{"name":"erased","src":"files/evidence/erased.png"}"#),
+        "{view}"
+    );
+}
+
+#[test]
+fn a_failure_with_no_failed_outcome_still_shows_why_it_failed() {
+    let (suite, mut run) = sample();
+    // A BLOCKED the app caused is filed as a FAIL, though no outcome reads as failed.
+    let t = run
+        .dispatch(300_000, "annotations/001-draw", Web, |_, _| String::new())
+        .unwrap();
+    run.post(
+        310_000,
+        &t,
+        judged(&[
+            (Answer::CouldntCheck, "The score never opened."),
+            (Answer::CouldntCheck, "The score never opened."),
+        ]),
+    )
+    .unwrap();
+    run.review(
+        320_000,
+        "annotations/001-draw",
+        Web,
+        Call::Uphold {
+            title: Some("The score never opens on web".into()),
+            cause: Some(Cause::App),
+        },
+        "The app crashed opening the score.",
+    )
+    .unwrap();
+    let view = report::view::json(&page(&suite, &run, "x", true));
+    let bodies = view["checks"]["annotations/001-draw"]["bodies"]
+        .as_array()
+        .unwrap();
+    let web = bodies.iter().find(|b| b["platform"] == "Web").unwrap();
+    assert_eq!(web["failure"]["alone"], true, "{web}");
+    assert_eq!(web["failure"]["call"], "The app crashed opening the score.");
+    assert!(
+        web["outcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|o| o["failure"] == false)
+    );
+
+    let android = bodies.iter().find(|b| b["platform"] == "Android").unwrap();
+    assert_eq!(
+        android["failure"]["alone"], false,
+        "a failed outcome holds it"
+    );
+}
+
+#[test]
+fn an_unchanged_view_needs_no_patch() {
+    let (suite, run) = sample();
+    let before = report::view::json(&page(&suite, &run, "x", true));
+    let after = report::view::json(&page(&suite, &run, "x", true));
+    assert_eq!(report::view::merge_patch(&before, &after), None);
+}
+
+#[test]
+fn a_row_that_changes_patches_only_its_own_key() {
+    let (suite, mut run) = sample();
+    let before = report::view::json(&page(&suite, &run, "x", true));
+    run.dispatch(3, "annotations/001-draw", Web, |_, _| String::new())
+        .unwrap();
+    let after = report::view::json(&page(&suite, &run, "x", true));
+    let patch = report::view::merge_patch(&before, &after).unwrap();
+    let keys = |v: &Value| -> Vec<String> { v.as_object().unwrap().keys().cloned().collect() };
+    assert_eq!(keys(&patch["checks"]), ["annotations/001-draw"]);
+    assert_eq!(keys(&patch["timeline"]).len(), 1, "one new journal entry");
+    assert!(patch.get("problems").is_none());
+    assert!(patch.get("sections").is_none());
+}
+
+#[test]
+fn a_merge_patch_removes_what_went_and_keeps_what_stayed() {
+    let before = json!({ "a": 1, "b": { "c": 2, "d": [1, 2] }, "gone": { "x": 1 } });
+    let after = json!({ "a": 1, "b": { "c": 3, "d": [1, 2] }, "new": "y" });
+    assert_eq!(
+        report::view::merge_patch(&before, &after),
+        Some(json!({ "b": { "c": 3 }, "gone": null, "new": "y" }))
+    );
 }
 
 #[test]

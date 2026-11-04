@@ -80,6 +80,16 @@ async fn server_hub(
     (server, url, dir, hub)
 }
 
+/// The view a page carries in its `<script type="application/json">`.
+fn view_in(html: &str) -> Value {
+    let json = &html[html.find("id=\"view\">").unwrap() + "id=\"view\">".len()..];
+    serde_json::from_str(&json[..json.find("</script>").unwrap()]).unwrap()
+}
+
+async fn view_at(url: &str) -> Value {
+    reqwest::get(url).await.unwrap().json().await.unwrap()
+}
+
 async fn client(url: &str) -> RunningService<RoleClient, ClientConfig> {
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")),
@@ -542,7 +552,7 @@ async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
     let report = std::fs::read_to_string(finished["report"].as_str().unwrap()).unwrap();
     assert!(report.contains("Final report, exported"));
     assert!(
-        !report.contains("class=\"nowbar\""),
+        view_in(&report).get("bar").is_none(),
         "an export has no live bar"
     );
     assert!(dir.join("summary.json").exists());
@@ -587,6 +597,69 @@ async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
 }
 
 #[tokio::test]
+async fn the_live_page_gets_its_whole_view_then_only_what_changed() {
+    let (server, url, _, hub) = server_hub(&[Platform::Android]).await;
+    hub.set_heartbeat(Duration::from_millis(400));
+    let mut updates = reqwest::get(format!("{url}/{}/updates", hub.page_key()))
+        .await
+        .unwrap();
+    assert_eq!(updates.headers()["content-type"], "text/event-stream");
+    assert_eq!(updates.headers()["cache-control"], "no-cache");
+    let mut buffered = String::new();
+    // One Server-Sent Event as (event, data).
+    let mut next = async || -> (String, Value) {
+        loop {
+            if let Some(end) = buffered.find("\n\n") {
+                let frame: String = buffered.drain(..end + 2).collect();
+                let field = |name: &str| {
+                    frame
+                        .lines()
+                        .find_map(|l| l.strip_prefix(&format!("{name}: ")))
+                        .unwrap()
+                        .to_string()
+                };
+                return (
+                    field("event"),
+                    serde_json::from_str(&field("data")).unwrap(),
+                );
+            }
+
+            let chunk = tokio::time::timeout(Duration::from_secs(5), updates.chunk())
+                .await
+                .expect("an event within 5 s")
+                .unwrap()
+                .expect("the feed stays open");
+            buffered.push_str(std::str::from_utf8(&chunk).unwrap());
+        }
+    };
+    let (event, view) = next().await;
+    assert_eq!(event, "view");
+    assert_eq!(view["bar"]["paused"], false);
+
+    let client = client(&url).await;
+    call(&client, "pause", json!({ "reason": "watching the feed" })).await;
+    // A ping may come first on a slow machine; the patch is the next thing that isn't one.
+    let mut received = next().await;
+    while received.0 == "ping" {
+        received = next().await;
+    }
+
+    let (event, patch) = received;
+    assert_eq!(event, "patch");
+    assert_eq!(patch["bar"]["paused"], true, "{patch}");
+    assert!(patch.get("checks").is_none(), "no row changed: {patch}");
+
+    let (event, _) = next().await;
+    assert_eq!(
+        event, "ping",
+        "nothing changed, so the feed says it's there"
+    );
+
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
 async fn the_page_offers_its_report_as_a_download() {
     let (server, url, dir) = server_in().await;
     let client = client(&url).await;
@@ -598,10 +671,15 @@ async fn the_page_offers_its_report_as_a_download() {
         .text()
         .await
         .unwrap();
-    assert!(page.contains("href=\"download\""));
+    let view = view_in(&page);
+    assert_eq!(view["export"], false, "a live page offers the download");
     assert!(
-        page.contains("class=\"nowbar-time elapsed\""),
+        view["bar"]["timer"]["active_ms"].is_u64(),
         "one timer for the run"
+    );
+    assert_eq!(
+        view_at(&format!("{url}/{}/view", saved::page_key(&dir))).await,
+        view
     );
     let download = reqwest::get(format!("{url}/download")).await.unwrap();
     let disposition = download.headers()["content-disposition"]
@@ -615,10 +693,7 @@ async fn the_page_offers_its_report_as_a_download() {
     );
     let html = download.text().await.unwrap();
     assert!(html.contains("In progress, exported"));
-    assert!(
-        !html.contains("href=\"download\""),
-        "an export has no button"
-    );
+    assert_eq!(view_in(&html)["export"], true, "an export has no button");
 
     client.cancel().await.unwrap();
     server.shutdown.cancel();
@@ -1540,26 +1615,18 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
             .is_some_and(|r| r.contains("still starting (android: building")),
         "{refused}"
     );
-    let page = reqwest::get(format!("{url}/fragment"))
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(page.contains("<b>Starting</b>"));
-    assert!(page.contains("<b>android: building and installing the app</b>"));
+    let view = format!("{url}/{}/view", hub.page_key());
+    let bar = view_at(&view).await["bar"].clone();
+    assert_eq!(bar["kind"], "starting");
+    assert_eq!(
+        bar["step"]["text"],
+        "android: building and installing the app"
+    );
 
     hub.start_failed("the install hook failed on android");
-    let page = reqwest::get(format!("{url}/fragment"))
-        .await
-        .unwrap()
-        .text()
-        .await
-        .unwrap();
-    assert!(page.contains("Couldn't start"));
-    assert!(
-        page.contains("<span class=\"start-failed\">the install hook failed on android</span>")
-    );
+    let bar = view_at(&view).await["bar"].clone();
+    assert_eq!(bar["failed"], "the install hook failed on android");
+    assert!(bar.get("step").is_none());
     // A run that couldn't start makes way at once for the next.
     let stepped = reqwest::Client::new()
         .post(format!("{url}/step-down"))

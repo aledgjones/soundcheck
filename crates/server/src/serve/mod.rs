@@ -288,6 +288,8 @@ pub struct Hub {
     seen: Mutex<std::collections::HashMap<String, (u64, Vec<String>)>>,
     /// When an agent last called a tool, so a finished run still being triaged isn't taken over.
     last_call: std::sync::atomic::AtomicU64,
+    /// How often a live page's feed pings while nothing changes; [`UPDATE_HEARTBEAT`] but in tests.
+    heartbeat_ms: std::sync::atomic::AtomicU64,
     /// Stops the server, when a new run takes the port.
     stop: CancellationToken,
     /// The Claude Code sessions that started testers through the plugin's hook: only they are told to dispatch.
@@ -354,6 +356,7 @@ impl Hub {
             nudges: broadcast::channel(16).0,
             web_app: tokio::sync::Mutex::new(None),
             last_call: std::sync::atomic::AtomicU64::new(now_ms()),
+            heartbeat_ms: std::sync::atomic::AtomicU64::new(UPDATE_HEARTBEAT.as_millis() as u64),
             stop: CancellationToken::new(),
         })
     }
@@ -627,6 +630,33 @@ impl Hub {
             export,
             starting,
         }
+    }
+
+    /// How often a live page's feed pings while nothing changes.
+    pub fn heartbeat(&self) -> Duration {
+        Duration::from_millis(self.heartbeat_ms.load(std::sync::atomic::Ordering::Relaxed))
+    }
+
+    /// Sets the feed's ping interval, so a test needn't wait 15 s for one.
+    pub fn set_heartbeat(&self, every: Duration) {
+        self.heartbeat_ms.store(
+            every.as_millis() as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// What the live page shows now, as data.
+    pub fn view(&self) -> serde_json::Value {
+        let starting = self.start_state();
+        self.with_run(|run, _| {
+            Ok(report::view::json(&self.page(
+                &self.suite(),
+                run,
+                None,
+                starting.as_ref(),
+            )))
+        })
+        .unwrap_or_default()
     }
 
     fn start_up(&self) -> std::sync::MutexGuard<'_, Option<report::StartUp>> {
@@ -1710,14 +1740,14 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/", get(runs_index))
         .route(&format!("/{key}"), get(to_page))
         .route(&format!("/{key}/"), get(page))
-        .route(&format!("/{key}/fragment"), get(fragment))
+        .route(&format!("/{key}/view"), get(view))
+        .route(&format!("/{key}/updates"), get(updates))
         .route(&format!("/{key}/events"), get(events_stream))
         .route(&format!("/{key}/download"), get(download))
         .route(
             &format!("/{key}/files/evidence/{{name}}"),
             get(evidence_file),
         )
-        .route("/fragment", get(fragment))
         .route("/download", get(download))
         .route("/files/evidence/{name}", get(evidence_file))
         .route("/runs", get(runs_index))
@@ -1808,19 +1838,104 @@ async fn download(State(hub): State<Arc<Hub>>) -> Response {
     }
 }
 
-async fn fragment(State(hub): State<Arc<Hub>>) -> Response {
-    let starting = hub.start_state();
-    let html = hub
-        .with_run(|run, _| {
-            Ok(report::content(&hub.page(
-                &hub.suite(),
-                run,
-                None,
-                starting.as_ref(),
-            )))
-        })
-        .unwrap_or_default();
-    axum::response::Html(html).into_response()
+async fn view(State(hub): State<Arc<Hub>>) -> Response {
+    axum::Json(hub.view()).into_response()
+}
+
+/// Sends one line of a stream, or gives up when the server stops: a reader that stopped reading (a suspended tab)
+/// would otherwise hold up graceful shutdown with the channel full. False once nobody will read it.
+async fn send_line(
+    tx: &mpsc::Sender<Result<Bytes, std::io::Error>>,
+    line: Bytes,
+    stop: &CancellationToken,
+) -> bool {
+    tokio::select! {
+        _ = stop.cancelled() => false,
+        sent = tx.send(Ok(line)) => sent.is_ok(),
+    }
+}
+
+/// Gathers what lands in this long after a change into one update, as a tester's post brings several entries.
+const UPDATE_COALESCE: Duration = Duration::from_millis(250);
+/// How often the feed says it's still there when nothing changes, so a page can tell a quiet run from a dead link.
+pub const UPDATE_HEARTBEAT: Duration = Duration::from_secs(15);
+
+/// One Server-Sent Event. Named events, not comments: a comment never reaches the page's script.
+fn sse(event: &str, data: &serde_json::Value) -> Bytes {
+    Bytes::from(format!("event: {event}\ndata: {data}\n\n"))
+}
+
+/// The live page's feed, as Server-Sent Events: `view` with the whole view on every connect, then `patch`, an
+/// RFC 7386 merge patch against what this connection last sent, whenever the view changes, and `ping` while
+/// nothing does. A page that loses the connection reconnects and starts again from a whole view.
+async fn updates(State(hub): State<Arc<Hub>>) -> Response {
+    // Subscribe before the first view, so nothing written in between is lost.
+    let mut live = hub.events.subscribe();
+    let mut nudged = hub.nudges.subscribe();
+    let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(16);
+    tokio::spawn(async move {
+        let mut sent = hub.view();
+        if !send_line(&tx, sse("view", &sent), &hub.stop).await {
+            return;
+        }
+
+        let every = hub.heartbeat();
+        let mut heartbeat = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+        loop {
+            // A stream never ends on its own, and graceful shutdown waits for it.
+            tokio::select! {
+                _ = hub.stop.cancelled() => return,
+                _ = heartbeat.tick() => {
+                    if !send_line(&tx, sse("ping", &serde_json::json!({})), &hub.stop).await {
+                        return;
+                    }
+
+                    continue;
+                }
+                received = live.recv() => {
+                    if let Err(broadcast::error::RecvError::Closed) = received {
+                        return;
+                    }
+                }
+                received = nudged.recv() => {
+                    if let Err(broadcast::error::RecvError::Closed) = received {
+                        return;
+                    }
+                }
+            }
+            tokio::select! {
+                _ = hub.stop.cancelled() => return,
+                _ = tokio::time::sleep(UPDATE_COALESCE) => {}
+            }
+            while matches!(
+                live.try_recv(),
+                Ok(_) | Err(broadcast::error::TryRecvError::Lagged(_))
+            ) {}
+            while matches!(
+                nudged.try_recv(),
+                Ok(()) | Err(broadcast::error::TryRecvError::Lagged(_))
+            ) {}
+
+            let next = hub.view();
+            if let Some(patch) = report::view::merge_patch(&sent, &next) {
+                if !send_line(&tx, sse("patch", &patch), &hub.stop).await {
+                    return;
+                }
+
+                sent = next;
+            }
+        }
+    });
+    (
+        [
+            (header::CONTENT_TYPE, "text/event-stream"),
+            (header::CACHE_CONTROL, "no-cache"),
+            // Proxies that buffer responses would hold each event back.
+            (header::HeaderName::from_static("x-accel-buffering"), "no"),
+        ],
+        Body::from_stream(ReceiverStream::new(rx)),
+    )
+        .into_response()
 }
 
 async fn evidence_file(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Response {
@@ -2042,7 +2157,7 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
         };
         for entry in &history {
             last = entry.seq;
-            if tx.send(Ok(line(entry))).await.is_err() {
+            if !send_line(&tx, line(entry), &hub.stop).await {
                 return;
             }
         }
@@ -2052,7 +2167,7 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
             let received = tokio::select! {
                 _ = hub.stop.cancelled() => return,
                 Ok(()) = nudged.recv(), if nudge => {
-                    if tx.send(Ok(Bytes::from(format!("{{\"seq\":{last}}}\n")))).await.is_err() {
+                    if !send_line(&tx, Bytes::from(format!("{{\"seq\":{last}}}\n")), &hub.stop).await {
                         return;
                     }
                     continue;
@@ -2062,7 +2177,7 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
             match received {
                 Ok(entry) if entry.seq > last => {
                     last = entry.seq;
-                    if tx.send(Ok(line(&entry))).await.is_err() {
+                    if !send_line(&tx, line(&entry), &hub.stop).await {
                         return;
                     }
                 }
@@ -2073,7 +2188,7 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
                         .unwrap_or_default();
                     for entry in &missed {
                         last = entry.seq;
-                        if tx.send(Ok(line(entry))).await.is_err() {
+                        if !send_line(&tx, line(entry), &hub.stop).await {
                             return;
                         }
                     }
