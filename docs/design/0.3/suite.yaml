@@ -1,0 +1,129 @@
+# DRAFT for review (SA-880..882). Moves to solo-scores with SA-884; `iphone` is hypothetical.
+soundcheck: "0.3"
+specs: suite
+reports: ../../../reports
+parallel: true
+models:
+  default: sonnet
+tickets:
+  url: https://soloapps.atlassian.net/browse/{id}
+remote:
+  allow: [aledjones.viola@gmail.com]
+# hooks/data.mjs SCENARIOS, plus "empty", "+" combinations and a "plan-<name>" part.
+seeds:
+  [
+    empty,
+    longlist,
+    viewer,
+    annotationrender,
+    oddpdfs,
+    drawer,
+    suggestions,
+    library,
+    invites,
+    members,
+    shared,
+    storageunder,
+    storagenearly,
+    storageexact,
+    storagefull,
+    storageowner,
+    playlistonly,
+    weblist,
+    webreader,
+    credentials,
+    library+playlistonly,
+    library+plan-solo,
+    invites+library,
+    shared+library,
+    members+library,
+    library+members+plan-solo,
+  ]
+
+platforms:
+  ios:
+    driver: ios
+    device: iPad Pro 13-inch (M5)
+    app: com.aledjones.sync
+    hooks:
+      guard: node hooks/data.mjs guard --platform ios
+      seed: node hooks/data.mjs seed {scenario} --platform ios
+      build-identity: node hooks/build.mjs identity ios
+      install: node hooks/build.mjs install ios
+      check: node hooks/data.mjs --platform ios check
+      act: node hooks/data.mjs --platform ios act
+      stack-up: node hooks/stack.mjs up ios --account aledjones.viola@gmail.com
+      stack-down: node hooks/stack.mjs down ios
+    proxy:
+      - { name: api, listen: 23000, upstream: 41000 }
+      - { name: powersync, listen: 28080, upstream: 41080 }
+      - { name: bucket, listen: 28333, upstream: 41333 }
+      - { name: store, listen: 28100, upstream: https://api.revenuecat.com }
+
+  # Hypothetical. Simulators share the Mac's ports, so it needs its own build (install iphone) and stack.
+  iphone:
+    driver: ios
+    device: iPhone 17 Pro
+    app: com.aledjones.sync
+    hooks:
+      guard: node hooks/data.mjs guard --platform iphone
+      seed: node hooks/data.mjs seed {scenario} --platform iphone
+      build-identity: node hooks/build.mjs identity iphone
+      install: node hooks/build.mjs install iphone
+      check: node hooks/data.mjs --platform iphone check
+      act: node hooks/data.mjs --platform iphone act
+      stack-up: node hooks/stack.mjs up iphone --account aledjones.viola@gmail.com
+      stack-down: node hooks/stack.mjs down iphone
+    proxy:
+      - { name: api, listen: 24000, upstream: 44000 }
+      - { name: powersync, listen: 29080, upstream: 44080 }
+      - { name: bucket, listen: 29333, upstream: 44333 }
+      - { name: store, listen: 29100, upstream: https://api.revenuecat.com }
+
+  android:
+    driver: android
+    device: Pixel_Tablet_API_35
+    app: com.aledjones.sync
+    hooks:
+      guard: node hooks/data.mjs guard --platform android
+      seed: node hooks/data.mjs seed {scenario} --platform android
+      build-identity: node hooks/build.mjs identity android
+      install: node hooks/build.mjs install android
+      check: node hooks/data.mjs --platform android check
+      act: node hooks/data.mjs --platform android act
+      stack-up: node hooks/stack.mjs up android --account aledjones.viola@gmail.com
+      stack-down: node hooks/stack.mjs down android
+    # The build keeps the iOS ports (`device`); adb reverse forwards them to this proxy.
+    proxy:
+      - { name: api, listen: 33000, device: 23000, upstream: 42000 }
+      - { name: powersync, listen: 38080, device: 28080, upstream: 42080 }
+      - { name: bucket, listen: 38333, upstream: 42333 }
+      - {
+          name: store,
+          listen: 38100,
+          device: 28100,
+          upstream: https://api.revenuecat.com,
+        }
+
+  web:
+    driver: chrome
+    device: desktop
+    viewport: 1440x900
+    url: http://localhost:43173/app/sign-in
+    chrome-profile: ~/.soundcheck/chrome/solo-scores
+    hooks:
+      guard: node hooks/data.mjs guard --platform web
+      seed: node hooks/data.mjs seed {scenario} --platform web
+      build-identity: node hooks/build.mjs identity web
+      install: node hooks/build.mjs install web
+      serve: node hooks/build.mjs serve web
+      check: node hooks/data.mjs --platform web check
+      act: node hooks/data.mjs --platform web act
+      stack-up: node hooks/stack.mjs up web --account aledjones.viola@gmail.com
+      stack-down: node hooks/stack.mjs down web
+    # The page is proxied too (served at 43174), so offline takes the site away as well.
+    proxy:
+      - { name: app, listen: 43173, upstream: 43174 }
+      - { name: api, listen: 53000, upstream: 43000 }
+      - { name: powersync, listen: 58080, upstream: 43080 }
+      - { name: bucket, listen: 58333, upstream: 43333 }
