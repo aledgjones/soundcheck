@@ -87,6 +87,10 @@ final class Reader {
     }
     var known = Set<String>()
     Reader.collectKeys(root, into: &known)
+    // The app's own element at the centre means no sheet is up; the grid takes seconds on a busy screen.
+    if let centre = try? await hit(x: width / 2, y: height / 2), known.contains(Reader.key(centre)) {
+      return data
+    }
     var found: [[String: Any]] = []
     var y = step / 2
     while y < height {
@@ -353,6 +357,30 @@ struct Main {
               status = "500 Error"
               body = error.localizedDescription.data(using: .utf8)!
             }
+          } else if line.hasPrefix("GET /launch?"), let simulator = reader.simulator {
+            // Quits and launches through CoreSimulator, as simctl does, without starting two simctl processes a spec.
+            let bundle = String(line.dropFirst("GET /launch?".count).prefix { $0 != " " })
+            try? simulator.device.terminateApplication(withID: bundle)
+            do {
+              let pid = try await withCheckedThrowingContinuation { (done: CheckedContinuation<pid_t, Error>) in
+                simulator.device.launchApplicationAsync(withID: bundle, options: [:], completionQueue: simulator.workQueue) {
+                  error, pid in
+                  if let error {
+                    done.resume(throwing: error)
+                  } else {
+                    done.resume(returning: pid)
+                  }
+                }
+              }
+              body = "\(pid)".data(using: .utf8)!
+            } catch {
+              status = "500 Error"
+              body = error.localizedDescription.data(using: .utf8)!
+            }
+          } else if line.hasPrefix("GET /alive?") {
+            // A simulator's apps are the Mac's own processes.
+            let pid = pid_t(line.dropFirst("GET /alive?".count).prefix { $0.isNumber }) ?? 0
+            body = (pid > 0 && kill(pid, 0) == 0 ? "yes" : "no").data(using: .utf8)!
           } else if line.hasPrefix("GET /hid?") {
             let query = String(line.dropFirst("GET /hid?".count).prefix { $0 != " " })
             let script = query.removingPercentEncoding ?? query

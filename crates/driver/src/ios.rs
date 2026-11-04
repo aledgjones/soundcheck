@@ -867,23 +867,19 @@ impl Device for Ios {
     async fn launch(&self) -> Result<()> {
         // On iPadOS 26 every other relaunch left the tree reading DockFolderViewService for good; launching again
         // clears it.
+        self.ensure_reader().await?;
         for attempt in 0..3 {
-            let _ = run(
-                "xcrun",
-                &["simctl", "terminate", &self.udid, &self.bundle_id],
-            )
-            .await;
             *self.launched.lock().unwrap_or_else(|e| e.into_inner()) = SystemTime::now();
             let started = std::time::Instant::now();
-            run("xcrun", &["simctl", "launch", &self.udid, &self.bundle_id]).await?;
+            let pid = self
+                .reader_get(&format!("/launch?{}", self.bundle_id))
+                .await?;
             let recoveries = self.recoveries.load(std::sync::atomic::Ordering::Relaxed);
-            let mut json = String::new();
             while started.elapsed() < Duration::from_secs(60) {
-                json = self.screen_json(true).await.unwrap_or_default();
-                if has_content(&json) {
+                if has_content(&self.screen_json(true).await.unwrap_or_default()) {
                     break;
                 }
-                sleep(Duration::from_millis(300)).await;
+                sleep(Duration::from_millis(150)).await;
             }
             // A lost reader channel rebooted the simulator mid-launch, taking the app with it.
             if attempt < 2
@@ -895,32 +891,30 @@ impl Device for Ios {
                 .last_launch_ms
                 .lock()
                 .unwrap_or_else(|e| e.into_inner()) = Some(started.elapsed().as_millis() as u64);
-            // The first screen can still be settling.
-            sleep(Duration::from_secs(1)).await;
-            if attempt == 2 || !json.contains("DockFolderViewService") {
-                break;
+            // The launch returns before the app shows, and a simulator that crashes meanwhile leaves the home screen.
+            if self.reader_get(&format!("/alive?{}", pid.trim())).await? != "yes" {
+                return Err(device(format!(
+                    "{} isn't running after launching: the simulator shows its home screen",
+                    self.bundle_id
+                )));
             }
-        }
-        // `simctl launch` returns before the app shows, and a simulator that crashes meanwhile leaves the home screen.
-        let services = run(
-            "xcrun",
-            &["simctl", "spawn", &self.udid, "launchctl", "list"],
-        )
-        .await
-        .unwrap_or_default();
-        if !services.contains(&format!("UIKitApplication:{}[", self.bundle_id)) {
-            return Err(device(format!(
-                "{} isn't running after launching: the simulator shows its home screen",
-                self.bundle_id
-            )));
-        }
-        // An app that navigates on from its first screen reads empty for a moment in between (2026-10-26), so a single
-        // read here failed launches that had worked: look for a few seconds.
-        for _ in 0..10 {
-            if has_content(&self.screen_json(true).await.unwrap_or_default()) {
+            // An app that navigates on from its first screen reads empty for a moment in between (2026-10-26), so a
+            // single read here failed launches that had worked: look for a few seconds.
+            let mut json = String::new();
+            for _ in 0..20 {
+                json = self.screen_json(true).await.unwrap_or_default();
+                if has_content(&json) {
+                    break;
+                }
+                sleep(Duration::from_millis(250)).await;
+            }
+            if attempt < 2 && json.contains("DockFolderViewService") {
+                continue;
+            }
+            if has_content(&json) {
                 return Ok(());
             }
-            sleep(Duration::from_millis(500)).await;
+            break;
         }
         Err(device(format!(
             "{} launched but showed no screen within 60 s",
