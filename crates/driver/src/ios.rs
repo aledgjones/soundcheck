@@ -576,7 +576,11 @@ impl Ios {
     }
 
     async fn screen_json(&self, all: bool) -> Result<String> {
-        let path = if all { "/describe" } else { "/describe?lean" };
+        self.screen_json_at(if all { "/describe" } else { "/describe?lean" })
+            .await
+    }
+
+    async fn screen_json_at(&self, path: &str) -> Result<String> {
         // A fresh reader that never reads has lost its channel as surely as one that says so.
         if self.ensure_reader().await?
             && let Err(e) = self.first_read(path).await
@@ -780,6 +784,13 @@ impl Device for Ios {
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {
         parse(&self.screen_json(all).await?, all)
+    }
+
+    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
+        Ok(Some(parse(
+            &self.screen_json_at("/describe?lean&others").await?,
+            false,
+        )?))
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {

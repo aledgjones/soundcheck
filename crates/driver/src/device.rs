@@ -152,6 +152,11 @@ pub trait Device {
 
     /// The screen as a screen reader gets it; `all` includes views marked not important for accessibility.
     async fn read(&self, all: bool) -> Result<Vec<Element>>;
+    /// The screen with what other processes show over the app (iOS: Google's sign-in sheet). About a second, so only
+    /// a find whose target `read` misses asks; `None` where `read` already has everything.
+    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
+        Ok(None)
+    }
     async fn tap_at(&self, x: f64, y: f64) -> Result<()>;
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()>;
     /// One finger along `stops`, as [`touch_script`] describes; with `keep` it stays down at the last until `release`.

@@ -60,11 +60,11 @@ final class Reader {
   }
 
   // The frontmost app's tree; like AXe, retry briefly while it has no children (just after boot or a launch).
-  func describe(lean: Bool = false) async throws -> Data {
+  func describe(lean: Bool = false, remoteStep: Double? = nil) async throws -> Data {
     guard let simulator else {
       throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
-    let latest = try await read(simulator, lean: lean)
+    let latest = try await read(simulator, lean: lean, remoteStep: remoteStep)
     // A relaunched app reads as an empty 0×0 node until Accessibility is loaded into the new process, which idb
     // only does on a reader's first read; load it once per app process, through the first read's session (a
     // second session ends the reader), rather than restarting the reader.
@@ -73,10 +73,63 @@ final class Reader {
     }
     reloadedPID = pid
     try FBSimulatorControlFrameworkLoader.reloadAccessibility(withTimeout: 5)
-    return try await read(simulator, lean: lean)
+    return try await read(simulator, lean: lean, remoteStep: remoteStep)
   }
 
-  func read(_ simulator: FBSimulator, lean: Bool) async throws -> Data {
+  // Sheets hosted by other processes (Google's sign-in in SafariViewService and WebKit) aren't in the frontmost tree,
+  // and idb's own remote pass drops WebKit's hits, so hit-test a grid `step` points apart and add each element the
+  // tree lacks under the root. About a second, so the driver asks only when a label it wants isn't in the tree.
+  func addRemote(_ data: Data, step: Double) async throws -> Data {
+    guard var roots = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], var root = roots.first,
+      let frame = root["frame"] as? [String: Double], let width = frame["width"], let height = frame["height"]
+    else {
+      return data
+    }
+    var known = Set<String>()
+    Reader.collectKeys(root, into: &known)
+    var found: [[String: Any]] = []
+    var y = step / 2
+    while y < height {
+      var x = step / 2
+      while x < width {
+        // A point over nothing throws.
+        if let element = try? await hit(x: x, y: y), known.insert(Reader.key(element)).inserted {
+          found.append(element)
+        }
+        x += step
+      }
+      y += step
+    }
+    root["children"] = ((root["children"] as? [[String: Any]]) ?? []) + found
+    roots[0] = root
+    return try JSONSerialization.data(withJSONObject: roots, options: [.prettyPrinted])
+  }
+
+  func hit(x: Double, y: Double) async throws -> [String: Any]? {
+    guard let simulator else {
+      throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
+    }
+    let element = try await simulator.accessibilityElement(at: CGPoint(x: x, y: y))
+    defer { element.close() }
+    let response = try element.serialize(with: FBAccessibilityRequestOptions(nestedFormat: true, keys: Reader.leanKeys))
+    return response.elements as? [String: Any]
+  }
+
+  static func key(_ element: [String: Any]) -> String {
+    // A hit's frame holds CGFloats and a parsed tree's holds NSNumbers; both bridge to NSNumber.
+    let frame = element["frame"] as? [String: Any] ?? [:]
+    let box = ["x", "y", "width", "height"].map { (frame[$0] as? NSNumber)?.doubleValue ?? 0 }
+    return "\(element["AXLabel"] as? String ?? "") \(box)"
+  }
+
+  static func collectKeys(_ element: [String: Any], into keys: inout Set<String>) {
+    keys.insert(key(element))
+    for child in element["children"] as? [[String: Any]] ?? [] {
+      collectKeys(child, into: &keys)
+    }
+  }
+
+  func read(_ simulator: FBSimulator, lean: Bool, remoteStep: Double? = nil) async throws -> Data {
     var latest = Data()
     for attempt in 0..<5 {
       let element = try await simulator.accessibilityElementForFrontmostApplication()
@@ -88,6 +141,9 @@ final class Reader {
         withJSONObject: response.elements, options: [.prettyPrinted]
       )
       if Reader.hasDescendant(latest) {
+        if let remoteStep {
+          return try await addRemote(latest, step: remoteStep)
+        }
         return latest
       }
       if attempt < 4 {
@@ -281,7 +337,9 @@ struct Main {
           var body: Data
           if line.hasPrefix("GET /describe") {
             do {
-              body = try await reader.describe(lean: line.hasPrefix("GET /describe?lean"))
+              // 80 points finds a sheet's close button; a wider grid misses it.
+              let others = line.contains("others") ? 80.0 : nil
+              body = try await reader.describe(lean: line.hasPrefix("GET /describe?lean"), remoteStep: others)
             } catch {
               status = "500 Error"
               body = error.localizedDescription.data(using: .utf8)!

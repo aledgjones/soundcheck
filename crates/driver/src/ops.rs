@@ -20,6 +20,9 @@ const SCROLL_SWIPE_MS: u64 = 300;
 const SCROLL_SETTLE_READS: u32 = 12;
 /// How long [`Driver::settled`] waits for the screen to hold still before taking it as it is.
 const SETTLE_MAX_MS: u64 = 2_000;
+/// A target missing this long is looked for in other processes' sheets too, then again at most this often.
+const OTHERS_AFTER_MS: u64 = 1_000;
+const OTHERS_EVERY_MS: u64 = 3_000;
 const FILL_TRIES: u32 = 3;
 
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
@@ -95,7 +98,10 @@ impl<D: Device> Driver<D> {
     }
 
     pub async fn expect(&self, target: &Matcher) -> Result<Element> {
-        self.find(target, false)
+        if let Some(e) = self.find(target, false).await? {
+            return Ok(e);
+        }
+        self.find_others(target, false)
             .await?
             .ok_or_else(|| DriverError::NotFound(target.to_string()))
     }
@@ -573,8 +579,23 @@ impl<D: Device> Driver<D> {
         Ok(None)
     }
 
+    /// Looks in what other processes show over the app, which a plain read leaves out.
+    async fn find_others(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {
+        let Some(elements) = self.device.read_others().await? else {
+            return Ok(None);
+        };
+        let mut matching = elements.into_iter().filter(|e| target.matches(e));
+        Ok(if last {
+            matching.next_back()
+        } else {
+            matching.next()
+        })
+    }
+
     async fn wait_for(&self, target: &Matcher, timeout_ms: u64, last: bool) -> Result<Element> {
-        let end = Instant::now() + Duration::from_millis(timeout_ms);
+        let start = Instant::now();
+        let end = start + Duration::from_millis(timeout_ms);
+        let mut looked_wider: Option<Instant> = None;
         loop {
             // A read can fail for a moment while an animation runs; keep trying until the deadline. A restart can't
             // be waited out: the app's state went with it.
@@ -582,6 +603,18 @@ impl<D: Device> Driver<D> {
                 Ok(Some(e)) => return Ok(e),
                 Err(e @ DriverError::Restarted(_)) => return Err(e),
                 _ => {}
+            }
+            // Another process's sheet is slow to read, so look there only once the target has been missing a while.
+            if start.elapsed() >= Duration::from_millis(OTHERS_AFTER_MS)
+                && looked_wider
+                    .is_none_or(|at| at.elapsed() >= Duration::from_millis(OTHERS_EVERY_MS))
+            {
+                looked_wider = Some(Instant::now());
+                match self.find_others(target, last).await {
+                    Ok(Some(e)) => return Ok(e),
+                    Err(e @ DriverError::Restarted(_)) => return Err(e),
+                    _ => {}
+                }
             }
             if Instant::now() >= end {
                 return Err(DriverError::NotFound(target.to_string()));

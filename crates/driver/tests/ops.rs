@@ -10,6 +10,9 @@ struct Fake {
     actions: Mutex<Vec<String>>,
     /// What typing puts in the focused field; `None` drops it, like a lost keystroke.
     typed: Mutex<Vec<Option<String>>>,
+    /// What another process shows over the app, and how many times it was read.
+    others: Option<Vec<Element>>,
+    others_reads: Mutex<u32>,
 }
 
 impl Fake {
@@ -19,6 +22,14 @@ impl Fake {
             screens: Mutex::new(screens),
             actions: Mutex::new(Vec::new()),
             typed: Mutex::new(Vec::new()),
+            others: None,
+            others_reads: Mutex::new(0),
+        }
+    }
+    fn with_others(screens: Vec<Vec<Element>>, others: Vec<Element>) -> Self {
+        Fake {
+            others: Some(others),
+            ..Fake::new(screens)
         }
     }
     fn log(&self, action: String) {
@@ -37,6 +48,15 @@ impl Device for Fake {
         } else {
             screens[0].clone()
         })
+    }
+    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
+        *self.others_reads.lock().unwrap() += 1;
+        let Some(others) = &self.others else {
+            return Ok(None);
+        };
+        let mut screen = self.read(false).await?;
+        screen.extend(others.iter().cloned());
+        Ok(Some(screen))
     }
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
         self.log(format!("tap {x},{y}"));
@@ -220,6 +240,36 @@ async fn expect_with_a_timeout_waits_for_late_ui() {
             .is_err(),
         "timeouts are capped"
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_target_only_another_process_shows_is_tapped_after_a_second() {
+    let app = vec![el("Sign in with Google", 0.0)];
+    let driver = Driver::new(Fake::with_others(vec![app], vec![el("Continue", 50.0)]));
+    let start = tokio::time::Instant::now();
+    driver.tap(&m("Continue"), false).await.unwrap();
+    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
+    assert_eq!(*driver.device.actions.lock().unwrap(), ["tap 55,5"]);
+    assert_eq!(*driver.device.others_reads.lock().unwrap(), 1);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_target_in_the_app_never_looks_at_other_processes() {
+    let late = vec![vec![], vec![], vec![el("Saved", 0.0)]];
+    let driver = Driver::new(Fake::with_others(late, vec![el("Continue", 50.0)]));
+    driver.tap(&m("Saved"), false).await.unwrap();
+    driver.expect(&m("Saved")).await.unwrap();
+    assert_eq!(*driver.device.others_reads.lock().unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn absent_checks_ignore_other_processes() {
+    let app = vec![el("Library", 0.0)];
+    let driver = Driver::new(Fake::with_others(vec![app], vec![el("Continue", 50.0)]));
+    driver.gone_within(&m("Continue"), 2_000).await.unwrap();
+    let lines = driver.check(&["!Continue".into()]).await.unwrap();
+    assert!(lines[0].ok);
+    assert_eq!(*driver.device.others_reads.lock().unwrap(), 0);
 }
 
 #[tokio::test(start_paused = true)]
