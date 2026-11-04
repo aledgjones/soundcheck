@@ -769,8 +769,9 @@ fn char_key(c: char) -> Option<(u32, bool)> {
 fn type_script(text: &str) -> Option<String> {
     let mut steps = Vec::new();
     for (i, c) in text.chars().enumerate() {
+        // With no gap, about one key in a hundred drops; 10 ms landed every time.
         if i > 0 {
-            steps.push("w 30".to_string());
+            steps.push("w 10".to_string());
         }
         let (code, shift) = char_key(c)?;
         if shift {
@@ -858,12 +859,9 @@ impl Device for Ios {
             let script = vec![tap; chars].join(";w 40;");
             return self.hid(&script).await;
         }
-        // A tap can leave the cursor mid-text, so delete forward and back from wherever it is.
-        let script = std::iter::repeat_n("k 76", chars)
-            .chain(std::iter::repeat_n("k 42", chars))
-            .collect::<Vec<_>>()
-            .join(";");
-        self.hid(&script).await
+        // Select all and delete, wherever the cursor is: one change. A delete per character was still landing after
+        // typing began, and ate its first letters.
+        self.hid("kd 227;k 4;ku 227;k 42").await
     }
 
     async fn launch(&self) -> Result<()> {

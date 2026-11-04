@@ -24,6 +24,8 @@ const SETTLE_MAX_MS: u64 = 2_000;
 const OTHERS_AFTER_MS: u64 = 1_000;
 const OTHERS_EVERY_MS: u64 = 3_000;
 const FILL_TRIES: u32 = 3;
+/// Reads, `POLL_MS` apart, for typed text to show before `fill` tries again.
+const FILL_LAND_READS: u32 = 6;
 
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
     if value < min || value > max {
@@ -336,20 +338,24 @@ impl<D: Device> Driver<D> {
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             }
             self.device.type_text(text).await?;
-            let landed = self
-                .device
-                .read(false)
-                .await?
-                .iter()
-                // Case aside: the system capitalises a field's words or sentences as a person types, too.
-                .any(|e| {
-                    e.value
-                        .as_deref()
-                        .is_some_and(|v| v.eq_ignore_ascii_case(text))
-                        || e.label.eq_ignore_ascii_case(text)
-                });
-            if landed {
-                return Ok(());
+            // The last keys can take a moment to show; a retry starts over, so give them that moment first.
+            for _ in 0..FILL_LAND_READS {
+                let landed = self
+                    .device
+                    .read(false)
+                    .await?
+                    .iter()
+                    // Case aside: the system capitalises a field's words or sentences as a person types, too.
+                    .any(|e| {
+                        e.value
+                            .as_deref()
+                            .is_some_and(|v| v.eq_ignore_ascii_case(text))
+                            || e.label.eq_ignore_ascii_case(text)
+                    });
+                if landed {
+                    return Ok(());
+                }
+                sleep(Duration::from_millis(POLL_MS)).await;
             }
         }
         Err(DriverError::Invalid(format!(
