@@ -12,7 +12,7 @@ use crate::run::journal::Entry;
 use crate::run::model::{Answer, Build, Posted};
 use crate::run::{Run, saved};
 use crate::suite::Suite;
-use crate::suite::config::{LAUNCH_VIEWPORT, Platform, PlatformConfig, parse_viewport};
+use crate::suite::config::{DriverKind, Platform, PlatformConfig, SuiteConfig, parse_viewport};
 use crate::suite::spec::Spec;
 use anyhow::Context;
 use anyhow::Result;
@@ -65,64 +65,62 @@ fn reader(platform: &str, built: &str) -> Option<PathBuf> {
     prebuilt.into_iter().chain([checkout]).find(|p| p.exists())
 }
 
-/// Connects a platform's device the way a run does: web launches its own Chrome against the suite's base-url; Android
-/// and iOS connect to the running emulator or booted simulator to drive the suite's app-id. `headed` shows each
-/// device in a window to watch: Chrome, Simulator.app, and the window of an emulator soundcheck boots.
+/// Connects a platform's device the way a run does: `chrome` launches its own Chrome at the platform's `url` and
+/// `viewport`; `android` and `ios` connect to the running emulator or booted simulator to drive the platform's `app`.
+/// `headed` shows each device in a window to watch: Chrome, Simulator.app, and the window of an emulator soundcheck
+/// boots.
 pub async fn connect(
     platform: Platform,
-    config: Option<&PlatformConfig>,
+    config: &PlatformConfig,
     headed: bool,
 ) -> Result<AnyDevice> {
-    Ok(match platform {
-        Platform::Web => {
-            let base_url = config
-                .and_then(|p| p.base_url.clone())
-                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives web no base-url"))?;
-            let profile = config.and_then(PlatformConfig::profile_dir);
-            let (width, height) = LAUNCH_VIEWPORT;
+    let app = || {
+        config
+            .app
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("suite.yaml gives {platform} no app"))
+    };
+    Ok(match config.driver {
+        DriverKind::Chrome => {
+            let url = config
+                .url
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives {platform} no url"))?;
+            let (width, height) = config
+                .viewport()
+                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives {platform} no viewport"))?;
+            let profile = config.profile_dir();
             AnyDevice::Web(Box::new(
-                Web::launch_from(&base_url, width, height, headed, profile.as_deref()).await?,
+                Web::launch_from(&url, width, height, headed, profile.as_deref()).await?,
             ))
         }
-        Platform::Android => {
-            let app = config
-                .and_then(|p| p.app_id.clone())
-                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives android no app-id"))?;
-            AnyDevice::Android(
-                Android::connect(&app, reader("android", "reader.apk"))
-                    .await?
-                    .headed(headed),
-            )
-        }
-        Platform::Ios => {
-            let app = config
-                .and_then(|p| p.app_id.clone())
-                .ok_or_else(|| anyhow::anyhow!("suite.yaml gives ios no app-id"))?;
-            AnyDevice::Ios(
-                Ios::connect(&app, reader("ios", "reader"))
-                    .await?
-                    .headed(headed),
-            )
-        }
+        DriverKind::Android => AnyDevice::Android(
+            Android::connect(&app()?, reader("android", "reader.apk"))
+                .await?
+                .headed(headed),
+        ),
+        DriverKind::Ios => AnyDevice::Ios(
+            Ios::connect(&app()?, reader("ios", "reader"))
+                .await?
+                .headed(headed),
+        ),
     })
 }
 
 /// A platform's driver as a run uses it: its device and the suite's network proxy for it (started if it isn't up),
 /// with Android's ports forwarded to it.
 pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<Driver<AnyDevice>> {
-    let config = suite.config.as_ref();
-    let device = connect(
-        platform,
-        config.and_then(|c| c.platforms.get(&platform)),
-        headed,
-    )
-    .await?;
-    let routes = config.and_then(|c| crate::network::routes(c, platform));
+    let config = suite
+        .config
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("{} doesn't load", crate::suite::CONFIG_FILE))?;
+    let device = connect(platform, config.of(&platform), headed).await?;
+    let routes = crate::network::routes(config, platform);
     let (device, network) = match (device, routes) {
         (device, None) => (device, None),
         (AnyDevice::Android(android), Some(routes)) => {
             let network = crate::network::ensure(&suite.root, platform, &routes).await?;
-            let forwards = config.map_or_else(Vec::new, |c| crate::network::forwards(c, platform));
+            let forwards = crate::network::forwards(config, platform);
             (
                 AnyDevice::Android(android.forward(&forwards).await?),
                 Some(network),
@@ -397,6 +395,21 @@ impl Hub {
     /// The suite specs are dispatched from: as loaded at start, plus any specs added since.
     pub fn suite(&self) -> Arc<Suite> {
         self.suite.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// The platform the run's suite calls `name`, for a name a tool call or a dispatch gave.
+    pub fn platform(&self, name: &str) -> Result<Platform> {
+        let suite = self.suite();
+        let config = suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{} doesn't load", crate::suite::CONFIG_FILE))?;
+        config.platform(name).map_err(anyhow::Error::msg)
+    }
+
+    /// [`Hub::platform`] for each of a list of names.
+    pub fn platforms(&self, names: &[String]) -> Result<Vec<Platform>> {
+        names.iter().map(|n| self.platform(n)).collect()
     }
 
     /// Queues spec IDs or features: specs not in the run join it, read from the suite as it is on disk now; specs in
@@ -758,15 +771,13 @@ impl Hub {
                 .reset()
                 .await?;
         }
-        let guard = hooks::fill(
-            &config.hooks.guard,
-            "",
-            &platform.to_string(),
-            config.account(platform),
-        );
-        hooks::run(root, &guard, hooks::GUARD_TIMEOUT)
-            .await
-            .context("the guard refused")?;
+        hooks::run(
+            root,
+            &config.of(&platform).hooks.guard,
+            hooks::GUARD_TIMEOUT,
+        )
+        .await
+        .context("the guard refused")?;
         Ok(())
     }
 
@@ -775,16 +786,9 @@ impl Hub {
     async fn start_prepare(self: &Arc<Self>, platform: Platform) -> Result<Dispatched> {
         let suite = self.suite();
         let config = suite.config.as_ref().context("no suite.yaml")?;
-        let file = config
-            .prepare
-            .as_ref()
-            .context("suite.yaml has no prepare")?;
-        let steps = std::fs::read_to_string(suite.root.join(file))
-            .with_context(|| format!("reading {}", file.display()))?;
-        let account = config
-            .platforms
-            .get(&platform)
-            .and_then(|p| p.account.clone());
+        // SA-881/882: removed in step 4. 0.3 has no prepare brief, so no run plans one (`plan.prepare` is false).
+        let steps = String::new();
+        let account: Option<String> = None;
         self.online_and_guarded(platform).await?;
         if !self.without_devices.contains(&platform) {
             self.on_device(platform, async |d| Device::launch(&d.device).await)
@@ -814,13 +818,8 @@ impl Hub {
         let said = posted.judgments.first();
         let failure = match said {
             Some(j) if j.answer == Answer::Held => {
-                let labels = self
-                    .suite()
-                    .config
-                    .as_ref()
-                    .and_then(|c| c.platforms.get(&platform))
-                    .map(|p| p.ready.clone())
-                    .unwrap_or_default();
+                // SA-881/882: removed in step 4. 0.3 has no ready labels.
+                let labels: Vec<String> = Vec::new();
                 let shown = if self.without_devices.contains(&platform) {
                     Ok(())
                 } else {
@@ -866,19 +865,15 @@ impl Hub {
         for _ in 0..3 {
             let attempt = async {
                 self.online_and_guarded(platform).await?;
-                let seed = hooks::fill(
-                    &config.hooks.seed,
-                    &spec.front.seed,
-                    &platform.to_string(),
-                    config.account(platform),
-                );
+                let platform_config = config.of(&platform);
+                let seed = hooks::fill(&platform_config.hooks.seed, &spec.front.seed);
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
-                    let platform_config = config.platforms.get(&platform);
-                    let ready = platform_config.map(|p| p.ready.clone()).unwrap_or_default();
+                    // SA-881/882: removed in step 4. 0.3 has no ready labels.
+                    let ready: Vec<String> = Vec::new();
                     let link = match spec.front.start.get(&platform) {
                         Some(link) => Some(link_on(
-                            platform_config.and_then(|p| p.base_url.as_deref()),
+                            platform_config.url.as_deref(),
                             &hooks::link_with_ids(link, &hooks::ids(&out))
                                 .map_err(|e| anyhow::anyhow!(e))?,
                         )),
@@ -886,13 +881,15 @@ impl Hub {
                     };
                     let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
                     // Every spec sets it, so one spec's size never carries into the next.
-                    let size = (platform == Platform::Web).then(|| {
-                        spec.front
-                            .viewport
-                            .as_deref()
-                            .and_then(parse_viewport)
-                            .unwrap_or(LAUNCH_VIEWPORT)
-                    });
+                    let size = (platform_config.driver == DriverKind::Chrome)
+                        .then(|| {
+                            spec.front
+                                .viewport
+                                .as_deref()
+                                .and_then(parse_viewport)
+                                .or_else(|| platform_config.viewport())
+                        })
+                        .flatten();
                     self.on_device(platform, async |d| {
                         d.device.hardware_keyboard(hardware).await?;
                         if let Some((width, height)) = size {
@@ -1182,6 +1179,17 @@ impl Hub {
             .iter()
             .find(|f| f.name == spec.feature)
             .and_then(|f| f.context.as_deref());
+        // A spec's viewport sizes a chrome platform's window, so a tester on any other platform isn't told of it.
+        let mut briefed = spec.clone();
+        let config = suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("{} doesn't load", crate::suite::CONFIG_FILE))?;
+
+        if config.driver(&platform) != DriverKind::Chrome {
+            briefed.front.viewport = None;
+        }
+
         self.with_run(|run, now| {
             let rerun = run
                 .state()
@@ -1196,7 +1204,7 @@ impl Hub {
                 Some(reset_ms),
                 |token, verify| {
                     prompt::render(
-                        spec,
+                        &briefed,
                         context,
                         platform,
                         token,
@@ -1221,8 +1229,8 @@ impl Hub {
 
     /// The row a tester agent's prompt names, if any: the longest spec ID in it, and a platform named as a word.
     pub fn named_row(&self, prompt: &str) -> (Option<String>, Option<Platform>) {
-        let spec = self
-            .suite()
+        let suite = self.suite();
+        let spec = suite
             .specs
             .iter()
             .map(|s| s.id.clone())
@@ -1232,14 +1240,10 @@ impl Hub {
             Some(id) => prompt.replace(id.as_str(), " "),
             None => prompt.to_string(),
         };
-        let platform = rest
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .find_map(|word| match word.to_ascii_lowercase().as_str() {
-                "android" => Some(Platform::Android),
-                "ios" => Some(Platform::Ios),
-                "web" => Some(Platform::Web),
-                _ => None,
-            });
+        let platform = suite.config.as_ref().and_then(|config| {
+            rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .find_map(|word| config.platform(&word.to_ascii_lowercase()).ok())
+        });
         (spec, platform)
     }
 
@@ -1319,12 +1323,14 @@ impl Hub {
         if self.without_devices.contains(&platform) {
             return;
         }
+
+        let driver = self.suite().config.as_ref().map(|c| c.driver(&platform));
         let Ok(health) = self
             .on_device(platform, async |d| {
                 // An attempt that ended offline or with a fault mustn't leave the app cut off between specs.
                 if let Some(network) = &d.network {
                     network.reset().await?;
-                } else if platform == Platform::Web {
+                } else if driver == Some(DriverKind::Chrome) {
                     d.device.offline(false).await?;
                 }
                 d.device.health().await
@@ -1385,19 +1391,19 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let hooks = &config.of(&platform).hooks;
         let hook = if kind == "check" {
-            &config.hooks.check
+            Some(&hooks.check)
         } else {
-            &config.hooks.act
+            hooks.act.as_ref()
         };
         let Some(hook) = hook else {
-            anyhow::bail!("suite.yaml has no {kind} hook");
+            anyhow::bail!("suite.yaml gives {platform} no {kind} hook");
         };
         let quoted: Vec<String> = std::iter::once(name)
             .chain(args.iter().map(String::as_str))
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
-        let hook = hooks::fill(hook, "", &platform.to_string(), config.account(platform));
         let command = format!("{hook} {}", quoted.join(" "));
         match hooks::run(&suite.root, &command, hooks::SEED_TIMEOUT).await {
             Ok(out) => Ok(out),
@@ -1412,13 +1418,8 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let command = hooks::fill(
-            &config.hooks.build_identity,
-            "",
-            &platform.to_string(),
-            config.account(platform),
-        );
-        let out = hooks::run(&suite.root, &command, hooks::BUILD_IDENTITY_TIMEOUT).await?;
+        let command = &config.of(&platform).hooks.build_identity;
+        let out = hooks::run(&suite.root, command, hooks::BUILD_IDENTITY_TIMEOUT).await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
             format!(
                 "the build-identity hook should print {{\"commit\": ...}}, but printed {:?}",
@@ -1438,14 +1439,16 @@ impl Hub {
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let Some(install) = &config.hooks.install else {
-            anyhow::bail!("suite.yaml has no install hook, so builds are installed by hand");
-        };
-        let command = hooks::fill(install, "", &platform.to_string(), config.account(platform));
-        hooks::run(&suite.root, &command, hooks::INSTALL_TIMEOUT)
-            .await
-            .with_context(|| format!("the install hook failed on {platform}"))?;
-        if platform == Platform::Web && self.web_app.lock().await.is_some() {
+        let platform_config = config.of(&platform);
+        hooks::run(
+            &suite.root,
+            &platform_config.hooks.install,
+            hooks::INSTALL_TIMEOUT,
+        )
+        .await
+        .with_context(|| format!("the install hook failed on {platform}"))?;
+
+        if platform_config.driver == DriverKind::Chrome && self.web_app.lock().await.is_some() {
             self.start_web_app().await?;
         }
 
@@ -1473,24 +1476,25 @@ impl Hub {
         Ok(())
     }
 
-    /// Starts the web app with the suite's web start hook, stopping the one already running first. It runs until
-    /// `stop_web_app` or the hub drops it. Without a start hook in suite.yaml there's nothing to start.
+    /// Starts the web app with the `chrome` platform's `serve` hook, stopping the one already running first. It runs
+    /// until `stop_web_app` or the hub drops it. Without a `serve` hook there's nothing to start.
     pub async fn start_web_app(&self) -> Result<()> {
         let suite = self.suite();
-        let Some((start, base_url)) = suite
-            .config
-            .as_ref()
-            .and_then(|c| c.platforms.get(&Platform::Web))
-            .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)))
-        else {
+        let Some(served) = suite.config.as_ref().and_then(SuiteConfig::served) else {
             return Ok(());
         };
         let mut web_app = self.web_app.lock().await;
         if let Some(running) = web_app.take() {
-            running.stop(&base_url, hooks::START_TIMEOUT).await?;
+            running.stop(&served.url, hooks::START_TIMEOUT).await?;
         }
         *web_app = Some(
-            hooks::Service::start(&suite.root, &start, &base_url, hooks::START_TIMEOUT).await?,
+            hooks::Service::start(
+                &suite.root,
+                &served.command,
+                &served.url,
+                hooks::START_TIMEOUT,
+            )
+            .await?,
         );
         Ok(())
     }
@@ -2131,7 +2135,11 @@ async fn tokens(
 }
 
 /// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.
-async fn ready(State(hub): State<Arc<Hub>>, Path(platform): Path<Platform>) -> Response {
+async fn ready(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Response {
+    let platform = match hub.platform(&name) {
+        Ok(platform) => platform,
+        Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
+    };
     match hub.hold(platform).await {
         None => (StatusCode::OK, format!("{platform} ready\n")).into_response(),
         Some(why) => (StatusCode::CONFLICT, format!("{why}\n")).into_response(),

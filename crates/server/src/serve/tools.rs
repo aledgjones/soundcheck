@@ -58,13 +58,13 @@ pub struct DispatchParams {
     /// Spec ID, e.g. `annotations/001-draw`; leave out for the next row.
     pub spec: Option<String>,
     /// Leave out for the next platform that can take a spec.
-    pub platform: Option<Platform>,
+    pub platform: Option<String>,
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct ReviewParams {
     pub spec: String,
-    pub platform: Platform,
+    pub platform: String,
     pub call: Call,
     /// One line: why. It's shown on the row.
     pub reason: String,
@@ -101,7 +101,7 @@ pub struct TriageParams {
 
 #[derive(Deserialize, schemars::JsonSchema)]
 pub struct InstallBuildParams {
-    pub platform: Platform,
+    pub platform: String,
     /// The build installed; leave it out to have the project's build-identity hook read it.
     pub build: Option<Build>,
     /// Build and install the current tree with the project's install hook first (takes minutes), when the person
@@ -132,7 +132,7 @@ pub struct QueueParams {
     /// Spec IDs or features, as `--scope` takes them, e.g. `annotations/003-eraser` or `viewer`.
     pub specs: Vec<String>,
     /// For specs already in the run, the platforms to run them on again (default: all of theirs).
-    pub platforms: Option<Vec<Platform>>,
+    pub platforms: Option<Vec<String>>,
     /// Why specs already in the run run again; required for them.
     pub reason: Option<String>,
     /// Something the next attempt's tester should know, e.g. a harness fix to use.
@@ -144,7 +144,7 @@ pub struct StatusParams {
     /// One spec's rows, problems and side finds, with everything a review rests on.
     pub spec: Option<String>,
     /// With `spec`, just that platform's row.
-    pub platform: Option<Platform>,
+    pub platform: Option<String>,
     /// Every row, passes included: for the rare call that needs the whole run.
     #[serde(default)]
     pub full: bool,
@@ -632,6 +632,7 @@ impl Tools {
             Ok(row) => row,
             Err(e) => return reply(Err(e)),
         };
+
         let dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
         let base = report::evidence_base(&spec, attempt, platform);
         let mut missing = Vec::new();
@@ -666,6 +667,7 @@ impl Tools {
             Ok(row) => row,
             Err(e) => return reply(Err(e)),
         };
+
         let mut posted = Posted {
             judgments: p.judgments,
             side_finds: p.side_finds,
@@ -713,6 +715,7 @@ impl Tools {
             Ok(claim) => claim,
             Err(e) => return reply(Err(e)),
         };
+
         // Save the evidence now: the next spec's seed wipes the device, and review comes later.
         if claim != Claim::Pass {
             let files = self.hub.capture(&p.token, &spec, platform, attempt).await;
@@ -738,10 +741,20 @@ impl Tools {
         Parameters(p): Parameters<StatusParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let evidence_dir = self.hub.run_dir.join(report::EVIDENCE_DIR);
+        let only = match p
+            .platform
+            .as_deref()
+            .map(|n| self.hub.platform(n))
+            .transpose()
+        {
+            Ok(only) => only,
+            Err(e) => return reply(Err(e)),
+        };
+
         reply(self.hub.with_run(|run, _| {
             let state = run.state();
             let wanted = |spec: &str, platform: Platform| match &p.spec {
-                Some(s) => s == spec && p.platform.is_none_or(|q| q == platform),
+                Some(s) => s == spec && only.is_none_or(|q| q == platform),
                 None => true,
             };
             let mut counts = std::collections::BTreeMap::<String, u32>::new();
@@ -877,7 +890,17 @@ impl Tools {
         &self,
         Parameters(p): Parameters<DispatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dispatched = self.hub.dispatch(p.spec.as_deref(), p.platform).await;
+        let platform = match p
+            .platform
+            .as_deref()
+            .map(|n| self.hub.platform(n))
+            .transpose()
+        {
+            Ok(platform) => platform,
+            Err(e) => return reply(Err(e)),
+        };
+
+        let dispatched = self.hub.dispatch(p.spec.as_deref(), platform).await;
         reply(dispatched.map(|d| json!(d)))
     }
 
@@ -907,9 +930,14 @@ impl Tools {
         &self,
         Parameters(p): Parameters<ReviewParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let platform = match self.hub.platform(&p.platform) {
+            Ok(platform) => platform,
+            Err(e) => return reply(Err(e)),
+        };
+
         reply(self.hub.with_run(|run, now| {
-            run.review(now, &p.spec, p.platform, p.call, &p.reason)?;
-            Ok(json!({ "reviewed": p.spec, "platform": p.platform }))
+            run.review(now, &p.spec, platform, p.call, &p.reason)?;
+            Ok(json!({ "reviewed": p.spec, "platform": platform }))
         }))
     }
 
@@ -993,23 +1021,28 @@ impl Tools {
         &self,
         Parameters(p): Parameters<InstallBuildParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let platform = match self.hub.platform(&p.platform) {
+            Ok(platform) => platform,
+            Err(e) => return reply(Err(e)),
+        };
+
         if p.install
-            && let Err(e) = self.hub.install(p.platform).await
+            && let Err(e) = self.hub.install(platform).await
         {
             return reply(Err(e));
         }
         let build = match p.build {
             Some(build) => build,
-            None => match self.hub.read_build(p.platform).await {
+            None => match self.hub.read_build(platform).await {
                 Ok(build) => build,
                 Err(e) => return reply(Err(e)),
             },
         };
-        if let Err(e) = self.hub.forget_old_build(p.platform).await {
+        if let Err(e) = self.hub.forget_old_build(platform).await {
             return reply(Err(e));
         }
         reply(self.hub.with_run(|run, now| {
-            let reruns = run.install_build(now, p.platform, build.clone(), p.reruns)?;
+            let reruns = run.install_build(now, platform, build.clone(), p.reruns)?;
             Ok(json!({ "build": build, "reruns": reruns }))
         }))
     }
@@ -1021,12 +1054,19 @@ impl Tools {
         &self,
         Parameters(p): Parameters<QueueParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let queued = self.hub.queue(
-            &p.specs,
-            p.platforms.as_deref(),
-            p.reason.as_deref(),
-            p.note,
-        );
+        let platforms = match p
+            .platforms
+            .as_deref()
+            .map(|n| self.hub.platforms(n))
+            .transpose()
+        {
+            Ok(platforms) => platforms,
+            Err(e) => return reply(Err(e)),
+        };
+
+        let queued = self
+            .hub
+            .queue(&p.specs, platforms.as_deref(), p.reason.as_deref(), p.note);
         reply(queued.map(|q| {
             let added: Vec<_> = q
                 .added
@@ -1216,6 +1256,7 @@ impl Tools {
             Ok(row) => row,
             Err(e) => return reply(Err(e)),
         };
+
         // One evidence folder serves every spec, platform and attempt, so a shot's name carries its row.
         let name = report::shot_file(&report::evidence_base(&spec, attempt, platform), &p.name);
         self.device("shot", &p.token, async |d| {
@@ -1495,6 +1536,7 @@ impl Tools {
             }
             Err(e) => return reply(Err(e)),
         };
+
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, &p.token, "act");
             Ok(())
@@ -1522,6 +1564,7 @@ impl Tools {
             }
             Err(e) => return reply(Err(e)),
         };
+
         let _ = self.hub.with_run(|run, now| {
             run.call_finished(now, &p.token, "check_data");
             Ok(())
@@ -1602,6 +1645,7 @@ impl Tools {
             Ok(row) => row,
             Err(e) => return reply(Err(e)),
         };
+
         let name = format!(
             "{}-{}",
             report::evidence_base(&spec, attempt, platform),
@@ -1675,6 +1719,7 @@ impl Tools {
             Ok(row) => row,
             Err(e) => return reply(Err(e)),
         };
+
         let base = format!(
             "{}-{}",
             report::evidence_base(&spec, attempt, platform),
@@ -1897,6 +1942,7 @@ impl Tools {
             Ok(p) => p,
             Err(e) => return reply(Err(e)),
         };
+
         let result = self.hub.on_device(platform, op).await;
         let restarted = match &result {
             Err(e) => match e.downcast_ref::<DriverError>() {

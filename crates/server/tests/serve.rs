@@ -12,6 +12,10 @@ use soundcheck::suite::config::Platform;
 use std::path::Path;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+const WEB: Platform = Platform::literal("web");
+
 async fn server() -> (serve::Server, String) {
     let (server, url, _) = server_in().await;
     (server, url)
@@ -19,7 +23,7 @@ async fn server() -> (serve::Server, String) {
 
 /// A server whose run folder sits in its own reports folder, beside an earlier run.
 async fn server_in() -> (serve::Server, String, std::path::PathBuf) {
-    server_on(&[Platform::Android, Platform::Ios, Platform::Web]).await
+    server_on(&[ANDROID, IOS, WEB]).await
 }
 
 /// [`server_in`] with rows only on `platforms`.
@@ -73,7 +77,7 @@ async fn server_hub(
         "v0.0.0 · test".into(),
         dir.clone(),
         120_000,
-        vec![Platform::Android, Platform::Ios],
+        vec![ANDROID, IOS],
     );
     let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
@@ -598,7 +602,7 @@ async fn finishing_writes_the_final_report_and_the_index_lists_runs() {
 
 #[tokio::test]
 async fn the_live_page_gets_its_whole_view_then_only_what_changed() {
-    let (server, url, _, hub) = server_hub(&[Platform::Android]).await;
+    let (server, url, _, hub) = server_hub(&[ANDROID]).await;
     hub.set_heartbeat(Duration::from_millis(400));
     let mut updates = reqwest::get(format!("{url}/{}/updates", hub.page_key()))
         .await
@@ -735,17 +739,29 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     ] {
         std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
     }
+    // The platform whose block a line is in, so each block's hooks name their own.
+    let mut platform = String::new();
     let config: String = std::fs::read_to_string(good.join("suite.yaml"))
         .unwrap()
         .lines()
         .map(|line| {
-            if line.trim_start().starts_with("build-identity:") {
+            if let Some(name) = line
+                .strip_prefix("  ")
+                .and_then(|l| l.strip_suffix(':'))
+                .filter(|n| !n.starts_with(' '))
+            {
+                platform = name.to_string();
+            }
+
+            let p = &platform;
+            let hook = line.trim_start();
+            if hook.starts_with("build-identity:") {
                 // iOS has no build installed until the install hook runs: its identity hook fails.
-                [
-                    r#"  build-identity: "test {platform} = 'ios' && ! test -f installed-ios && exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-'{platform}'\", \"version\": \"2.16.2\"}'""#,
-                    r#"  install: "touch installed-{platform}""#,
-                ]
-                .join("\n")
+                format!(
+                    r#"      build-identity: "test {p} = 'ios' && ! test -f installed-ios && exit 1; echo '{{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\", \"version\": \"2.16.2\"}}'""#
+                )
+            } else if hook.starts_with("install:") {
+                format!(r#"      install: "touch installed-{p}""#)
             } else {
                 line.to_string()
             }
@@ -777,14 +793,14 @@ async fn the_build_identity_hook_records_each_platforms_build() {
         "builds".into(),
         run_dir,
         120_000,
-        vec![Platform::Android, Platform::Ios],
+        vec![ANDROID, IOS],
     );
 
-    let problems = hub.read_builds(&[Platform::Android, Platform::Ios]).await;
+    let problems = hub.read_builds(&[ANDROID, IOS]).await;
     assert_eq!(problems.len(), 1);
     assert!(problems[0].starts_with("ios:"), "{problems:?}");
     let android = hub
-        .with_run(|run, _| Ok(run.state().builds.get(&Platform::Android).cloned()))
+        .with_run(|run, _| Ok(run.state().builds.get(&ANDROID).cloned()))
         .unwrap()
         .unwrap();
     assert_eq!(android.commit, "abc1234def");
@@ -793,12 +809,12 @@ async fn the_build_identity_hook_records_each_platforms_build() {
 
     // Reading the same build again changes nothing.
     let before = hub.with_run(|run, _| Ok(run.last_seq())).unwrap();
-    assert!(hub.read_builds(&[Platform::Android]).await.is_empty());
+    assert!(hub.read_builds(&[ANDROID]).await.is_empty());
     assert_eq!(hub.with_run(|run, _| Ok(run.last_seq())).unwrap(), before);
 
     // The install hook builds and installs it; then it can be identified.
-    hub.install(Platform::Ios).await.unwrap();
-    assert!(hub.read_builds(&[Platform::Ios]).await.is_empty());
+    hub.install(IOS).await.unwrap();
+    assert!(hub.read_builds(&[IOS]).await.is_empty());
 }
 
 #[tokio::test]
@@ -824,7 +840,7 @@ async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything()
         .lines()
         .map(|line| {
             if line.trim_start().starts_with("build-identity:") {
-                r#"  build-identity: "printf '{\"commit\": \"%s\"}' \"$(cat installed)\"""#
+                r#"      build-identity: "printf '{\"commit\": \"%s\"}' \"$(cat installed)\"""#
                     .to_string()
             } else {
                 line.to_string()
@@ -858,28 +874,26 @@ async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything()
         "probe".into(),
         run_dir,
         120_000,
-        vec![Platform::Android, Platform::Ios],
+        vec![ANDROID, IOS],
     );
     let android = |hub: &std::sync::Arc<Hub>| {
-        hub.with_run(|run, _| Ok(run.state().builds.get(&Platform::Android).cloned()))
+        hub.with_run(|run, _| Ok(run.state().builds.get(&ANDROID).cloned()))
             .unwrap()
             .map(|b| b.commit)
     };
 
-    hub.dispatch(Some(DRAW), Some(Platform::Android))
-        .await
-        .unwrap();
+    hub.dispatch(Some(DRAW), Some(ANDROID)).await.unwrap();
     assert_eq!(android(&hub).as_deref(), Some("aaaaaaa1"));
 
     std::fs::write(base.join("suite/installed"), "bbbbbbb2").unwrap();
     let before = hub.with_run(|run, _| Ok(run.last_seq())).unwrap();
-    hub.dispatch(Some(DRAW), Some(Platform::Ios)).await.unwrap();
+    hub.dispatch(Some(DRAW), Some(IOS)).await.unwrap();
     let logged = hub
         .with_run(|run, _| Ok(run.entries_after(before).to_vec()))
         .unwrap();
     assert!(
         logged.iter().any(|e| matches!(&e.event,
-            Event::BuildInstalled { platform: Platform::Ios, build, reruns }
+            Event::BuildInstalled { platform: IOS, build, reruns }
                 if build.commit == "bbbbbbb2" && reruns.is_empty())),
         "the new build is logged, and reruns nothing"
     );
@@ -910,7 +924,7 @@ fn a_run_is_found_again_by_its_id() {
             id: id.clone(),
             suite: reports.clone(),
             label: "Release 5".into(),
-            platforms: vec![Platform::Ios],
+            platforms: vec![IOS],
             scope: vec![],
         },
     )
@@ -1111,7 +1125,7 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
         id: saved::new_id(),
         suite: root.clone(),
         label: "v0.0.0 · test".into(),
-        platforms: vec![Platform::Android, Platform::Ios],
+        platforms: vec![ANDROID, IOS],
         scope: vec!["annotations/001-draw".into()],
     };
     let dir = base.join("reports").join("20261021-090000");
@@ -1223,11 +1237,7 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
     let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
     assert!(journal.contains(r#""specs":["annotations/003-erase"]"#));
     let (_, reloaded, _) = saved::load(&dir, serve::now_ms()).unwrap();
-    assert!(
-        reloaded
-            .row("annotations/003-erase", Platform::Ios)
-            .is_some()
-    );
+    assert!(reloaded.row("annotations/003-erase", IOS).is_some());
     assert!(!reloaded.state().finished);
 
     // A spec edited mid-run is reread when it's queued again, and the next brief has the new wording.
@@ -1552,7 +1562,7 @@ async fn a_new_session_hears_where_the_run_stands() {
 
 #[tokio::test]
 async fn the_run_stays_open_until_it_is_closed() {
-    let (server, url, dir) = server_on(&[Platform::Android, Platform::Ios]).await;
+    let (server, url, dir) = server_on(&[ANDROID, IOS]).await;
     let client = client(&url).await;
     for _ in 0..2 {
         let d = call(&client, "dispatch", json!({ "spec": DRAW })).await;
@@ -1604,7 +1614,7 @@ async fn the_run_stays_open_until_it_is_closed() {
 
 #[tokio::test]
 async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
-    let (_server, url, _, hub) = server_hub(&[Platform::Android]).await;
+    let (_server, url, _, hub) = server_hub(&[ANDROID]).await;
     hub.begin_start(vec!["the suite lints clean".into()]);
     hub.start_step("android: building and installing the app");
     let client = client(&url).await;

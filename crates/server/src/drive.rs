@@ -3,7 +3,7 @@
 //! reader start.
 
 use crate::serve::tools::{Step, TouchStop, line, step};
-use crate::suite::config::Platform;
+use crate::suite::config::DriverKind;
 use anyhow::{Result, bail};
 use clap::Subcommand;
 use soundcheck_driver::any::AnyDevice;
@@ -106,10 +106,7 @@ pub enum Action {
     Parity,
 }
 
-pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<String> {
-    if platform == Platform::Web {
-        bail!("web has no browser outside a run to drive: each call would start a fresh one");
-    }
+pub async fn drive(suite: &Path, platform: &str, action: Action) -> Result<String> {
     if !suite.join(crate::suite::CONFIG_FILE).exists() {
         bail!(
             "no {} in {}: run from the suite folder, or pass --suite",
@@ -117,7 +114,24 @@ pub async fn drive(suite: &Path, platform: Platform, action: Action) -> Result<S
             suite.canonicalize().unwrap_or(suite.into()).display()
         );
     }
+
     let loaded = crate::suite::load(suite);
+    let Some(config) = &loaded.config else {
+        let problems: Vec<_> = loaded.problems.iter().map(|p| p.message.as_str()).collect();
+        bail!(
+            "{} doesn't load: {}",
+            crate::suite::CONFIG_FILE,
+            problems.join("; ")
+        );
+    };
+    let platform = config.platform(platform).map_err(anyhow::Error::msg)?;
+
+    if config.driver(&platform) == DriverKind::Chrome {
+        bail!(
+            "{platform} has no browser outside a run to drive: each call would start a fresh one"
+        );
+    }
+
     let driver = crate::serve::driver(platform, &loaded, false).await?;
     let d = &driver;
     let matcher = |t: &str| Matcher::parse(t).map_err(|e| anyhow::anyhow!("{t}: {e}"));

@@ -27,7 +27,7 @@ enum Command {
     Run(RunArgs),
     /// Run one driver command on the emulator or simulator, outside a run: `soundcheck drive ios see`.
     Drive {
-        platform: Platform,
+        platform: String,
         /// The suite folder, for the app's id (default: the current folder).
         #[arg(long, default_value = ".")]
         suite: PathBuf,
@@ -45,7 +45,7 @@ enum Command {
         run: PathBuf,
         /// Make this platform's capture the reference (clears the bars).
         #[arg(long, conflicts_with = "bars")]
-        adopt: Option<Platform>,
+        adopt: Option<String>,
         /// Set each platform's bar from what it scored in the run; a bar only tightens.
         #[arg(long)]
         bars: bool,
@@ -101,7 +101,7 @@ enum Command {
     Ready {
         /// The run's folder (holding server.json).
         run: PathBuf,
-        platform: Platform,
+        platform: String,
         /// Ask every 15 s until the platform is free, then exit; for running in the background after a held dispatch.
         #[arg(long)]
         wait: bool,
@@ -137,7 +137,7 @@ enum Command {
         suite: PathBuf,
         /// The platform whose proxy it is, when each has its own (needed for `serve`; others act on every one).
         #[arg(long)]
-        platform: Option<Platform>,
+        platform: Option<String>,
     },
 }
 
@@ -146,7 +146,7 @@ struct RunArgs {
     suite: PathBuf,
     /// Platforms to run (default: every platform in suite.yaml).
     #[arg(long, value_delimiter = ',')]
-    platforms: Vec<Platform>,
+    platforms: Vec<String>,
     /// Features or spec IDs to run, e.g. `help,scores/003-add-part` (default: every spec). Only these become
     /// rows, so the verdict covers exactly the scope.
     #[arg(long, value_delimiter = ',')]
@@ -192,7 +192,7 @@ fn main() -> ExitCode {
             run,
             platform,
             wait,
-        } => ready_command(&run, platform, wait),
+        } => ready_command(&run, &platform, wait),
         Command::Proxy {
             action,
             suite,
@@ -236,7 +236,7 @@ fn main() -> ExitCode {
             action,
         } => tokio::runtime::Runtime::new()
             .map_err(anyhow::Error::from)
-            .and_then(|rt| rt.block_on(soundcheck::drive::drive(&suite, platform, action)))
+            .and_then(|rt| rt.block_on(soundcheck::drive::drive(&suite, &platform, action)))
             .map(|out| println!("{out}")),
     };
     match result {
@@ -253,7 +253,7 @@ fn reference_command(
     root: &Path,
     name: &str,
     run: &Path,
-    adopt: Option<Platform>,
+    adopt: Option<String>,
     bars: bool,
     loosen: bool,
 ) -> anyhow::Result<()> {
@@ -269,13 +269,15 @@ fn reference_command(
 
     match (adopt, bars) {
         (Some(platform), _) => {
+            let platform = config.platform(&platform).map_err(anyhow::Error::msg)?;
             references::adopt(&dir, &run, name, platform)?;
             println!(
                 "{platform}'s capture is now the {name} reference; set the bars from a run against it with --bars"
             );
         }
         (None, true) => {
-            for line in references::set_bars(&dir, &run, name, loosen)? {
+            let platforms: Vec<Platform> = config.platforms.keys().copied().collect();
+            for line in references::set_bars(&dir, &run, name, &platforms, loosen)? {
                 println!("{line}");
             }
         }
@@ -305,18 +307,14 @@ fn lint_command(root: &Path) -> ExitCode {
 
 fn web_profile_command(root: &Path) -> Result<()> {
     let suite = suite::load(root);
-    let web = suite
+    let profile = suite
         .config
-        .as_ref()
-        .and_then(|c| c.platforms.get(&Platform::Web));
-    let profile = web
-        .and_then(suite::config::PlatformConfig::profile_dir)
-        .context("suite.yaml gives web no profile")?;
-    let account = web
-        .and_then(|w| w.account.as_deref())
-        .unwrap_or("the suite's account");
+        .iter()
+        .flat_map(|c| c.platforms.values())
+        .find_map(suite::config::PlatformConfig::profile_dir)
+        .context("suite.yaml gives no chrome platform a chrome-profile")?;
     println!(
-        "Chrome is opening on {}: sign in to Google as {account}, then quit Chrome (⌘Q). Runs start from a copy.",
+        "Chrome is opening on {}: sign in to Google as the suite's account, then quit Chrome (⌘Q). Runs start from a copy.",
         profile.display()
     );
     soundcheck_driver::web::open_profile(&profile, "https://accounts.google.com/")?;
@@ -369,6 +367,11 @@ fn run_command(args: RunArgs) -> Result<()> {
     let saved = resume
         .as_deref()
         .and_then(|dir| soundcheck::run::saved::read_info(dir).ok());
+    let platforms = platforms
+        .iter()
+        .map(|name| config.platform(name))
+        .collect::<Result<Vec<Platform>, String>>()
+        .map_err(anyhow::Error::msg)?;
     // On resume, `--platforms` only adds: dropping a platform would orphan its rows in the journal.
     let platforms: Vec<Platform> = match (platforms.is_empty(), &saved) {
         (false, Some(info)) => {
@@ -384,6 +387,17 @@ fn run_command(args: RunArgs) -> Result<()> {
         (true, Some(info)) => info.platforms.clone(),
         (true, None) => config.platforms.keys().copied().collect(),
     };
+    // A resumed run's platforms come from run.json, written under the suite as it was then.
+    if let Some(gone) = platforms
+        .iter()
+        .find(|p| !config.platforms.contains_key(*p))
+    {
+        bail!(
+            "this run's platform {gone} isn't in suite.yaml any more ({}); put it back to open the run",
+            config.platform(gone.as_str()).unwrap_err()
+        );
+    }
+
     let added: Vec<Platform> = saved.as_ref().map_or_else(Vec::new, |info| {
         platforms
             .iter()
@@ -485,22 +499,11 @@ fn run_command(args: RunArgs) -> Result<()> {
         run_dir.join(serve::SUMMARY_FILE),
         soundcheck::report::run_summary(&run, &label).to_string(),
     )?;
-    let config_has_install = config.hooks.install.is_some();
-    let ready: std::collections::HashMap<Platform, Vec<String>> = config
-        .platforms
-        .iter()
-        .map(|(p, c)| (*p, c.ready.clone()))
-        .collect();
-    let config_web_start = config
-        .platforms
-        .get(&Platform::Web)
-        .and_then(|w| Some((w.start.clone()?, w.base_url.clone()?)));
-    let web_routes = soundcheck::network::routes(config, Platform::Web);
-    let accounts: std::collections::BTreeMap<Platform, String> = config
-        .platforms
-        .keys()
-        .map(|&p| (p, config.account(p).to_string()))
-        .collect();
+    // The chrome platform the run serves its site for, with that site's command and the routes it may go through.
+    let served = config.served();
+    let web_routes = served
+        .as_ref()
+        .and_then(|s| soundcheck::network::routes(config, s.platform));
     let root_dir = root.to_path_buf();
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -564,25 +567,15 @@ fn run_command(args: RunArgs) -> Result<()> {
                 ));
             }
         }
-        // Once per platform when the guard takes one (each its own stack), else once.
-        let guard = &stack_config.hooks.guard;
-        let per_platform = guard.contains("{platform}");
-        for &platform in platforms.iter().take(if per_platform { usize::MAX } else { 1 }) {
-            hub.start_step(if per_platform {
-                format!("{platform}: running the guard")
-            } else {
-                "running the guard".into()
-            });
-            let command = serve::hooks::fill(guard, "", &platform.to_string(), &accounts[&platform]);
-            let said = serve::hooks::run(&root_dir, &command, serve::hooks::GUARD_TIMEOUT)
+        // Each platform's own guard, against its own stack.
+        for &platform in &platforms {
+            hub.start_step(format!("{platform}: running the guard"));
+            let guard = &stack_config.of(&platform).hooks.guard;
+            let said = serve::hooks::run(&root_dir, guard, serve::hooks::GUARD_TIMEOUT)
                 .await
                 .context("the guard hook refused")?;
             let said = said.trim();
-            let whose = if per_platform {
-                format!("{platform}: the guard passed")
-            } else {
-                "the guard passed".into()
-            };
+            let whose = format!("{platform}: the guard passed");
             pass(if said.is_empty() {
                 whose
             } else {
@@ -591,14 +584,14 @@ fn run_command(args: RunArgs) -> Result<()> {
         }
         // The web app under test, if the suite starts one: the hub keeps it as long as the run, and an install of
         // web starts it again.
-        if let Some((start, _)) = &config_web_start
-            && platforms.contains(&Platform::Web)
+        if let Some(served) = &served
+            && platforms.contains(&served.platform)
         {
-            // The run waits on `base-url`, which may itself go through the proxy.
+            // The run waits on `url`, which may itself go through the proxy.
             if let Some(routes) = &web_routes {
-                soundcheck::network::ensure(&root_dir, Platform::Web, routes).await?;
+                soundcheck::network::ensure(&root_dir, served.platform, routes).await?;
             }
-            println!("starting the web app: {start}");
+            println!("starting the web app: {}", served.command);
             hub.start_step("starting the web app");
             hub.start_web_app().await?;
         }
@@ -616,7 +609,6 @@ fn run_command(args: RunArgs) -> Result<()> {
         hub.start_step("waiting for the Mac to settle");
         let settled = serve::wait_for_calm_host().await;
         // Results count only for an identified build, so a platform without one is built before anything runs.
-        let has_install_hook = config_has_install;
         for &platform in &platforms {
             hub.start_step(format!("{platform}: identifying the installed build"));
             let unknown = hub.read_build(platform).await.err();
@@ -632,7 +624,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                     "{platform}: {why:#} while the Mac was still busy; start the run again once it has settled"
                 );
             }
-            if !(install || unknown.is_some() && has_install_hook) {
+            if !(install || unknown.is_some()) {
                 continue;
             }
             match &unknown {
@@ -646,12 +638,10 @@ fn run_command(args: RunArgs) -> Result<()> {
         }
         hub.start_step("identifying the builds");
         let problems = hub.read_builds(&platforms).await;
-        if has_install_hook && !problems.is_empty() {
+        if !problems.is_empty() {
             bail!("the build can't be identified on {}", problems.join("; "));
         }
-        for problem in problems {
-            eprintln!("soundcheck: build identity unknown for {problem}");
-        }
+
         for &platform in &platforms {
             if let Some(build) =
                 hub.with_run(|run, _| Ok(run.state().builds.get(&platform).cloned()))?
@@ -661,15 +651,10 @@ fn run_command(args: RunArgs) -> Result<()> {
         }
         // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say). With a prepare
         // spec the app signs in there, on this run's stacks, so a ready label seen now would prove nothing.
-        if let Some(prepare) = &stack_config.prepare {
-            pass(format!(
-                "each platform is prepared ({}) before its specs, and its ready labels checked then",
-                prepare.display()
-            ));
-        }
-        for &platform in platforms.iter().filter(|_| stack_config.prepare.is_none()) {
+        for &platform in &platforms {
             hub.start_step(format!("{platform}: launching the app"));
-            let labels = ready.get(&platform).cloned().unwrap_or_default();
+            // SA-881/882: removed in step 4. 0.3 has no ready labels.
+            let labels: Vec<String> = Vec::new();
             hub.on_device(platform, async |d| {
                 soundcheck_driver::Device::launch(&d.device).await?;
                 for label in &labels {
@@ -884,9 +869,14 @@ fn serve_command(
 fn stack_command(action: &str, root: &Path) -> Result<()> {
     let suite = suite::load(root);
     let config = suite.config.as_ref().context("no suite.yaml")?;
-    let Some(down) = &config.hooks.stack_down else {
+    if config
+        .platforms
+        .values()
+        .all(|p| p.hooks.stack_down.is_none())
+    {
         bail!("suite.yaml has no stack hooks");
-    };
+    }
+
     let records = soundcheck::stack::records_dir(root, config);
     if action == "status" {
         let found = soundcheck::stack::records(&records);
@@ -911,10 +901,12 @@ fn stack_command(action: &str, root: &Path) -> Result<()> {
             println!("{note}");
         }
         // Without a record too: a stack started by hand, or one whose record was lost, still goes.
-        for platform in config.platforms.keys() {
-            let command =
-                serve::hooks::fill(down, "", &platform.to_string(), config.account(*platform));
-            serve::hooks::run(root, &command, soundcheck::stack::DOWN_TIMEOUT).await?;
+        for (platform, p) in &config.platforms {
+            let Some(down) = &p.hooks.stack_down else {
+                continue;
+            };
+
+            serve::hooks::run(root, down, soundcheck::stack::DOWN_TIMEOUT).await?;
             println!("{platform}: no stack left");
         }
         Ok(())
@@ -1302,7 +1294,7 @@ fn server_url(run_dir: &Path) -> Result<String> {
         .to_string())
 }
 
-fn ready_command(run_dir: &Path, platform: Platform, wait: bool) -> Result<()> {
+fn ready_command(run_dir: &Path, platform: &str, wait: bool) -> Result<()> {
     let url = format!("{}/ready/{platform}", server_url(run_dir)?);
     let started = std::time::Instant::now();
     let mut held = None;
@@ -1365,28 +1357,24 @@ fn pass(checks: &mut Vec<String>, check: String) {
     checks.push(check);
 }
 
-async fn proxy_command(action: &str, root: &Path, platform: Option<Platform>) -> Result<String> {
-    use soundcheck::suite::config::Proxy;
+async fn proxy_command(action: &str, root: &Path, platform: Option<String>) -> Result<String> {
     use soundcheck_driver::proxy;
     let loaded = suite::load(root);
     let config = loaded.config.as_ref().context("no suite.yaml")?;
-    let network = config
-        .network
-        .as_ref()
-        .context("suite.yaml has no network section")?;
-    // A shared proxy is the same one whichever platform asks.
-    let platforms: Vec<Platform> = match (&network.proxy, platform) {
-        (_, Some(p)) => vec![p],
-        (Proxy::Shared(_), None) => vec![Platform::Ios],
-        (Proxy::PerPlatform(_), None) if action == "serve" => {
-            bail!("each platform has its own proxy: pass --platform")
-        }
-        (Proxy::PerPlatform(by), None) => by.keys().copied().collect(),
+    let platforms: Vec<Platform> = match platform {
+        Some(name) => vec![config.platform(&name).map_err(anyhow::Error::msg)?],
+        None if action == "serve" => bail!("each platform has its own proxy: pass --platform"),
+        None => config
+            .platforms
+            .iter()
+            .filter(|(_, p)| !p.proxy.is_empty())
+            .map(|(name, _)| *name)
+            .collect(),
     };
     let mut said = Vec::new();
     for p in platforms {
         let routes = soundcheck::network::routes(config, p)
-            .with_context(|| format!("suite.yaml's network has no routes for {p}"))?;
+            .with_context(|| format!("suite.yaml gives {p} no proxy routes"))?;
         let socket = proxy::socket_path(&routes);
         let answer = match action {
             "serve" => {
@@ -1403,10 +1391,7 @@ async fn proxy_command(action: &str, root: &Path, platform: Option<Platform>) ->
                 .await
                 .unwrap_or_else(|_| "not running".into()),
         };
-        said.push(match &network.proxy {
-            Proxy::Shared(_) => answer,
-            Proxy::PerPlatform(_) => format!("{p}: {answer}"),
-        });
+        said.push(format!("{p}: {answer}"));
     }
     Ok(said.join("\n"))
 }

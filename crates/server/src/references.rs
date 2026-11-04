@@ -93,9 +93,15 @@ pub fn adopt(dir: &Path, run: &Path, name: &str, platform: Platform) -> Result<(
     save_bars(dir, name, &bars)
 }
 
-/// Sets each platform's bar from what it scored in `run`. A bar only tightens unless `loosen`; returns what changed,
-/// one line per platform.
-pub fn set_bars(dir: &Path, run: &Path, name: &str, loosen: bool) -> Result<Vec<String>> {
+/// Sets the bar of each of `platforms` that captured `name` in `run`, from its score. A bar only tightens unless
+/// `loosen`; returns what changed, one line per platform.
+pub fn set_bars(
+    dir: &Path,
+    run: &Path,
+    name: &str,
+    platforms: &[Platform],
+    loosen: bool,
+) -> Result<Vec<String>> {
     let png = reference_png(dir, name);
     if !png.exists() {
         bail!("{name} has no reference yet: adopt one first");
@@ -104,7 +110,7 @@ pub fn set_bars(dir: &Path, run: &Path, name: &str, loosen: bool) -> Result<Vec<
     let current = reference_id(&std::fs::read(&png)?);
     let mut bars = load_bars(dir, name)?;
     let mut changed = Vec::new();
-    for platform in [Platform::Android, Platform::Ios, Platform::Web] {
+    for &platform in platforms {
         let path = captured_json(run, name, platform);
         if !path.exists() {
             continue;
@@ -149,6 +155,10 @@ pub fn set_bars(dir: &Path, run: &Path, name: &str, loosen: bool) -> Result<Vec<
 mod tests {
     use super::*;
 
+    fn web() -> Platform {
+        "web".parse().unwrap()
+    }
+
     #[test]
     fn bars_only_tighten_unless_loosened() {
         let tmp = std::env::temp_dir().join(format!("sc-refs-{}", std::process::id()));
@@ -163,31 +173,31 @@ mod tests {
                 reference: Some(reference_id(b"png")),
             };
             std::fs::write(
-                captured_json(&run, "page", Platform::Web),
+                captured_json(&run, "page", web()),
                 serde_json::to_string(&c).unwrap(),
             )
             .unwrap();
         };
 
         score(2.0);
-        set_bars(&dir, &run, "page", false).unwrap();
+        set_bars(&dir, &run, "page", &[web()], false).unwrap();
         assert_eq!(load_bars(&dir, "page").unwrap().bars["web"], 2.1);
         score(4.0);
-        set_bars(&dir, &run, "page", false).unwrap();
+        set_bars(&dir, &run, "page", &[web()], false).unwrap();
         assert_eq!(load_bars(&dir, "page").unwrap().bars["web"], 2.1);
         score(1.0);
-        set_bars(&dir, &run, "page", false).unwrap();
+        set_bars(&dir, &run, "page", &[web()], false).unwrap();
         assert_eq!(load_bars(&dir, "page").unwrap().bars["web"], 1.1);
         score(4.0);
-        set_bars(&dir, &run, "page", true).unwrap();
+        set_bars(&dir, &run, "page", &[web()], true).unwrap();
         assert_eq!(load_bars(&dir, "page").unwrap().bars["web"], 4.1);
 
         let mut kept = load_bars(&dir, "page").unwrap();
         kept.exclude = vec![[0.0, 0.0, 1.0, 0.08]];
         save_bars(&dir, "page", &kept).unwrap();
-        std::fs::write(capture_png(&run, "page", Platform::Web), b"new png").unwrap();
-        adopt(&dir, &run, "page", Platform::Web).unwrap();
-        set_bars(&dir, &run, "page", false).unwrap();
+        std::fs::write(capture_png(&run, "page", web()), b"new png").unwrap();
+        adopt(&dir, &run, "page", web()).unwrap();
+        set_bars(&dir, &run, "page", &[web()], false).unwrap();
         assert!(
             load_bars(&dir, "page").unwrap().bars.is_empty(),
             "a score against the old reference sets no bar"

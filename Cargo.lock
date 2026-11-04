@@ -1621,6 +1621,7 @@ dependencies = [
  "serde_json",
  "serde_yaml_ng",
  "soundcheck-driver",
+ "strsim",
  "tokio",
  "tokio-stream",
  "tokio-util",

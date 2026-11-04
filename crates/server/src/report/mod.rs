@@ -190,12 +190,9 @@ fn platforms(page: &Page) -> Vec<Platform> {
     all
 }
 
+/// A platform as the report shows it: the suite's own name.
 fn platform_name(p: Platform) -> &'static str {
-    match p {
-        Platform::Android => "Android",
-        Platform::Ios => "iOS",
-        Platform::Web => "Web",
-    }
+    p.as_str()
 }
 
 fn feature_name(feature: &str) -> String {

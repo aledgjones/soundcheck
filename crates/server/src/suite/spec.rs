@@ -178,7 +178,7 @@ impl Spec {
             };
             match tagged {
                 Err(unknown) => problems.push(format!(
-                    "`[{unknown}]` isn't a platform tag (tags are android, ios, web, separated by commas)"
+                    "`[{unknown}]` isn't a platform tag (a tag names some of the spec's platforms, separated by commas)"
                 )),
                 Ok(tagged) => {
                     if let Some(p) = tagged.iter().find(|p| !self.front.platforms.contains(p)) {
@@ -270,6 +270,10 @@ fn bullets(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
 
+    fn p(name: &str) -> Platform {
+        name.parse().unwrap()
+    }
+
     const GOOD: &str = "---
 title: Draw a pen stroke, undo and redo it
 seed: viewer
@@ -295,7 +299,7 @@ Undo twice quickly.
     fn parses_a_spec() {
         let spec = parse("annotations/001-draw", "annotations", GOOD).unwrap();
         assert_eq!(spec.front.seed, "viewer");
-        assert_eq!(spec.front.platforms, vec![Platform::Android, Platform::Ios]);
+        assert_eq!(spec.front.platforms, vec![p("android"), p("ios")]);
         assert_eq!(
             spec.outcomes,
             vec![
@@ -317,7 +321,7 @@ Undo twice quickly.
         );
         let spec = parse("annotations/001-draw", "annotations", &linked).unwrap();
         assert_eq!(
-            spec.front.start.get(&Platform::Ios).map(String::as_str),
+            spec.front.start.get(&p("ios")).map(String::as_str),
             Some("sync://collection/1")
         );
     }
@@ -388,7 +392,7 @@ Delete Beta while organising.
     #[test]
     fn each_platform_reads_its_own_lines() {
         let spec = parse("scores/005-delete", "scores", TAGGED).unwrap();
-        let ios = spec.for_platform(Platform::Ios);
+        let ios = spec.for_platform(p("ios"));
         assert_eq!(ios.goal, "Delete Beta while organising.");
         assert_eq!(
             ios.outcomes,
@@ -399,7 +403,7 @@ Delete Beta while organising.
         );
         assert_eq!(ios.probe.as_deref(), Some("- Cancel once."));
 
-        let web = spec.for_platform(Platform::Web);
+        let web = spec.for_platform(p("web"));
         assert_eq!(
             web.goal,
             "Delete Beta while organising.\nTick its box and use the selection's Delete."
@@ -422,7 +426,7 @@ Delete Beta while organising.
         );
         let spec = parse("scores/005-delete", "scores", &nested).unwrap();
         assert_eq!(
-            spec.for_platform(Platform::Ios).probe.as_deref(),
+            spec.for_platform(p("ios")).probe.as_deref(),
             Some("- Drag a row\n  - Then count the rows")
         );
     }
@@ -431,17 +435,23 @@ Delete Beta while organising.
     fn a_link_at_the_start_of_a_line_isnt_a_tag() {
         let linked = TAGGED.replace("- Beta is gone.", "- [Beta](https://x) is gone.");
         let spec = parse("scores/005-delete", "scores", &linked).unwrap();
-        assert_eq!(spec.for_platform(Platform::Ios).outcomes.len(), 2);
+        assert_eq!(spec.for_platform(p("ios")).outcomes.len(), 2);
     }
 
     #[test]
     fn lint_checks_the_tags() {
         let problems = |text: &str| parse("scores/005-delete", "scores", text).unwrap_err();
 
-        let unknown = problems(&TAGGED.replace("[web] Tick", "[desktop] Tick"));
+        let unknown = problems(&TAGGED.replace("[web] Tick", "[Desktop] Tick"));
         assert!(
-            unknown[0].contains("`[desktop]` isn't a platform tag"),
+            unknown[0].contains("`[Desktop]` isn't a platform tag"),
             "{unknown:?}"
+        );
+
+        let elsewhere = problems(&TAGGED.replace("[web] Tick", "[desktop] Tick"));
+        assert!(
+            elsewhere[0].contains("tagged `desktop`, which the spec doesn't run on"),
+            "{elsewhere:?}"
         );
 
         let unlisted =
@@ -465,7 +475,7 @@ Delete Beta while organising.
             &TAGGED.replace("[web] Tick", "[web]Tick"),
         )
         .unwrap();
-        assert!(!unspaced.for_platform(Platform::Ios).goal.contains("Tick"));
+        assert!(!unspaced.for_platform(p("ios")).goal.contains("Tick"));
 
         let inside = problems(&TAGGED.replace("  instead of opening it.", "  - [ios] instead."));
         assert!(inside[0].contains("tag a whole outcome"), "{inside:?}");

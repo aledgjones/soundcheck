@@ -1,12 +1,24 @@
-soundcheck: "0.3"
+soundcheck: "0.4"
 platforms:
-  android: {}
+  android:
+    driver: android
+    device: ""
+    hooks:
+      guard: "true"
+      seed: node seed.mjs
+      build-identity: "true"
+      install: "true"
+      check: "true"
   web:
-    base-url: http://localhost:5173
-hooks:
-  guard: "true"
-  seed: node seed.mjs
-  build-identity: "true"
+    driver: chrome
+    device: desktop
+    url: http://localhost:5173
+    hooks:
+      guard: "true"
+      seed: "true # {scenario}"
+      build-identity: "true"
+      install: "true"
+      check: "true"
 seeds: []
 models:
   default: gpt

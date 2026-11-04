@@ -1,14 +1,16 @@
-soundcheck: "0.2"
+soundcheck: "0.3"
 platforms:
   android:
-    app-id: com.example.app
-hooks:
-  guard: "true"
-  seed: "true # {scenario}"
-  build-identity: "true"
+    driver: android
+    device: Pixel_Tablet_API_35
+    app: com.example.app
+    hooks:
+      guard: "true"
+      seed: "true # {scenario}"
+      build-identity: "true"
+      install: "true"
+      check: "true"
+    proxy:
+      - { name: api, listen: 23000, upstream: 3000 }
+      - { name: echo, listen: 23000, upstream: 23000 }
 seeds: [empty]
-parallel: true
-network:
-  proxy:
-    - { name: api, listen: 23000, upstream: 3000 }
-    - { name: echo, listen: 23000, upstream: 23000 }

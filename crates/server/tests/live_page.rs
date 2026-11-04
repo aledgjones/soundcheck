@@ -14,6 +14,9 @@ use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+
 async fn call(
     client: &RunningService<RoleClient, ClientConfig>,
     tool: &'static str,
@@ -66,7 +69,7 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
             "v9.9.9 · live".into(),
             dir,
             120_000,
-            vec![Platform::Android, Platform::Ios],
+            vec![ANDROID, IOS],
         ),
         0,
     )
@@ -230,7 +233,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
             "web".into(),
             run_dir.clone(),
             120_000,
-            vec![Platform::Android, Platform::Ios],
+            vec![ANDROID, IOS],
         ),
         0,
     )
@@ -438,7 +441,7 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
         .map(|line| {
             if line.trim_start().starts_with("seed:") {
                 format!(
-                    "  seed: \"echo try >> {} && echo 'database is down' >&2 && exit 1 # {{scenario}}\"",
+                    "      seed: \"echo try >> {} && echo 'database is down' >&2 && exit 1 # {{scenario}}\"",
                     tries.display()
                 )
             } else {
@@ -473,7 +476,7 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
             "reset".into(),
             run_dir,
             120_000,
-            vec![Platform::Android, Platform::Ios],
+            vec![ANDROID, IOS],
         ),
         0,
     )

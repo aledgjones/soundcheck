@@ -12,6 +12,9 @@ use soundcheck::suite::{self, config::Platform};
 use soundcheck_driver::Health;
 use std::path::Path;
 
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+
 const LABEL: &str = "v3.4.0 · candidate";
 /// 2026-10-21 08:30 UTC.
 const START_MS: u64 = 1_792_571_400_000;
@@ -23,7 +26,7 @@ fn main() -> Result<()> {
     let run_dir = demo.join("reports/20261021-083000");
     let _ = std::fs::remove_dir_all(&run_dir);
     std::fs::create_dir_all(run_dir.join(EVIDENCE_DIR))?;
-    let platforms = vec![Platform::Android, Platform::Ios];
+    let platforms = vec![ANDROID, IOS];
     let info = saved::RunInfo {
         id: saved::new_id(),
         suite: demo.join("suite"),
@@ -37,8 +40,8 @@ fn main() -> Result<()> {
     let mut t = Clock(START_MS);
 
     for (platform, commit, fingerprint) in [
-        (Platform::Android, "4e1c2a9", "9f2b61d0"),
-        (Platform::Ios, "4e1c2a9", "c07e3a55"),
+        (ANDROID, "4e1c2a9", "9f2b61d0"),
+        (IOS, "4e1c2a9", "c07e3a55"),
     ] {
         let build = Build {
             commit: commit.into(),
@@ -109,7 +112,7 @@ fn main() -> Result<()> {
         ),
     ];
 
-    for platform in [Platform::Android, Platform::Ios] {
+    for platform in [ANDROID, IOS] {
         for (spec, observed) in passes {
             post(&mut run, &mut t, spec, platform, held(observed), 3)?;
         }
@@ -120,7 +123,7 @@ fn main() -> Result<()> {
         &mut run,
         &mut t,
         "items/003-reorder",
-        Platform::Android,
+        ANDROID,
         held(&[
             "Bread followed the finger to the top while the rows below shifted down.",
             "After relaunching, Bread was still first.",
@@ -136,14 +139,7 @@ fn main() -> Result<()> {
         observed: "Held Coffee and moved it below the last visible row: the list stayed put, so Coffee couldn't go further down.".into(),
         evidence: vec![],
     });
-    post(
-        &mut run,
-        &mut t,
-        "items/003-reorder",
-        Platform::Ios,
-        reorder,
-        4,
-    )?;
+    post(&mut run, &mut t, "items/003-reorder", IOS, reorder, 4)?;
     let find = run
         .state()
         .pending_finds
@@ -158,12 +154,12 @@ fn main() -> Result<()> {
         "A long list can't be reordered past what's on screen",
     )?;
 
-    // Quantities: an Unsure on Android, judged from the evidence.
+    // Quantities: an Unsure on ANDROID, judged from the evidence.
     post(
         &mut run,
         &mut t,
         "items/004-quantities",
-        Platform::Ios,
+        IOS,
         held(&[
             "The row read Eggs × 12.",
             "The minus button greyed out at 1.",
@@ -184,18 +180,11 @@ fn main() -> Result<()> {
         notes: None,
         probed: None,
     };
-    post(
-        &mut run,
-        &mut t,
-        "items/004-quantities",
-        Platform::Android,
-        unsure,
-        3,
-    )?;
+    post(&mut run, &mut t, "items/004-quantities", ANDROID, unsure, 3)?;
     run.review(
         t.tick(1),
         "items/004-quantities",
-        Platform::Android,
+        ANDROID,
         Call::Judge {
             result: Final::Pass,
             title: None,
@@ -203,12 +192,12 @@ fn main() -> Result<()> {
         "The count never goes below 1, which is the outcome; Android keeps the button enabled by design",
     )?;
 
-    // Leaving a share: the harness can't sign the second account in on Android.
+    // Leaving a share: the harness can't sign the second account in on ANDROID.
     post(
         &mut run,
         &mut t,
         "sharing/002-leave",
-        Platform::Ios,
+        IOS,
         held(&[
             "After accepting, Sam's side menu listed Weekly shop with its six items.",
             "After leaving, it was gone for Sam and the owner still had it.",
@@ -234,18 +223,11 @@ fn main() -> Result<()> {
         notes: None,
         probed: None,
     };
-    post(
-        &mut run,
-        &mut t,
-        "sharing/002-leave",
-        Platform::Android,
-        blocked,
-        4,
-    )?;
+    post(&mut run, &mut t, "sharing/002-leave", ANDROID, blocked, 4)?;
     run.review(
         t.tick(1),
         "sharing/002-leave",
-        Platform::Android,
+        ANDROID,
         Call::Uphold {
             title: None,
             cause: Some(Cause::Harness),
@@ -258,7 +240,7 @@ fn main() -> Result<()> {
         &mut run,
         &mut t,
         "offline/001-check-offline",
-        Platform::Ios,
+        IOS,
         held(&[
             "Eggs and Oat milk checked off and sank while the banner said No connection.",
             "Back online they stayed checked, and the second device showed them checked.",
@@ -267,18 +249,8 @@ fn main() -> Result<()> {
     )?;
     for attempt in [1, 2] {
         let evidence = vec![
-            shot(
-                "offline/001-check-offline",
-                attempt,
-                Platform::Android,
-                "offline",
-            )?,
-            shot(
-                "offline/001-check-offline",
-                attempt,
-                Platform::Android,
-                "online",
-            )?,
+            shot("offline/001-check-offline", attempt, ANDROID, "offline")?,
+            shot("offline/001-check-offline", attempt, ANDROID, "online")?,
         ];
         let failed = Posted {
             judgments: vec![
@@ -303,7 +275,7 @@ fn main() -> Result<()> {
             &mut run,
             &mut t,
             "offline/001-check-offline",
-            Platform::Android,
+            ANDROID,
             failed,
             5,
         )?;
@@ -328,7 +300,7 @@ fn main() -> Result<()> {
         run.review(
             t.tick(1),
             "offline/001-check-offline",
-            Platform::Android,
+            ANDROID,
             call,
             reason,
         )?;
@@ -365,7 +337,7 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
     let run_dir = demo.join("reports/20261022-091500");
     let _ = std::fs::remove_dir_all(&run_dir);
     std::fs::create_dir_all(run_dir.join(EVIDENCE_DIR))?;
-    let platforms = vec![Platform::Android, Platform::Ios];
+    let platforms = vec![ANDROID, IOS];
     let label = "v3.4.1 · candidate";
     let info = saved::RunInfo {
         id: saved::new_id(),
@@ -395,7 +367,7 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
             ],
         ),
     ] {
-        for platform in [Platform::Android, Platform::Ios] {
+        for platform in [ANDROID, IOS] {
             post(&mut run, &mut t, spec, platform, held(&observed), 3)?;
         }
     }
@@ -414,18 +386,11 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         notes: None,
         probed: None,
     };
-    post(
-        &mut run,
-        &mut t,
-        "items/003-reorder",
-        Platform::Android,
-        failed,
-        4,
-    )?;
+    post(&mut run, &mut t, "items/003-reorder", ANDROID, failed, 4)?;
     run.review(
         t.tick(1),
         "items/003-reorder",
-        Platform::Android,
+        ANDROID,
         Call::Verify {
             claim: "Dragging a row's handle scrolls the list instead".into(),
         },
@@ -446,18 +411,11 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         notes: None,
         probed: None,
     };
-    post(
-        &mut run,
-        &mut t,
-        "items/004-quantities",
-        Platform::Android,
-        unsure,
-        3,
-    )?;
+    post(&mut run, &mut t, "items/004-quantities", ANDROID, unsure, 3)?;
     run.review(
         t.tick(1),
         "items/004-quantities",
-        Platform::Android,
+        ANDROID,
         Call::Judge {
             result: Final::Fail,
             title: Some("The quantity stepper is hidden under the keyboard".into()),
@@ -488,14 +446,12 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         &mut run,
         &mut t,
         "lists/001-first-list",
-        Platform::Android,
+        ANDROID,
         claimed,
         3,
     )?;
     // And one running now, halfway through its outcomes.
-    let token = run.dispatch(t.tick(0), "items/003-reorder", Platform::Ios, |_, _| {
-        "brief".into()
-    })?;
+    let token = run.dispatch(t.tick(0), "items/003-reorder", IOS, |_, _| "brief".into())?;
     run.judge(
         t.tick(1),
         &token,

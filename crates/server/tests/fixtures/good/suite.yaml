@@ -1,23 +1,46 @@
-soundcheck: "0.2"
+soundcheck: "0.3"
 platforms:
   android:
-    app-id: com.example.app
-    account: android@example.com
+    driver: android
+    device: Pixel_Tablet_API_35
+    app: com.example.app
+    hooks:
+      guard: "true"
+      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+      build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-android\"}'"
+      install: "true"
+      check: echo checked
+      act: echo acted
+    proxy:
+      - { name: api, listen: 23000, upstream: 3000 }
+      - { name: store, listen: 28100, upstream: https://api.example.com }
   ios:
-    app-id: com.example.app
+    driver: ios
+    device: iPad Pro 13-inch (M5)
+    app: com.example.app
+    hooks:
+      guard: "true"
+      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+      build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-ios\"}'"
+      install: "true"
+      check: echo checked
+      act: echo acted
+    proxy:
+      - { name: api, listen: 24000, upstream: 3000 }
+      - { name: store, listen: 29100, upstream: https://api.example.com }
   web:
-    base-url: http://localhost:5173
-    start: npm run dev
-hooks:
-  guard: "true"
-  seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
-  build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{platform}\"}'"
-  check: echo checked
-  act: echo acted
+    driver: chrome
+    device: desktop
+    viewport: 1440x900
+    url: http://localhost:5173
+    hooks:
+      guard: "true"
+      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+      build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-web\"}'"
+      install: "true"
+      serve: npm run dev
+      check: echo checked
+      act: echo acted
 seeds: [viewer, empty]
 tickets:
   url: https://example.atlassian.net/browse/{id}
-network:
-  proxy:
-    - { name: api, listen: 23000, upstream: 3000 }
-    - { name: store, listen: 28100, upstream: https://api.example.com }

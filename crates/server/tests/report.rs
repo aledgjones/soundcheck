@@ -2,9 +2,13 @@ use serde_json::{Value, json};
 use soundcheck::report::{self, Page};
 use soundcheck::run::model::*;
 use soundcheck::run::{Plan, PlannedSpec, Run};
-use soundcheck::suite::{self, config::Platform::*};
+use soundcheck::suite::{self, config::Platform};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+const WEB: Platform = Platform::literal("web");
 
 fn judged(answers: &[(Answer, &str)]) -> Posted {
     Posted {
@@ -53,7 +57,7 @@ fn sample() -> (suite::Suite, Run) {
     let t0 = 1_792_540_000_000u64;
 
     let t = run
-        .dispatch(t0, "annotations/001-draw", Android, brief)
+        .dispatch(t0, "annotations/001-draw", ANDROID, brief)
         .unwrap();
     run.post(
         t0 + 60_000,
@@ -67,7 +71,7 @@ fn sample() -> (suite::Suite, Run) {
     run.review(
         t0 + 90_000,
         "annotations/001-draw",
-        Android,
+        ANDROID,
         Call::Uphold {
             title: Some("Undo leaves the stroke on screen when zoomed in".into()),
             cause: None,
@@ -77,7 +81,7 @@ fn sample() -> (suite::Suite, Run) {
     .unwrap();
 
     let t = run
-        .dispatch(t0 + 100_000, "annotations/002-back", Android, brief)
+        .dispatch(t0 + 100_000, "annotations/002-back", ANDROID, brief)
         .unwrap();
     let mut posted = judged(&[(Answer::Held, "The collection showed every time.")]);
     posted.side_finds.push(SideFind {
@@ -96,7 +100,7 @@ fn sample() -> (suite::Suite, Run) {
     .unwrap();
 
     let t = run
-        .dispatch(t0 + 200_000, "annotations/001-draw", Ios, brief)
+        .dispatch(t0 + 200_000, "annotations/001-draw", IOS, brief)
         .unwrap();
     run.post(
         t0 + 260_000,
@@ -160,8 +164,8 @@ fn the_page_shows_failures_findings_and_checks() {
         .iter()
         .map(|c| (c["platform"].as_str().unwrap(), c["text"].as_str().unwrap()))
         .collect();
-    assert!(cells.contains(&("Android", "Failed")));
-    assert!(cells.contains(&("iOS", "Checking")));
+    assert!(cells.contains(&("android", "Failed")));
+    assert!(cells.contains(&("ios", "Checking")));
     let android = &draw["bodies"][0];
     assert_eq!(
         android["failure"]["call"],
@@ -212,7 +216,7 @@ fn the_page_shows_failures_findings_and_checks() {
 
     assert_eq!(view["bar"]["kind"], "now");
     let doing = &view["bar"]["doing"][0];
-    assert_eq!(doing["platform"], "iOS");
+    assert_eq!(doing["platform"], "ios");
     assert_eq!(doing["spec"], "annotations/001-draw");
     assert!(doing["checking"]["since"].is_u64());
     assert!(
@@ -246,7 +250,7 @@ fn text_from_testers_is_data_that_cant_end_its_script() {
     let (suite, mut run) = sample();
     let sly = "</script><script>alert(1)</script><!-- \"x\" & 'y'";
     let t = run
-        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .dispatch(1, "annotations/001-draw", WEB, |_, _| String::new())
         .unwrap();
     run.post(
         2,
@@ -266,7 +270,7 @@ fn text_from_testers_is_data_that_cant_end_its_script() {
         .as_array()
         .unwrap()
         .iter()
-        .find(|b| b["platform"] == "Web")
+        .find(|b| b["platform"] == "web")
         .unwrap();
     assert_eq!(
         web["outcomes"][0]["observed"], sly,
@@ -299,7 +303,7 @@ fn an_export_embeds_its_screenshots() {
     std::fs::create_dir_all(dir.join("evidence")).unwrap();
     std::fs::write(dir.join("evidence/back.png"), [0x89, b'P', b'N', b'G']).unwrap();
     let t = run
-        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .dispatch(1, "annotations/001-draw", WEB, |_, _| String::new())
         .unwrap();
     let mut posted = judged(&[(Answer::Held, "fine"), (Answer::Held, "fine")]);
     posted.judgments[0].evidence.push("back.png".into());
@@ -350,7 +354,7 @@ fn a_bare_evidence_name_from_an_older_journal_shows_its_png() {
     std::fs::create_dir_all(dir.join("evidence")).unwrap();
     std::fs::write(dir.join("evidence/erased.png"), [0x89, b'P', b'N', b'G']).unwrap();
     let t = run
-        .dispatch(1, "annotations/001-draw", Web, |_, _| String::new())
+        .dispatch(1, "annotations/001-draw", WEB, |_, _| String::new())
         .unwrap();
     let mut posted = judged(&[(Answer::Held, "fine"), (Answer::Held, "fine")]);
     posted.judgments[0].evidence.push("erased".into());
@@ -371,7 +375,7 @@ fn a_failure_with_no_failed_outcome_still_shows_why_it_failed() {
     let (suite, mut run) = sample();
     // A BLOCKED the app caused is filed as a FAIL, though no outcome reads as failed.
     let t = run
-        .dispatch(300_000, "annotations/001-draw", Web, |_, _| String::new())
+        .dispatch(300_000, "annotations/001-draw", WEB, |_, _| String::new())
         .unwrap();
     run.post(
         310_000,
@@ -385,7 +389,7 @@ fn a_failure_with_no_failed_outcome_still_shows_why_it_failed() {
     run.review(
         320_000,
         "annotations/001-draw",
-        Web,
+        WEB,
         Call::Uphold {
             title: Some("The score never opens on web".into()),
             cause: Some(Cause::App),
@@ -397,7 +401,7 @@ fn a_failure_with_no_failed_outcome_still_shows_why_it_failed() {
     let bodies = view["checks"]["annotations/001-draw"]["bodies"]
         .as_array()
         .unwrap();
-    let web = bodies.iter().find(|b| b["platform"] == "Web").unwrap();
+    let web = bodies.iter().find(|b| b["platform"] == "web").unwrap();
     assert_eq!(web["failure"]["alone"], true, "{web}");
     assert_eq!(web["failure"]["call"], "The app crashed opening the score.");
     assert!(
@@ -408,7 +412,7 @@ fn a_failure_with_no_failed_outcome_still_shows_why_it_failed() {
             .all(|o| o["failure"] == false)
     );
 
-    let android = bodies.iter().find(|b| b["platform"] == "Android").unwrap();
+    let android = bodies.iter().find(|b| b["platform"] == "android").unwrap();
     assert_eq!(
         android["failure"]["alone"], false,
         "a failed outcome holds it"
@@ -427,7 +431,7 @@ fn an_unchanged_view_needs_no_patch() {
 fn a_row_that_changes_patches_only_its_own_key() {
     let (suite, mut run) = sample();
     let before = report::view::json(&page(&suite, &run, "x", true));
-    run.dispatch(3, "annotations/001-draw", Web, |_, _| String::new())
+    run.dispatch(3, "annotations/001-draw", WEB, |_, _| String::new())
         .unwrap();
     let after = report::view::json(&page(&suite, &run, "x", true));
     let patch = report::view::merge_patch(&before, &after).unwrap();
@@ -450,7 +454,7 @@ fn a_merge_patch_removes_what_went_and_keeps_what_stayed() {
 
 #[test]
 fn a_shot_is_named_under_its_attempts_prefix() {
-    let base = report::evidence_base("annotations/003-eraser", 1, Ios);
+    let base = report::evidence_base("annotations/003-eraser", 1, IOS);
     assert_eq!(base, "annotations-003-eraser-1-ios");
     for given in [
         "wide",

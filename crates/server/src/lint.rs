@@ -1,9 +1,9 @@
-use crate::suite::config::{Platform, Proxy, compatible, parse_viewport};
+use crate::suite::config::{DriverKind, Platform, SuiteConfig, compatible, parse_viewport};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
 use soundcheck_driver::proxy::Upstream;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
@@ -11,14 +11,6 @@ fn mechanics() -> impl Iterator<Item = &'static soundcheck_driver::Tool> {
     soundcheck_driver::TOOLS
         .iter()
         .filter(|t| t.kind == Kind::Mechanic)
-}
-
-fn driver_platform(platform: Platform) -> soundcheck_driver::Platform {
-    match platform {
-        Platform::Android => soundcheck_driver::Platform::Android,
-        Platform::Ios => soundcheck_driver::Platform::Ios,
-        Platform::Web => soundcheck_driver::Platform::Web,
-    }
 }
 
 pub const MODELS: &[&str] = &["haiku", "sonnet", "opus", "fable"];
@@ -62,133 +54,15 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
     if config.platforms.is_empty() {
         push(CONFIG_FILE.into(), "platforms: name at least one".into());
     }
-    for (platform, p) in &config.platforms {
-        let mut need = |field: &str, value: &Option<String>| {
-            if value.as_deref().is_none_or(str::is_empty) {
-                push(
-                    CONFIG_FILE.into(),
-                    format!("platforms.{platform}: needs {field}"),
-                );
-            }
-        };
-        match platform {
-            Platform::Web => {
-                need("base-url", &p.base_url);
-                need("start", &p.start);
-                if let Some(profile) = &p.profile
-                    && !(profile.starts_with('/') || profile.starts_with("~/"))
-                {
-                    push(
-                        CONFIG_FILE.into(),
-                        format!(
-                            "platforms.web.profile: {profile} must be absolute or start with ~/"
-                        ),
-                    );
-                }
-            }
-            _ => {
-                need("app-id", &p.app_id);
-                if p.profile.is_some() {
-                    push(
-                        CONFIG_FILE.into(),
-                        format!("platforms.{platform}.profile: only web has a Chrome profile"),
-                    );
-                }
-            }
-        }
+
+    for message in platform_problems(config) {
+        push(CONFIG_FILE.into(), message);
     }
-    if let Some(network) = &config.network {
-        let routes = network.proxy.all();
-        if routes.is_empty() {
-            push(
-                CONFIG_FILE.into(),
-                "network.proxy: list at least one route".into(),
-            );
-        }
-        // Every proxy listens on this machine, so no two routes share a port, whichever platform they're for.
-        let mut listens = BTreeSet::new();
-        // Device ports, and whether a route named one: two implicit ones are the listen ports, already reported.
-        let mut devices = std::collections::BTreeMap::new();
-        for (platform, route) in &routes {
-            let at = match platform {
-                Some(p) => format!("network.proxy.{p}.{}", route.name),
-                None => format!("network.proxy.{}", route.name),
-            };
-            if route.upstream == Upstream::Port(route.listen) {
-                push(
-                    CONFIG_FILE.into(),
-                    format!("{at}: listen and upstream must differ"),
-                );
-            }
-            if !listens.insert(route.listen) {
-                push(
-                    CONFIG_FILE.into(),
-                    format!("{at}: port {} listed twice", route.listen),
-                );
-            }
-            let explicit = route.device.is_some();
-            if let Some(earlier) = devices.insert((*platform, route.device_port()), explicit)
-                && (earlier || explicit)
-            {
-                push(
-                    CONFIG_FILE.into(),
-                    format!("{at}: device port {} listed twice", route.device_port()),
-                );
-            }
-            if route.device.is_some() && *platform != Some(Platform::Android) {
-                push(
-                    CONFIG_FILE.into(),
-                    format!(
-                        "{at}: device is for Android's routes, which forward ports from the device"
-                    ),
-                );
-            }
-        }
-        match &network.proxy {
-            Proxy::Shared(_) if config.parallel => push(
-                CONFIG_FILE.into(),
-                "network: one proxy serves every platform, so platforms can't run in parallel; give each its own"
-                    .into(),
-            ),
-            Proxy::PerPlatform(by) => {
-                for platform in config.platforms.keys().filter(|p| **p != Platform::Web) {
-                    if !by.contains_key(platform) {
-                        push(
-                            CONFIG_FILE.into(),
-                            format!("network.proxy: {platform} has no routes, so its app can't reach anything"),
-                        );
-                    }
-                }
-            }
-            Proxy::Shared(_) => {}
-        }
-    }
-    if !config.hooks.seed.contains("{scenario}") {
-        push(
-            CONFIG_FILE.into(),
-            "hooks.seed must contain {scenario}".into(),
-        );
-    }
-    match (&config.hooks.stack_up, &config.hooks.stack_down) {
-        (Some(up), Some(down)) => {
-            for (name, command) in [("stack-up", up), ("stack-down", down)] {
-                if !command.contains("{platform}") {
-                    push(
-                        CONFIG_FILE.into(),
-                        format!("hooks.{name} must contain {{platform}}"),
-                    );
-                }
-            }
-        }
-        (None, None) => {}
-        _ => push(
-            CONFIG_FILE.into(),
-            "hooks: stack-up and stack-down go together, so every stack started is removed".into(),
-        ),
-    }
+
     if config.seeds.is_empty() {
         push(CONFIG_FILE.into(), "seeds: list the seed scenarios".into());
     }
+
     if !MODELS.contains(&config.models.default.as_str()) {
         push(
             CONFIG_FILE.into(),
@@ -199,14 +73,7 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             ),
         );
     }
-    if let Some(prepare) = &config.prepare
-        && !suite.root.join(prepare).is_file()
-    {
-        push(
-            CONFIG_FILE.into(),
-            format!("prepare: no file {}", prepare.display()),
-        );
-    }
+
     if let Some(tickets) = &config.tickets
         && !tickets.url.contains("{id}")
     {
@@ -256,29 +123,35 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                     .into(),
             );
         }
+        // Unknown platforms are reported below; nothing else is asked of them.
+        let driver = |p: &Platform| config.platforms.get(p).map(|c| c.driver);
         for (platform, link) in &f.start {
             if !f.platforms.contains(platform) {
                 push(format!("start: {platform} isn't in platforms"));
-            } else if *platform != Platform::Web {
-                if !link.contains("://") {
+            } else if driver(platform) == Some(DriverKind::Chrome) {
+                if !link.starts_with('/') && !link.starts_with("http") {
                     push(format!(
-                        "start: {platform}'s link is a deep link such as myapp://screen, not {link:?}"
+                        "start: {platform}'s link is a URL or a path from the site's root, not {link:?}"
                     ));
                 }
-            } else if !link.starts_with('/') && !link.starts_with("http") {
+            } else if driver(platform).is_some() && !link.contains("://") {
                 push(format!(
-                    "start: web's link is a URL or a path from the site's root, not {link:?}"
+                    "start: {platform}'s link is a deep link such as myapp://screen, not {link:?}"
                 ));
             }
         }
-        let on_web = f.platforms.contains(&Platform::Web);
+
+        let on_chrome = f
+            .platforms
+            .iter()
+            .any(|p| driver(p) == Some(DriverKind::Chrome));
         match &f.viewport {
-            None if on_web => push(
-                "viewport: a spec that runs on web gives its page size, such as 1440x900".into(),
-            ),
             None => {}
-            Some(_) if !on_web => {
-                push("viewport: sizes web's page, so the spec must run on web".into());
+            Some(_) if !on_chrome => {
+                push(
+                    "viewport: sizes a chrome platform's window, so the spec must run on one"
+                        .into(),
+                );
             }
             Some(viewport) if parse_viewport(viewport).is_none() => {
                 push(format!(
@@ -287,26 +160,29 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             }
             Some(_) => {}
         }
+
         if f.platforms.is_empty() {
             push("platforms: name at least one".into());
         }
+
         let mut seen = BTreeSet::new();
         for platform in &f.platforms {
             if !seen.insert(platform) {
                 push(format!("platforms: {platform} listed twice"));
                 continue;
             }
-            if !config.platforms.contains_key(platform) {
-                push(format!(
-                    "platforms: {platform} isn't configured in suite.yaml"
-                ));
+
+            if let Err(unknown) = config.platform(platform.as_str()) {
+                push(format!("platforms: {unknown}"));
             }
         }
+
         if let Some(model) = &f.model
             && !MODELS.contains(&model.as_str())
         {
             push(format!("model: {model} isn't one of {}", MODELS.join(", ")));
         }
+
         for name in &f.tools {
             match soundcheck_driver::tool(name) {
                 None => push(format!(
@@ -318,19 +194,23 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 )),
                 Some(t) => {
                     for platform in &f.platforms {
-                        if !t.platforms.contains(&driver_platform(*platform)) {
-                            push(format!("tools: {name} doesn't run on {platform}"));
+                        if let Some(d) = driver(platform)
+                            && !t.platforms.contains(&d.driver())
+                        {
+                            push(format!("tools: {name} doesn't run on {platform} ({d})"));
                         }
                     }
+
                     let unrouted: Vec<String> = f
                         .platforms
                         .iter()
+                        .filter(|p| driver(p).is_some())
                         .filter(|p| crate::network::routes(config, **p).is_none())
                         .map(ToString::to_string)
                         .collect();
                     if NETWORK_TOOLS.contains(&name.as_str()) && !unrouted.is_empty() {
                         push(format!(
-                            "tools: {name} needs suite.yaml's network section to give {} routes (the proxy it goes through)",
+                            "tools: {name} needs suite.yaml to give {} proxy routes (the proxy it goes through)",
                             unrouted.join(", ")
                         ));
                     }
@@ -340,4 +220,179 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
     }
 
     problems
+}
+
+/// suite.yaml's platforms: what each block needs for its driver, its hooks and proxy routes, and what two blocks
+/// mustn't share. Every message starts with where in suite.yaml it is.
+fn platform_problems(config: &SuiteConfig) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut listens: BTreeMap<u16, String> = BTreeMap::new();
+    let mut devices: BTreeMap<(DriverKind, &str), Platform> = BTreeMap::new();
+    let mut drivers: BTreeMap<DriverKind, Platform> = BTreeMap::new();
+    for (&platform, p) in &config.platforms {
+        let at = format!("platforms.{platform}");
+        let mut need = |field: &str, value: &Option<String>| {
+            if value.as_deref().is_none_or(str::is_empty) {
+                problems.push(format!("{at}: needs {field} for the {} driver", p.driver));
+            }
+        };
+
+        match p.driver {
+            DriverKind::Chrome => {
+                need("url", &p.url);
+                need("viewport", &p.viewport);
+
+                if p.device != "desktop" {
+                    problems.push(format!(
+                        "{at}.device: a chrome platform runs on `desktop`, not {:?}",
+                        p.device
+                    ));
+                }
+
+                if p.app.is_some() {
+                    problems.push(format!(
+                        "{at}.app: a chrome platform opens its `url`; app is for ios and android"
+                    ));
+                }
+            }
+            DriverKind::Android | DriverKind::Ios => need("app", &p.app),
+        }
+
+        if let Some(viewport) = &p.viewport {
+            if p.driver != DriverKind::Chrome {
+                problems.push(format!(
+                    "{at}.viewport: only a chrome platform has a window size"
+                ));
+            } else if parse_viewport(viewport).is_none() {
+                problems.push(format!(
+                    "{at}.viewport: {viewport} isn't WIDTHxHEIGHT, such as 1440x900"
+                ));
+            }
+        }
+
+        for (field, value) in [("url", &p.url), ("chrome-profile", &p.chrome_profile)] {
+            if value.is_some() && p.driver != DriverKind::Chrome {
+                problems.push(format!("{at}.{field}: only a chrome platform has one"));
+            }
+        }
+
+        if let Some(profile) = &p.chrome_profile
+            && !(profile.starts_with('/') || profile.starts_with("~/"))
+        {
+            problems.push(format!(
+                "{at}.chrome-profile: {profile} must be absolute or start with ~/"
+            ));
+        }
+
+        if p.device.trim().is_empty() {
+            problems.push(format!("{at}.device: name the device it runs on"));
+        } else if let Some(other) = devices.insert((p.driver, p.device.as_str()), platform) {
+            problems.push(format!(
+                "{at}.device: {other} runs on {} too; give each platform its own",
+                p.device
+            ));
+        }
+
+        if let Some(other) = drivers.insert(p.driver, platform) {
+            problems.push(format!(
+                "{at}: {other} uses the {} driver too; two platforms on one driver need a device each, which lands with per-platform readers (SA-880)",
+                p.driver
+            ));
+        }
+
+        if !p.hooks.seed.contains("{scenario}") {
+            problems.push(format!("{at}.hooks.seed must contain {{scenario}}"));
+        }
+
+        if p.hooks.stack_up.is_some() != p.hooks.stack_down.is_some() {
+            problems.push(format!(
+                "{at}.hooks: stack-up and stack-down go together, so every stack started is removed"
+            ));
+        }
+
+        // Every proxy listens on this machine, so no two routes share a port, whichever platform they're for.
+        // Device ports, and whether a route named one: two implicit ones are listen ports, already reported.
+        let mut device_ports: BTreeMap<u16, bool> = BTreeMap::new();
+        for route in &p.proxy {
+            let at = format!("{at}.proxy.{}", route.name);
+
+            if route.upstream == Upstream::Port(route.listen) {
+                problems.push(format!("{at}: listen and upstream must differ"));
+            }
+
+            if let Some(other) = listens.insert(route.listen, at.clone()) {
+                problems.push(format!("{at}: port {} is {other}'s too", route.listen));
+            }
+
+            if route.device.is_some() && p.driver != DriverKind::Android {
+                problems.push(format!(
+                    "{at}: device is for Android's routes, which forward ports from the device"
+                ));
+            }
+
+            let explicit = route.device.is_some();
+
+            if let Some(earlier) = device_ports.insert(route.device_port(), explicit)
+                && (earlier || explicit)
+            {
+                problems.push(format!(
+                    "{at}: device port {} listed twice",
+                    route.device_port()
+                ));
+            }
+        }
+    }
+
+    problems.extend(names_of_others(config));
+    problems
+}
+
+/// Each block is written out in full, so a new one usually starts as a copy of another: a hook, `device` or `url`
+/// that still names the platform it was copied from is the likely leftover.
+fn names_of_others(config: &SuiteConfig) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (&platform, p) in &config.platforms {
+        let hooks = &p.hooks;
+        let fields = [
+            ("hooks.guard", Some(&hooks.guard)),
+            ("hooks.seed", Some(&hooks.seed)),
+            ("hooks.build-identity", Some(&hooks.build_identity)),
+            ("hooks.install", Some(&hooks.install)),
+            ("hooks.check", Some(&hooks.check)),
+            ("hooks.serve", hooks.serve.as_ref()),
+            ("hooks.act", hooks.act.as_ref()),
+            ("hooks.stack-up", hooks.stack_up.as_ref()),
+            ("hooks.stack-down", hooks.stack_down.as_ref()),
+            ("device", Some(&p.device)),
+            ("url", p.url.as_ref()),
+        ];
+        for (field, text) in fields {
+            let Some(text) = text else {
+                continue;
+            };
+
+            let named = words(text);
+            for other in config.platforms.keys().filter(|o| **o != platform) {
+                if named.contains(other.as_str()) {
+                    problems.push(format!(
+                        "platforms.{platform}.{field} names {other}, another platform: copied from its block?"
+                    ));
+                }
+            }
+        }
+    }
+
+    problems
+}
+
+/// The whole words in `text` a platform name could be, lowercased: runs of letters, digits and hyphens, without a
+/// flag's leading hyphens. `--platform ios-tablet` holds `platform` and `ios-tablet` but not `ios`, and
+/// `--skip-web-build` holds only `skip-web-build`; `hooks/web.mjs` and `iPad Pro` hold `web` and `ipad`.
+fn words(text: &str) -> BTreeSet<String> {
+    text.to_ascii_lowercase()
+        .split(|c: char| !(c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+        .map(|word| word.trim_matches('-'))
+        .filter(|word| !word.is_empty())
+        .map(str::to_string)
+        .collect()
 }

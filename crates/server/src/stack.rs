@@ -135,23 +135,15 @@ pub struct Stack {
 
 /// Starts `platform`'s blank stack, or nothing when the suite has no stack hooks.
 pub async fn up(root: &Path, config: &SuiteConfig, platform: Platform) -> Result<Option<Stack>> {
-    let (Some(up), Some(down)) = (&config.hooks.stack_up, &config.hooks.stack_down) else {
+    let hooks = &config.of(&platform).hooks;
+    let (Some(up), Some(down)) = (&hooks.stack_up, &hooks.stack_down) else {
         return Ok(None);
     };
-    let fill =
-        |command: &str| hooks::fill(command, "", &platform.to_string(), config.account(platform));
-    start(
-        root,
-        &records_dir(root, config),
-        platform,
-        &fill(up),
-        &fill(down),
-    )
-    .await
-    .map(Some)
+    start(root, &records_dir(root, config), platform, up, down)
+        .await
+        .map(Some)
 }
 
-/// `up` and `down` come filled in.
 async fn start(root: &Path, dir: &Path, platform: Platform, up: &str, down: &str) -> Result<Stack> {
     std::fs::create_dir_all(dir)?;
     let pid = std::process::id();
@@ -227,6 +219,10 @@ impl Drop for Stack {
 mod tests {
     use super::*;
 
+    fn p(name: &str) -> Platform {
+        name.parse().unwrap()
+    }
+
     fn scratch(name: &str) -> PathBuf {
         let dir =
             std::env::temp_dir().join(format!("soundcheck-stack-{name}-{}", std::process::id()));
@@ -239,7 +235,7 @@ mod tests {
         let path = dir.join("records/ios.json");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         let record = Record {
-            platform: Platform::Ios,
+            platform: p("ios"),
             pid: std::process::id(),
             started,
             suite: dir.to_path_buf(),
@@ -253,7 +249,7 @@ mod tests {
     async fn a_stack_is_removed_when_dropped_and_its_record_with_it() {
         let dir = scratch("drop");
         let records = dir.join("records");
-        let stack = start(&dir, &records, Platform::Ios, "true", "touch down-ran")
+        let stack = start(&dir, &records, p("ios"), "true", "touch down-ran")
             .await
             .unwrap();
         assert!(records.join("ios.json").exists());
@@ -269,7 +265,7 @@ mod tests {
         let error = start(
             &dir,
             &records,
-            Platform::Android,
+            p("android"),
             "echo port taken >&2; false",
             "touch down-ran",
         )
@@ -286,7 +282,7 @@ mod tests {
     async fn a_new_servers_record_survives_the_old_one_stepping_down() {
         let dir = scratch("handover");
         let records = dir.join("records");
-        let old = start(&dir, &records, Platform::Ios, "true", "true")
+        let old = start(&dir, &records, p("ios"), "true", "true")
             .await
             .unwrap();
         let newer = record(&dir, "a later server".into());
@@ -320,7 +316,7 @@ mod tests {
     async fn a_new_run_leaves_a_running_servers_other_platforms() {
         let dir = scratch("other");
         let path = record(&dir, started_at(std::process::id()).unwrap());
-        let starting = Live::Wait(vec![Platform::Android]);
+        let starting = Live::Wait(vec![p("android")]);
         assert!(
             reap(&dir.join("records"), starting)
                 .await

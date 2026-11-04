@@ -10,10 +10,8 @@ use std::time::Duration;
 /// The routes `platform`'s app goes through, or none when it has no proxy.
 pub fn routes(config: &SuiteConfig, platform: Platform) -> Option<Vec<Route>> {
     let routes: Vec<Route> = config
-        .network
-        .as_ref()?
+        .of(&platform)
         .proxy
-        .routes(platform)
         .iter()
         .map(|r| Route {
             name: r.name.clone(),
@@ -26,13 +24,12 @@ pub fn routes(config: &SuiteConfig, platform: Platform) -> Option<Vec<Route>> {
 
 /// Android's forwards for `platform`'s routes, as (device port, port on this machine).
 pub fn forwards(config: &SuiteConfig, platform: Platform) -> Vec<(u16, u16)> {
-    config.network.as_ref().map_or_else(Vec::new, |n| {
-        n.proxy
-            .routes(platform)
-            .iter()
-            .map(|r| (r.device_port(), r.listen))
-            .collect()
-    })
+    config
+        .of(&platform)
+        .proxy
+        .iter()
+        .map(|r| (r.device_port(), r.listen))
+        .collect()
 }
 
 /// A proxy started before this soundcheck was built, or too old to say when it started.

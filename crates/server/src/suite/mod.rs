@@ -65,11 +65,13 @@ pub fn load(root: &Path) -> Suite {
         problems: Vec::new(),
     };
     match fs::read_to_string(root.join(CONFIG_FILE)) {
-        Ok(text) => match serde_yaml_ng::from_str(&text) {
+        Ok(text) => match SuiteConfig::parse(&text) {
             Ok(config) => suite.config = Some(config),
-            Err(e) => suite
-                .problems
-                .push(Problem::new(CONFIG_FILE, e.to_string())),
+            Err(errors) => suite.problems.extend(
+                errors
+                    .into_iter()
+                    .map(|message| Problem::new(CONFIG_FILE, message)),
+            ),
         },
         Err(e) => suite
             .problems

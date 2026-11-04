@@ -1,18 +1,31 @@
 # A made-up shopping list app's suite, for the README's screenshots (`cargo run --example demo`).
-soundcheck: "0.2"
+soundcheck: "0.3"
 platforms:
   android:
-    app-id: com.example.larder
+    driver: android
+    device: Pixel_Tablet_API_35
+    app: com.example.larder
+    hooks:
+      guard: "true"
+      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+      build-identity: "true"
+      install: "true"
+      check: "true"
+    proxy:
+      - { name: api, listen: 23000, upstream: 3000 }
   ios:
-    app-id: com.example.larder
-hooks:
-  guard: "true"
-  seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
-  build-identity: "true"
+    driver: ios
+    device: iPad Pro 13-inch (M5)
+    app: com.example.larder
+    hooks:
+      guard: "true"
+      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
+      build-identity: "true"
+      install: "true"
+      check: "true"
+    proxy:
+      - { name: api, listen: 24000, upstream: 3000 }
 seeds: [empty, kitchen, shared]
 reports: ../reports
 tickets:
   url: https://example.atlassian.net/browse/{id}
-network:
-  proxy:
-    - { name: api, listen: 23000, upstream: 3000 }

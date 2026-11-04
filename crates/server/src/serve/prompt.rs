@@ -42,12 +42,7 @@ pub fn render(
             spec.front.seed
         );
     }
-    if let Some(viewport) = spec
-        .front
-        .viewport
-        .as_deref()
-        .filter(|_| platform == Platform::Web)
-    {
+    if let Some(viewport) = spec.front.viewport.as_deref() {
         let _ = writeln!(
             out,
             "The page is {viewport} for this spec, so its layout may differ from other specs'.\n"

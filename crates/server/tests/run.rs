@@ -2,10 +2,14 @@ use soundcheck::run::event::{RowRef, Spent};
 use soundcheck::run::model::*;
 use soundcheck::run::usage;
 use soundcheck::run::{MAX_ATTEMPTS, PREPARE, Plan, PlannedSpec, Row, Run};
-use soundcheck::suite::config::Platform::{self, Android, Ios};
+use soundcheck::suite::config::Platform;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+const WEB: Platform = Platform::literal("web");
 
 const DRAW: &str = "annotations/001-draw";
 const BACK: &str = "annotations/002-back";
@@ -33,16 +37,16 @@ fn plan(parallel: bool) -> Plan {
         specs: vec![
             PlannedSpec {
                 id: DRAW.into(),
-                platforms: vec![Android, Ios],
+                platforms: vec![ANDROID, IOS],
                 outcomes: on(
-                    &[Android, Ios],
+                    &[ANDROID, IOS],
                     &["Undo removes the stroke", "Redo restores it"],
                 ),
             },
             PlannedSpec {
                 id: BACK.into(),
-                platforms: vec![Android],
-                outcomes: on(&[Android], &["The collection shows"]),
+                platforms: vec![ANDROID],
+                outcomes: on(&[ANDROID], &["The collection shows"]),
             },
         ],
         parallel,
@@ -97,7 +101,7 @@ fn result(run: &Run, spec: &str, platform: Platform) -> Option<Final> {
 fn a_tester_gets_its_brief_only_while_its_spec_runs() {
     let (mut run, _) = open("brief");
     let token = run
-        .dispatch(1, DRAW, Android, |t, _| format!("brief for {t}"))
+        .dispatch(1, DRAW, ANDROID, |t, _| format!("brief for {t}"))
         .unwrap();
     assert_eq!(run.brief(&token).unwrap(), format!("brief for {token}"));
     run.post(2, &token, judged(&[Answer::Held, Answer::Held]))
@@ -114,7 +118,7 @@ fn a_tester_gets_its_brief_only_while_its_spec_runs() {
 #[test]
 fn a_dispatch_records_how_long_its_reset_took() {
     let (mut run, path) = open("reset-time");
-    run.dispatch_after_reset(9_000, DRAW, Android, Some(6_400), brief)
+    run.dispatch_after_reset(9_000, DRAW, ANDROID, Some(6_400), brief)
         .unwrap();
     let line = soundcheck::serve::events::summary(run.entries_after(0).last().unwrap());
     assert!(line.ends_with("(attempt 1, after a 6.4 s reset)"), "{line}");
@@ -125,25 +129,25 @@ fn a_dispatch_records_how_long_its_reset_took() {
 #[test]
 fn a_pass_files_at_once() {
     let (mut run, _) = open("pass");
-    let token = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let token = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     let claim = run
         .post(2, &token, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
     assert_eq!(claim, Claim::Pass);
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
 }
 
 #[test]
 fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
     let (mut run, _) = open("fail");
-    let token = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let token = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     assert_eq!(
         run.post(2, &token, judged(&[Answer::Failed, Answer::Held]))
             .unwrap(),
         Claim::Fail
     );
     assert!(matches!(
-        run.row(DRAW, Android).unwrap().row,
+        run.row(DRAW, ANDROID).unwrap().row,
         Row::NeedsReview { since: 2, .. }
     ));
 
@@ -151,7 +155,7 @@ fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
         .review(
             3,
             DRAW,
-            Android,
+            ANDROID,
             Call::Uphold {
                 title: None,
                 cause: None,
@@ -160,11 +164,11 @@ fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
         )
         .unwrap_err();
     assert!(err.to_string().contains("give it a title"));
-    assert!(run.review(3, DRAW, Android, bug(), "").is_err());
+    assert!(run.review(3, DRAW, ANDROID, bug(), "").is_err());
 
-    run.review(3, DRAW, Android, bug(), "screenshot shows the stroke")
+    run.review(3, DRAW, ANDROID, bug(), "screenshot shows the stroke")
         .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Fail));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Fail));
     let problem = &run.state().problems[0];
     assert_eq!(problem.kind, ProblemKind::Failure);
     assert_eq!(problem.title, "Undo leaves the stroke on screen");
@@ -175,10 +179,10 @@ fn a_fail_waits_for_review_and_an_upheld_one_becomes_an_open_problem() {
 #[test]
 fn review_never_blocks_the_next_dispatch_but_blocks_finishing() {
     let (mut run, _) = open("finish");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    let next = run.dispatch(3, BACK, Android, brief).unwrap();
+    let next = run.dispatch(3, BACK, ANDROID, brief).unwrap();
     run.post(4, &next, judged(&[Answer::Held])).unwrap();
 
     let err = run.finish(5).unwrap_err().to_string();
@@ -187,11 +191,11 @@ fn review_never_blocks_the_next_dispatch_but_blocks_finishing() {
         "{err}"
     );
 
-    run.review(6, DRAW, Android, bug(), "real").unwrap();
+    run.review(6, DRAW, ANDROID, bug(), "real").unwrap();
     let counts = run.finish(7).unwrap();
     assert_eq!((counts.pass, counts.fail, counts.not_run), (1, 1, 1));
     assert!(
-        run.dispatch(8, DRAW, Ios, brief)
+        run.dispatch(8, DRAW, IOS, brief)
             .unwrap_err()
             .to_string()
             .contains("finished")
@@ -201,13 +205,13 @@ fn review_never_blocks_the_next_dispatch_but_blocks_finishing() {
 #[test]
 fn a_verification_that_passes_files_a_not_reproduced_finding() {
     let (mut run, _) = open("verify");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
     run.review(
         3,
         DRAW,
-        Android,
+        ANDROID,
         Call::Verify {
             claim: "the stroke survived undo".into(),
         },
@@ -215,17 +219,17 @@ fn a_verification_that_passes_files_a_not_reproduced_finding() {
     )
     .unwrap();
     assert_eq!(
-        run.row(DRAW, Android).unwrap().row,
+        run.row(DRAW, ANDROID).unwrap().row,
         Row::Queued {
             verify: Some("the stroke survived undo".into())
         }
     );
 
-    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let t2 = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
     assert_eq!(t2, "annotations/001-draw#2@android");
     run.post(5, &t2, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
     let problem = &run.state().problems[0];
     assert_eq!(problem.source, ProblemSource::NotReproduced);
     assert_eq!(problem.kind, ProblemKind::Finding);
@@ -238,23 +242,23 @@ fn a_verification_that_passes_files_a_not_reproduced_finding() {
 #[test]
 fn a_verified_unsure_that_passes_files_only_a_pass() {
     let (mut run, _) = open("verify-unsure");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Held, Answer::Unsure]))
         .unwrap();
     run.review(
         3,
         DRAW,
-        Android,
+        ANDROID,
         Call::Verify {
             claim: "redo may not restore the stroke's colour".into(),
         },
         "can't tell from the tree",
     )
     .unwrap();
-    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let t2 = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
     run.post(5, &t2, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
     assert!(
         run.state().problems.is_empty(),
         "an Unsure isn't a claim of a bug"
@@ -264,18 +268,18 @@ fn a_verified_unsure_that_passes_files_only_a_pass() {
 #[test]
 fn a_harness_call_files_any_claim_blocked_with_a_note() {
     let (mut run, _) = open("harness");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Held, Answer::Unsure]))
         .unwrap();
     run.review(
         3,
         DRAW,
-        Android,
+        ANDROID,
         Call::Harness { rerun: None },
         "no software keyboard",
     )
     .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Blocked));
     assert!(run.state().problems.is_empty());
     assert!(
         run.state().notes[0]
@@ -287,56 +291,56 @@ fn a_harness_call_files_any_claim_blocked_with_a_note() {
 #[test]
 fn a_harness_rerun_tells_the_next_attempt_and_files_nothing_when_it_passes() {
     let (mut run, _) = open("harness-rerun");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::CouldntCheck, Answer::Held]))
         .unwrap();
     let call = Call::Harness {
         rerun: Some("Tap the page with at:516,700.".into()),
     };
-    run.review(3, DRAW, Android, call, "double-tap took no point")
+    run.review(3, DRAW, ANDROID, call, "double-tap took no point")
         .unwrap();
     assert_eq!(
-        run.row(DRAW, Android).unwrap().rerun_note.as_deref(),
+        run.row(DRAW, ANDROID).unwrap().rerun_note.as_deref(),
         Some("Tap the page with at:516,700.")
     );
-    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
-    assert_eq!(run.row(DRAW, Android).unwrap().rerun_note, None);
+    let t2 = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
+    assert_eq!(run.row(DRAW, ANDROID).unwrap().rerun_note, None);
     run.post(5, &t2, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
     assert!(run.state().problems.is_empty());
 }
 
 #[test]
 fn a_reproduced_verification_is_upheld_as_verified() {
     let (mut run, _) = open("verified");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.review(3, DRAW, Android, Call::Verify { claim: "c".into() }, "r")
+    run.review(3, DRAW, ANDROID, Call::Verify { claim: "c".into() }, "r")
         .unwrap();
-    let t2 = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let t2 = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
     run.post(5, &t2, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.review(6, DRAW, Android, bug(), "reproduced").unwrap();
+    run.review(6, DRAW, ANDROID, bug(), "reproduced").unwrap();
     assert!(run.state().problems[0].verified);
 }
 
 #[test]
 fn an_unsure_must_be_judged_verified_or_marked_unclear() {
     let (mut run, _) = open("unsure");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     assert_eq!(
         run.post(2, &t, judged(&[Answer::Unsure, Answer::Held]))
             .unwrap(),
         Claim::Unsure
     );
-    assert!(run.review(3, DRAW, Android, bug(), "r").is_err());
+    assert!(run.review(3, DRAW, ANDROID, bug(), "r").is_err());
     assert!(
         run.review(
             3,
             DRAW,
-            Android,
+            ANDROID,
             Call::Judge {
                 result: Final::Fail,
                 title: None
@@ -348,7 +352,7 @@ fn an_unsure_must_be_judged_verified_or_marked_unclear() {
     run.review(
         3,
         DRAW,
-        Android,
+        ANDROID,
         Call::Judge {
             result: Final::Pass,
             title: None,
@@ -356,39 +360,39 @@ fn an_unsure_must_be_judged_verified_or_marked_unclear() {
         "screenshot is fine",
     )
     .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
     assert!(run.state().problems.is_empty());
 
-    let t = run.dispatch(4, DRAW, Ios, brief).unwrap();
+    let t = run.dispatch(4, DRAW, IOS, brief).unwrap();
     run.post(5, &t, judged(&[Answer::Unsure, Answer::Held]))
         .unwrap();
     run.review(
         6,
         DRAW,
-        Ios,
+        IOS,
         Call::SpecUnclear,
         "can't tell what level means",
     )
     .unwrap();
-    assert_eq!(result(&run, DRAW, Ios), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, IOS), Some(Final::Blocked));
     assert!(run.state().unclear_specs.contains(DRAW));
 }
 
 #[test]
 fn judge_and_unclear_are_only_for_an_unsure() {
     let (mut run, _) = open("judge-only-unsure");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
     assert!(
-        run.review(3, DRAW, Android, Call::SpecUnclear, "r")
+        run.review(3, DRAW, ANDROID, Call::SpecUnclear, "r")
             .is_err()
     );
     assert!(
         run.review(
             3,
             DRAW,
-            Android,
+            ANDROID,
             Call::Judge {
                 result: Final::Pass,
                 title: None
@@ -402,7 +406,7 @@ fn judge_and_unclear_are_only_for_an_unsure() {
 #[test]
 fn a_blocked_the_harness_caused_is_a_note_not_a_problem() {
     let (mut run, _) = open("blocked");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     assert_eq!(
         run.post(2, &t, judged(&[Answer::CouldntCheck, Answer::Held]))
             .unwrap(),
@@ -411,7 +415,7 @@ fn a_blocked_the_harness_caused_is_a_note_not_a_problem() {
     run.review(
         3,
         DRAW,
-        Android,
+        ANDROID,
         Call::Uphold {
             title: None,
             cause: Some(Cause::Harness),
@@ -419,7 +423,7 @@ fn a_blocked_the_harness_caused_is_a_note_not_a_problem() {
         "no label on the undo button",
     )
     .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Blocked));
     assert!(run.state().problems.is_empty());
     assert_eq!(
         run.state().notes[0].text,
@@ -432,7 +436,7 @@ fn three_attempts_at_most() {
     let (mut run, _) = open("attempts");
     for attempt in 1..=MAX_ATTEMPTS {
         let t = run
-            .dispatch(attempt as u64 * 10, DRAW, Android, brief)
+            .dispatch(attempt as u64 * 10, DRAW, ANDROID, brief)
             .unwrap();
         run.post(
             attempt as u64 * 10 + 1,
@@ -444,7 +448,7 @@ fn three_attempts_at_most() {
             run.review(
                 attempt as u64 * 10 + 2,
                 DRAW,
-                Android,
+                ANDROID,
                 Call::SendBack,
                 "misread",
             )
@@ -452,19 +456,19 @@ fn three_attempts_at_most() {
         }
     }
     let err = run
-        .review(40, DRAW, Android, Call::SendBack, "again")
+        .review(40, DRAW, ANDROID, Call::SendBack, "again")
         .unwrap_err()
         .to_string();
     assert!(err.contains("all 3 attempts"), "{err}");
-    run.review(41, DRAW, Android, bug(), "seen 3 times")
+    run.review(41, DRAW, ANDROID, bug(), "seen 3 times")
         .unwrap();
-    assert_eq!(run.row(DRAW, Android).unwrap().sightings, 3);
+    assert_eq!(run.row(DRAW, ANDROID).unwrap().sightings, 3);
 }
 
 #[test]
 fn only_silence_between_calls_counts_as_a_stall() {
     let (mut run, _) = open("stall");
-    let t = run.dispatch(0, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(0, DRAW, ANDROID, brief).unwrap();
     run.call_started(10_000, &t, "see");
     assert!(
         run.stalled(500_000, 120_000, 600_000).is_empty(),
@@ -476,7 +480,7 @@ fn only_silence_between_calls_counts_as_a_stall() {
 
     run.stall(620_000, &t, "no tool call for 2 min").unwrap();
     assert_eq!(
-        run.row(DRAW, Android).unwrap().row,
+        run.row(DRAW, ANDROID).unwrap().row,
         Row::Queued { verify: None }
     );
     assert!(
@@ -489,7 +493,7 @@ fn only_silence_between_calls_counts_as_a_stall() {
 #[test]
 fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
     let (mut run, _) = open("slow-start");
-    let t = run.dispatch(0, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(0, DRAW, ANDROID, brief).unwrap();
     assert!(
         run.stalled(300_000, 120_000, 600_000).is_empty(),
         "a slow first call isn't a stall"
@@ -503,7 +507,7 @@ fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
 
     run.post(422_000, &t, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
-    let silent = run.dispatch(500_000, BACK, Android, brief).unwrap();
+    let silent = run.dispatch(500_000, BACK, ANDROID, brief).unwrap();
     assert!(run.stalled(1_099_000, 120_000, 600_000).is_empty());
     assert_eq!(run.stalled(1_100_000, 120_000, 600_000), vec![silent]);
 }
@@ -511,7 +515,7 @@ fn a_tester_that_starts_slowly_gets_the_longer_start_limit() {
 #[test]
 fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     let (mut run, _) = open("usage");
-    let posted = run.dispatch(0, DRAW, Android, brief).unwrap();
+    let posted = run.dispatch(0, DRAW, ANDROID, brief).unwrap();
     run.call_started(5_000, &posted, "brief");
     run.call_finished(5_000, &posted, "brief");
     for at in [6_000, 8_000] {
@@ -523,12 +527,12 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
     run.post(65_000, &posted, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
 
-    let stalled = run.dispatch(70_000, BACK, Android, brief).unwrap();
+    let stalled = run.dispatch(70_000, BACK, ANDROID, brief).unwrap();
     run.call_started(80_000, &stalled, "brief");
     run.call_finished(80_000, &stalled, "brief");
     run.stall(300_000, &stalled, "quiet").unwrap();
 
-    let silent = run.dispatch(310_000, BACK, Android, brief).unwrap();
+    let silent = run.dispatch(310_000, BACK, ANDROID, brief).unwrap();
     run.stall(1_000_000, &silent, "never started").unwrap();
 
     let spent = Spent {
@@ -567,24 +571,24 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
 fn stalling_on_the_last_attempt_files_blocked() {
     let (mut run, _) = open("stall-last");
     for attempt in 1..=MAX_ATTEMPTS {
-        let t = run.dispatch(attempt as u64, DRAW, Android, brief).unwrap();
+        let t = run.dispatch(attempt as u64, DRAW, ANDROID, brief).unwrap();
         run.stall(attempt as u64, &t, "silent").unwrap();
     }
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Blocked));
 }
 
 #[test]
 fn one_spec_runs_at_a_time_unless_parallel() {
     let (mut run, _) = open("serial");
-    run.dispatch(1, DRAW, Android, brief).unwrap();
-    let err = run.dispatch(2, DRAW, Ios, brief).unwrap_err().to_string();
+    run.dispatch(1, DRAW, ANDROID, brief).unwrap();
+    let err = run.dispatch(2, DRAW, IOS, brief).unwrap_err().to_string();
     assert!(err.contains("still running on android"), "{err}");
 
     let mut parallel = Run::open(plan(true), &journal("parallel"), 0).unwrap();
-    parallel.dispatch(1, DRAW, Android, brief).unwrap();
-    parallel.dispatch(2, DRAW, Ios, brief).unwrap();
+    parallel.dispatch(1, DRAW, ANDROID, brief).unwrap();
+    parallel.dispatch(2, DRAW, IOS, brief).unwrap();
     assert!(
-        parallel.dispatch(3, BACK, Android, brief).is_err(),
+        parallel.dispatch(3, BACK, ANDROID, brief).is_err(),
         "still one per platform"
     );
 }
@@ -592,7 +596,7 @@ fn one_spec_runs_at_a_time_unless_parallel() {
 #[test]
 fn a_result_must_judge_every_outcome_with_an_observation() {
     let (mut run, _) = open("validate");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     let err = run
         .post(2, &t, judged(&[Answer::Held]))
         .unwrap_err()
@@ -620,7 +624,7 @@ fn a_result_must_judge_every_outcome_with_an_observation() {
             .contains("what you observed")
     );
     assert!(matches!(
-        run.row(DRAW, Android).unwrap().row,
+        run.row(DRAW, ANDROID).unwrap().row,
         Row::Running { .. }
     ));
 }
@@ -628,7 +632,7 @@ fn a_result_must_judge_every_outcome_with_an_observation() {
 #[test]
 fn a_side_find_is_reviewed_on_its_own() {
     let (mut run, _) = open("side-find");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     let mut posted = judged(&[Answer::Held, Answer::Held]);
     posted.side_finds.push(SideFind {
         summary: "Eraser width resets".into(),
@@ -637,7 +641,7 @@ fn a_side_find_is_reviewed_on_its_own() {
     });
     run.post(2, &t, posted).unwrap();
     assert_eq!(
-        result(&run, DRAW, Android),
+        result(&run, DRAW, ANDROID),
         Some(Final::Pass),
         "the row keeps its own result"
     );
@@ -687,12 +691,12 @@ fn a_reset_failure_is_blocked_without_using_an_attempt() {
     run.reset_failed(
         1,
         DRAW,
-        Android,
+        ANDROID,
         "the home screen's \"Library\" wasn't on screen",
     )
     .unwrap();
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
-    assert_eq!(run.row(DRAW, Android).unwrap().attempts, 0);
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Blocked));
+    assert_eq!(run.row(DRAW, ANDROID).unwrap().attempts, 0);
     assert_eq!(
         run.state().notes[0].text,
         "reset failed: the home screen's \"Library\" wasn't on screen"
@@ -725,13 +729,13 @@ fn pause_stops_dispatch_until_resumed() {
     let (mut run, _) = open("pause");
     run.pause(1, "Aled: fix the undo bug first").unwrap();
     assert!(
-        run.dispatch(2, DRAW, Android, brief)
+        run.dispatch(2, DRAW, ANDROID, brief)
             .unwrap_err()
             .to_string()
             .contains("paused")
     );
     run.resume(3).unwrap();
-    run.dispatch(4, DRAW, Android, brief).unwrap();
+    run.dispatch(4, DRAW, ANDROID, brief).unwrap();
 }
 
 #[test]
@@ -739,14 +743,14 @@ fn a_platform_added_on_resume_reopens_a_finished_run() {
     let android_only = || {
         let mut p = plan(false);
         for spec in &mut p.specs {
-            spec.platforms.retain(|p| *p == Android);
+            spec.platforms.retain(|p| *p == ANDROID);
         }
         p
     };
     let path = journal("add-platform");
     let mut run = Run::open(android_only(), &path, 0).unwrap();
     for (at, spec) in [(1, DRAW), (3, BACK)] {
-        let t = run.dispatch(at, spec, Android, brief).unwrap();
+        let t = run.dispatch(at, spec, ANDROID, brief).unwrap();
         let held = vec![
             Answer::Held;
             run.plan()
@@ -765,16 +769,16 @@ fn a_platform_added_on_resume_reopens_a_finished_run() {
     let mut run = Run::open(plan(false), &path, 0).unwrap();
     assert!(run.state().finished);
     assert!(
-        run.add_platforms(6, vec![Platform::Web])
+        run.add_platforms(6, vec![WEB])
             .unwrap_err()
             .to_string()
             .contains("no spec in the run's scope runs on web")
     );
-    run.add_platforms(6, vec![Ios]).unwrap();
+    run.add_platforms(6, vec![IOS]).unwrap();
     assert!(!run.state().finished, "its new rows haven't run");
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
-    assert_eq!(run.row(DRAW, Ios).unwrap().row, Row::NotRun);
-    let t = run.dispatch(7, DRAW, Ios, brief).unwrap();
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
+    assert_eq!(run.row(DRAW, IOS).unwrap().row, Row::NotRun);
+    let t = run.dispatch(7, DRAW, IOS, brief).unwrap();
     run.post(8, &t, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
     drop(run);
@@ -794,7 +798,7 @@ fn specs_added_keep_the_old_rows_and_reopen_a_finished_run() {
     };
     let path = journal("add-specs");
     let mut run = Run::open(draw_only(), &path, 0).unwrap();
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
     run.finish(3).unwrap();
@@ -811,10 +815,10 @@ fn specs_added_keep_the_old_rows_and_reopen_a_finished_run() {
             .contains("already in the run")
     );
     let added = run.add_specs(4, vec![back]).unwrap();
-    assert_eq!(added, vec![(BACK.to_string(), Android)]);
+    assert_eq!(added, vec![(BACK.to_string(), ANDROID)]);
     assert!(!run.state().finished, "its new rows haven't run");
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
-    assert_eq!(run.row(BACK, Android).unwrap().row, Row::NotRun);
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
+    assert_eq!(run.row(BACK, ANDROID).unwrap().row, Row::NotRun);
     drop(run);
 
     let lines = std::fs::read_to_string(&path).unwrap();
@@ -822,8 +826,8 @@ fn specs_added_keep_the_old_rows_and_reopen_a_finished_run() {
     // On resume the plan comes from the widened scope, so it already has the rows.
     let mut run = Run::open(plan(false), &path, 0).unwrap();
     assert!(!run.state().finished, "the reopening replays");
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
-    let t = run.dispatch(5, BACK, Android, brief).unwrap();
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
+    let t = run.dispatch(5, BACK, ANDROID, brief).unwrap();
     run.post(6, &t, judged(&[Answer::Held])).unwrap();
     let counts = run.finish(7).unwrap();
     assert_eq!(counts.pass, 2);
@@ -837,7 +841,7 @@ fn resuming_with_a_scope_adds_to_the_saved_one() {
     let saved = vec![DRAW.to_string()];
 
     let (before, added, scope) =
-        resume_plan(&suite, &[Android, Ios], &saved, &[BACK.into(), DRAW.into()]).unwrap();
+        resume_plan(&suite, &[ANDROID, IOS], &saved, &[BACK.into(), DRAW.into()]).unwrap();
     assert_eq!(
         before
             .specs
@@ -852,16 +856,16 @@ fn resuming_with_a_scope_adds_to_the_saved_one() {
             .iter()
             .map(|s| (s.id.as_str(), s.platforms.clone()))
             .collect::<Vec<_>>(),
-        vec![(BACK, vec![Android])],
+        vec![(BACK, vec![ANDROID])],
         "only specs new to the run, on the run's platforms"
     );
     assert_eq!(scope, vec![DRAW.to_string(), BACK.to_string()]);
 
-    let (_, added, scope) = resume_plan(&suite, &[Android], &saved, &[]).unwrap();
+    let (_, added, scope) = resume_plan(&suite, &[ANDROID], &saved, &[]).unwrap();
     assert!(added.is_empty(), "no --scope changes nothing");
     assert_eq!(scope, saved);
 
-    let refused = resume_plan(&suite, &[Android], &saved, &["annotations/404-nope".into()])
+    let refused = resume_plan(&suite, &[ANDROID], &saved, &["annotations/404-nope".into()])
         .unwrap_err()
         .to_string();
     assert!(
@@ -878,24 +882,24 @@ fn resuming_with_a_scope_adds_to_the_saved_one() {
 #[test]
 fn a_reopened_journal_carries_on_where_it_stopped() {
     let (mut run, path) = open("replay");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    let running = run.dispatch(3, BACK, Android, brief).unwrap();
+    let running = run.dispatch(3, BACK, ANDROID, brief).unwrap();
     drop(run);
 
     let mut run = Run::open(plan(false), &path, 1_000).unwrap();
     assert!(matches!(
-        run.row(DRAW, Android).unwrap().row,
+        run.row(DRAW, ANDROID).unwrap().row,
         Row::NeedsReview { .. }
     ));
     assert!(
         run.stalled(1_000 + 119_000, 120_000, 600_000).is_empty(),
         "the clock restarts on reopen"
     );
-    run.review(4, DRAW, Android, bug(), "real").unwrap();
+    run.review(4, DRAW, ANDROID, bug(), "real").unwrap();
     run.post(5, &running, judged(&[Answer::Held])).unwrap();
-    assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
+    assert_eq!(result(&run, BACK, ANDROID), Some(Final::Pass));
 
     let lines = std::fs::read_to_string(&path).unwrap();
     assert_eq!(lines.lines().count(), 5);
@@ -935,21 +939,21 @@ fn pass(run: &mut Run, at: u64, spec: &str, platform: Platform) {
 #[test]
 fn every_spec_passing_is_ready() {
     let (mut run, _) = open("ready");
-    pass(&mut run, 1, DRAW, Android);
-    pass(&mut run, 10, DRAW, Ios);
+    pass(&mut run, 1, DRAW, ANDROID);
+    pass(&mut run, 10, DRAW, IOS);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::NotReady);
     assert_eq!(v.reasons, ["1 not run yet"]);
-    pass(&mut run, 20, BACK, Android);
+    pass(&mut run, 20, BACK, ANDROID);
     assert_eq!(run.verdict().status, VerdictStatus::Ready);
 }
 
 #[test]
 fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
     let (mut run, _) = open("blocked-verdict");
-    fail_and_uphold(&mut run, 1, DRAW, Android);
-    pass(&mut run, 10, DRAW, Ios);
-    pass(&mut run, 20, BACK, Android);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
+    pass(&mut run, 10, DRAW, IOS);
+    pass(&mut run, 20, BACK, ANDROID);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::Failing);
     assert_eq!(v.reasons, ["1 failure"]);
@@ -991,7 +995,7 @@ fn an_open_fail_blocks_until_it_is_deferred_or_dismissed() {
 #[test]
 fn fixed_needs_a_later_pass_of_its_row() {
     let (mut run, _) = open("fixed");
-    fail_and_uphold(&mut run, 1, DRAW, Android);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
     let err = run
         .triage(
             5,
@@ -1005,7 +1009,7 @@ fn fixed_needs_a_later_pass_of_its_row() {
     assert!(err.to_string().contains("passes on android again"), "{err}");
 
     // A side find from an attempt that was sent back, whose row then passed on attempt 2.
-    let t = run.dispatch(10, BACK, Android, brief).unwrap();
+    let t = run.dispatch(10, BACK, ANDROID, brief).unwrap();
     let mut posted = judged(&[Answer::Failed]);
     posted.side_finds.push(SideFind {
         summary: "Menu flickers".into(),
@@ -1013,11 +1017,11 @@ fn fixed_needs_a_later_pass_of_its_row() {
         evidence: vec![],
     });
     run.post(11, &t, posted).unwrap();
-    run.review(12, BACK, Android, Call::SendBack, "wrong tap")
+    run.review(12, BACK, ANDROID, Call::SendBack, "wrong tap")
         .unwrap();
     run.review_find(13, 2, Some("Menu flickers".into()), vec![], "seen twice")
         .unwrap();
-    pass(&mut run, 14, BACK, Android);
+    pass(&mut run, 14, BACK, ANDROID);
     run.triage(
         20,
         2,
@@ -1036,9 +1040,9 @@ fn fixed_needs_a_later_pass_of_its_row() {
 #[test]
 fn a_duplicate_follows_its_original() {
     let (mut run, _) = open("duplicate");
-    fail_and_uphold(&mut run, 1, DRAW, Android);
-    fail_and_uphold(&mut run, 10, DRAW, Ios);
-    pass(&mut run, 20, BACK, Android);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
+    fail_and_uphold(&mut run, 10, DRAW, IOS);
+    pass(&mut run, 20, BACK, ANDROID);
     assert!(
         run.triage(30, 2, Decision::Duplicate { of: 2 }, "same")
             .is_err()
@@ -1063,12 +1067,12 @@ fn a_duplicate_follows_its_original() {
 #[test]
 fn a_harness_gap_blocked_stays_not_ready() {
     let (mut run, _) = open("gap-verdict");
-    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let t = run.dispatch(1, BACK, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::CouldntCheck])).unwrap();
     run.review(
         3,
         BACK,
-        Android,
+        ANDROID,
         Call::Uphold {
             title: None,
             cause: Some(Cause::Harness),
@@ -1076,8 +1080,8 @@ fn a_harness_gap_blocked_stays_not_ready() {
         "no label",
     )
     .unwrap();
-    pass(&mut run, 10, DRAW, Android);
-    pass(&mut run, 20, DRAW, Ios);
+    pass(&mut run, 10, DRAW, ANDROID);
+    pass(&mut run, 20, DRAW, IOS);
     let v = run.verdict();
     assert_eq!(v.status, VerdictStatus::NotReady);
     assert_eq!(v.reasons, ["1 blocked"]);
@@ -1086,21 +1090,21 @@ fn a_harness_gap_blocked_stays_not_ready() {
 #[test]
 fn a_not_reproduced_finding_must_be_triaged() {
     let (mut run, _) = open("not-repro-verdict");
-    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let t = run.dispatch(1, BACK, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed])).unwrap();
     run.review(
         3,
         BACK,
-        Android,
+        ANDROID,
         Call::Verify {
             claim: "blank screen".into(),
         },
         "once",
     )
     .unwrap();
-    pass(&mut run, 4, BACK, Android);
-    pass(&mut run, 10, DRAW, Android);
-    pass(&mut run, 20, DRAW, Ios);
+    pass(&mut run, 4, BACK, ANDROID);
+    pass(&mut run, 10, DRAW, ANDROID);
+    pass(&mut run, 20, DRAW, IOS);
     assert_eq!(run.verdict().reasons, ["1 finding to decide"]);
     run.triage(
         30,
@@ -1115,7 +1119,7 @@ fn a_not_reproduced_finding_must_be_triaged() {
 #[test]
 fn triage_survives_a_reopen() {
     let (mut run, path) = open("triage-replay");
-    fail_and_uphold(&mut run, 1, DRAW, Android);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
     run.triage(
         5,
         1,
@@ -1143,18 +1147,18 @@ fn build(commit: &str, fingerprint: &str) -> Build {
 #[test]
 fn a_fix_build_reruns_only_the_approved_rows() {
     let (mut run, _) = open("fix-js");
-    run.install_build(0, Android, build("aaaaaaa1", "fp1"), vec![])
+    run.install_build(0, ANDROID, build("aaaaaaa1", "fp1"), vec![])
         .unwrap();
-    fail_and_uphold(&mut run, 1, DRAW, Android);
-    pass(&mut run, 10, BACK, Android);
-    pass(&mut run, 20, DRAW, Ios);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
+    pass(&mut run, 10, BACK, ANDROID);
+    pass(&mut run, 20, DRAW, IOS);
 
     // A build alone reruns nothing, not even the open problem's row: the person approves the set.
     let unlisted = run
-        .install_build(25, Android, build("bbbbbbb2", "fp1"), vec![])
+        .install_build(25, ANDROID, build("bbbbbbb2", "fp1"), vec![])
         .unwrap();
     assert!(unlisted.is_empty());
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Fail));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Fail));
 
     let approved = vec![Rerun {
         spec: DRAW.into(),
@@ -1162,16 +1166,16 @@ fn a_fix_build_reruns_only_the_approved_rows() {
         note: None,
     }];
     let reruns = run
-        .install_build(30, Android, build("bbbbbbb2", "fp1"), approved.clone())
+        .install_build(30, ANDROID, build("bbbbbbb2", "fp1"), approved.clone())
         .unwrap();
     assert_eq!(reruns, approved);
     assert_eq!(
-        result(&run, BACK, Android),
+        result(&run, BACK, ANDROID),
         Some(Final::Pass),
         "untouched rows keep their result"
     );
     assert_eq!(
-        run.row(BACK, Android)
+        run.row(BACK, ANDROID)
             .unwrap()
             .build
             .as_ref()
@@ -1180,15 +1184,15 @@ fn a_fix_build_reruns_only_the_approved_rows() {
         "aaaaaaa1"
     );
     assert_eq!(
-        result(&run, DRAW, Ios),
+        result(&run, DRAW, IOS),
         Some(Final::Pass),
         "another platform isn't touched"
     );
 
     // The fix: the rerun passes on the new build, which is what lets triage call it Fixed.
-    pass(&mut run, 40, DRAW, Android);
+    pass(&mut run, 40, DRAW, ANDROID);
     assert_eq!(
-        run.row(DRAW, Android)
+        run.row(DRAW, ANDROID)
             .unwrap()
             .build
             .as_ref()
@@ -1216,9 +1220,9 @@ fn a_fix_build_reruns_only_the_approved_rows() {
 #[test]
 fn a_listed_rerun_needs_a_reason() {
     let (mut run, _) = open("fix-listed");
-    run.install_build(0, Android, build("a1", "fp1"), vec![])
+    run.install_build(0, ANDROID, build("a1", "fp1"), vec![])
         .unwrap();
-    pass(&mut run, 1, BACK, Android);
+    pass(&mut run, 1, BACK, ANDROID);
     let listed = |reason: &str| {
         vec![Rerun {
             spec: BACK.into(),
@@ -1227,20 +1231,20 @@ fn a_listed_rerun_needs_a_reason() {
         }]
     };
     assert!(
-        run.install_build(2, Android, build("b2", "fp1"), listed(" "))
+        run.install_build(2, ANDROID, build("b2", "fp1"), listed(" "))
             .is_err()
     );
     let reruns = run
         .install_build(
             2,
-            Android,
+            ANDROID,
             build("b2", "fp1"),
             listed("the fix touches the back stack"),
         )
         .unwrap();
     assert_eq!(reruns[0].reason, "the fix touches the back stack");
     assert_eq!(
-        run.row(BACK, Android).unwrap().row,
+        run.row(BACK, ANDROID).unwrap().row,
         Row::Queued { verify: None }
     );
 }
@@ -1249,30 +1253,30 @@ fn a_listed_rerun_needs_a_reason() {
 fn a_platform_with_nothing_left_says_so() {
     let path = journal("nothing-left");
     let mut run = Run::open(plan(true), &path, 0).unwrap();
-    pass(&mut run, 1, DRAW, Android);
-    pass(&mut run, 10, BACK, Android);
-    let err = run.next_rows(None, Some(Android)).unwrap_err().to_string();
+    pass(&mut run, 1, DRAW, ANDROID);
+    pass(&mut run, 10, BACK, ANDROID);
+    let err = run.next_rows(None, Some(ANDROID)).unwrap_err().to_string();
     assert!(err.starts_with("android has nothing left to run"), "{err}");
     assert_eq!(
         run.next_rows(None, None).unwrap(),
-        [(DRAW.to_string(), Ios)]
+        [(DRAW.to_string(), IOS)]
     );
 }
 
 #[test]
 fn a_native_change_reruns_nothing_by_itself() {
     let (mut run, _) = open("fix-native");
-    run.install_build(0, Android, build("a1", "fp1"), vec![])
+    run.install_build(0, ANDROID, build("a1", "fp1"), vec![])
         .unwrap();
-    pass(&mut run, 1, DRAW, Android);
-    pass(&mut run, 10, BACK, Android);
+    pass(&mut run, 1, DRAW, ANDROID);
+    pass(&mut run, 10, BACK, ANDROID);
     let reruns = run
-        .install_build(20, Android, build("b2", "fp2"), vec![])
+        .install_build(20, ANDROID, build("b2", "fp2"), vec![])
         .unwrap();
     assert!(reruns.is_empty());
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
     assert_eq!(
-        run.row(BACK, Android)
+        run.row(BACK, ANDROID)
             .unwrap()
             .build
             .as_ref()
@@ -1286,13 +1290,13 @@ fn a_native_change_reruns_nothing_by_itself() {
 #[test]
 fn a_build_installs_only_between_specs() {
     let (mut run, _) = open("fix-between");
-    run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     let err = run
-        .install_build(2, Android, build("b2", "fp1"), vec![])
+        .install_build(2, ANDROID, build("b2", "fp1"), vec![])
         .unwrap_err()
         .to_string();
     assert!(err.contains("still running or waiting for review"), "{err}");
-    run.install_build(2, Ios, build("b2", "fp1"), vec![])
+    run.install_build(2, IOS, build("b2", "fp1"), vec![])
         .unwrap();
 }
 
@@ -1300,10 +1304,10 @@ fn a_build_installs_only_between_specs() {
 fn a_rerun_after_finishing_opens_the_run_again() {
     let path = journal("fix-after-finish");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
-    pass(&mut run, 1, BACK, Android);
+    pass(&mut run, 1, BACK, ANDROID);
     run.finish(3).unwrap();
     let none = run
-        .install_build(4, Android, build("a1", "fp1"), vec![])
+        .install_build(4, ANDROID, build("a1", "fp1"), vec![])
         .unwrap();
     assert!(none.is_empty() && run.state().finished);
     let rerun = vec![Rerun {
@@ -1311,10 +1315,10 @@ fn a_rerun_after_finishing_opens_the_run_again() {
         reason: "the harness gap that blocked it is fixed".into(),
         note: None,
     }];
-    run.install_build(5, Android, build("a1", "fp1"), rerun)
+    run.install_build(5, ANDROID, build("a1", "fp1"), rerun)
         .unwrap();
     assert!(!run.state().finished);
-    run.dispatch(6, BACK, Android, brief).unwrap();
+    run.dispatch(6, BACK, ANDROID, brief).unwrap();
     drop(run);
     assert!(!Run::open(plan(false), &path, 0).unwrap().state().finished);
 }
@@ -1323,15 +1327,15 @@ fn a_rerun_after_finishing_opens_the_run_again() {
 fn a_fix_builds_rerun_note_reaches_its_brief() {
     let path = journal("install-note");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
-    pass(&mut run, 1, BACK, Android);
+    pass(&mut run, 1, BACK, ANDROID);
     let rerun = vec![Rerun {
         spec: BACK.into(),
         reason: "the fix touches the back stack".into(),
         note: Some("screenshot the back stack as `stack`".into()),
     }];
-    run.install_build(3, Android, build("b2", "fp1"), rerun)
+    run.install_build(3, ANDROID, build("b2", "fp1"), rerun)
         .unwrap();
-    let note = |run: &Run| run.row(BACK, Android).unwrap().rerun_note.clone();
+    let note = |run: &Run| run.row(BACK, ANDROID).unwrap().rerun_note.clone();
     assert_eq!(
         note(&run).as_deref(),
         Some("screenshot the back stack as `stack`")
@@ -1356,25 +1360,25 @@ fn any_row_can_be_queued_again_whatever_its_state() {
     let path = journal("requeue");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
     // Filed.
-    pass(&mut run, 1, BACK, Android);
+    pass(&mut run, 1, BACK, ANDROID);
     // Waiting for review.
-    let t = run.dispatch(3, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(3, DRAW, ANDROID, brief).unwrap();
     run.post(4, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
     // Running.
-    let running = run.dispatch(5, DRAW, Ios, brief).unwrap();
-    assert!(run.requeue(6, vec![row(BACK, Android)], " ", None).is_err());
+    let running = run.dispatch(5, DRAW, IOS, brief).unwrap();
+    assert!(run.requeue(6, vec![row(BACK, ANDROID)], " ", None).is_err());
     let was = run
         .requeue(
             6,
-            vec![row(BACK, Android), row(DRAW, Android), row(DRAW, Ios)],
+            vec![row(BACK, ANDROID), row(DRAW, ANDROID), row(DRAW, IOS)],
             "the harness fix needs proving",
             Some("use `touch` for outcome 1".into()),
         )
         .unwrap();
     let was: Vec<&str> = was.iter().map(|(_, w)| *w).collect();
     assert_eq!(was, ["already filed", "waiting for review", "running"]);
-    for (spec, platform) in [(BACK, Android), (DRAW, Android), (DRAW, Ios)] {
+    for (spec, platform) in [(BACK, ANDROID), (DRAW, ANDROID), (DRAW, IOS)] {
         let r = run.row(spec, platform).unwrap();
         assert!(matches!(r.row, Row::Queued { verify: None }), "{spec}");
         assert_eq!(r.budget, 0);
@@ -1388,7 +1392,7 @@ fn any_row_can_be_queued_again_whatever_its_state() {
     drop(run);
     let run = Run::open(plan(false), &path, 0).unwrap();
     assert!(matches!(
-        run.row(DRAW, Ios).unwrap().row,
+        run.row(DRAW, IOS).unwrap().row,
         Row::Queued { .. }
     ));
 }
@@ -1397,19 +1401,19 @@ fn any_row_can_be_queued_again_whatever_its_state() {
 fn a_pass_that_skips_its_probes_waits_for_review() {
     let path = journal("unprobed");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
-    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let t = run.dispatch(1, BACK, ANDROID, brief).unwrap();
     let claim = run
         .post_probed(2, &t, judged(&[Answer::Held]), true)
         .unwrap();
     assert_eq!(claim, Claim::Unsure);
     assert!(matches!(
-        run.row(BACK, Android).unwrap().row,
+        run.row(BACK, ANDROID).unwrap().row,
         Row::NeedsReview { .. }
     ));
     run.review(
         3,
         BACK,
-        Android,
+        ANDROID,
         Call::Judge {
             result: Final::Pass,
             title: None,
@@ -1417,27 +1421,27 @@ fn a_pass_that_skips_its_probes_waits_for_review() {
         "the outcomes held; the probes don't apply to this build",
     )
     .unwrap();
-    assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
+    assert_eq!(result(&run, BACK, ANDROID), Some(Final::Pass));
 
     // Saying what was probed files the pass straight away, and a replay keeps both calls.
-    let t = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
     let mut probed = judged(&[Answer::Held, Answer::Held]);
     probed.probed = Some("undid twice quickly: both strokes went".into());
     assert_eq!(run.post_probed(5, &t, probed, true).unwrap(), Claim::Pass);
     drop(run);
     let run = Run::open(plan(false), &path, 0).unwrap();
-    assert_eq!(result(&run, BACK, Android), Some(Final::Pass));
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Pass));
+    assert_eq!(result(&run, BACK, ANDROID), Some(Final::Pass));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Pass));
 }
 
 #[test]
 fn a_problem_keeps_the_wording_it_was_judged_against() {
     let path = journal("wording");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.review(3, DRAW, Android, bug(), "real").unwrap();
+    run.review(3, DRAW, ANDROID, bug(), "real").unwrap();
     drop(run);
     // The spec is reworded, and the run resumed with the new text.
     let mut reworded = plan(false);
@@ -1448,7 +1452,7 @@ fn a_problem_keeps_the_wording_it_was_judged_against() {
     let detail = &run.state().problems[0].detail;
     assert!(detail.starts_with("Undo removes the stroke: "), "{detail}");
     assert_eq!(
-        run.row(DRAW, Android).unwrap().judged_against[0],
+        run.row(DRAW, ANDROID).unwrap().judged_against[0],
         "Undo removes the stroke"
     );
 }
@@ -1457,7 +1461,7 @@ fn a_problem_keeps_the_wording_it_was_judged_against() {
 fn outcomes_judged_along_the_way_are_taken_up_by_the_post() {
     let path = journal("judged");
     let mut run = Run::open(plan(false), &path, 0).unwrap();
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     let judgment = |outcome, answer, observed: &str| Judgment {
         outcome,
         answer,
@@ -1484,7 +1488,7 @@ fn outcomes_judged_along_the_way_are_taken_up_by_the_post() {
     assert_eq!(run.post(4, &t, rest).unwrap(), Claim::Pass);
     drop(run);
     let run = Run::open(plan(false), &path, 0).unwrap();
-    let posted = run.row(DRAW, Android).unwrap().posted.clone().unwrap();
+    let posted = run.row(DRAW, ANDROID).unwrap().posted.clone().unwrap();
     let seen: Vec<_> = posted
         .judgments
         .iter()
@@ -1496,35 +1500,35 @@ fn outcomes_judged_along_the_way_are_taken_up_by_the_post() {
 #[test]
 fn queueing_a_finished_run_opens_it_again() {
     let mut run = open("requeue-finished").0;
-    pass(&mut run, 1, BACK, Android);
+    pass(&mut run, 1, BACK, ANDROID);
     run.finish(3).unwrap();
-    run.requeue(4, vec![row(BACK, Android)], "check it again", None)
+    run.requeue(4, vec![row(BACK, ANDROID)], "check it again", None)
         .unwrap();
     assert!(!run.state().finished);
-    run.dispatch(5, BACK, Android, brief).unwrap();
+    run.dispatch(5, BACK, ANDROID, brief).unwrap();
 }
 
 #[test]
 fn each_build_gets_a_fresh_attempt_budget() {
     let (mut run, path) = open("fix-budget");
     for at in [1u64, 10, 20] {
-        let t = run.dispatch(at, BACK, Android, brief).unwrap();
+        let t = run.dispatch(at, BACK, ANDROID, brief).unwrap();
         run.post(at + 1, &t, judged(&[Answer::Failed])).unwrap();
         if at < 20 {
-            run.review(at + 2, BACK, Android, Call::SendBack, "misread")
+            run.review(at + 2, BACK, ANDROID, Call::SendBack, "misread")
                 .unwrap();
         }
     }
-    run.review(30, BACK, Android, bug(), "seen 3 times")
+    run.review(30, BACK, ANDROID, bug(), "seen 3 times")
         .unwrap();
     let approved = vec![Rerun {
         spec: BACK.into(),
         reason: "the fix touches the back stack".into(),
         note: None,
     }];
-    run.install_build(40, Android, build("b2", "fp1"), approved)
+    run.install_build(40, ANDROID, build("b2", "fp1"), approved)
         .unwrap();
-    let t = run.dispatch(41, BACK, Android, brief).unwrap();
+    let t = run.dispatch(41, BACK, ANDROID, brief).unwrap();
     assert_eq!(
         t, "annotations/002-back#4@android",
         "attempt numbers keep counting"
@@ -1532,7 +1536,7 @@ fn each_build_gets_a_fresh_attempt_budget() {
     drop(run);
     let run = Run::open(plan(false), &path, 0).unwrap();
     assert_eq!(
-        run.row(BACK, Android).unwrap().budget,
+        run.row(BACK, ANDROID).unwrap().budget,
         1,
         "the replay agrees"
     );
@@ -1541,18 +1545,18 @@ fn each_build_gets_a_fresh_attempt_budget() {
 #[test]
 fn a_blocked_needs_its_cause_and_an_app_cause_is_a_failure() {
     let (mut run, _) = open("blocked-cause");
-    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let t = run.dispatch(1, BACK, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::CouldntCheck])).unwrap();
     let call = |title: Option<&str>, cause| Call::Uphold {
         title: title.map(str::to_string),
         cause,
     };
     let err = run
-        .review(3, BACK, Android, call(None, None), "r")
+        .review(3, BACK, ANDROID, call(None, None), "r")
         .unwrap_err();
     assert!(err.to_string().contains("app or harness"), "{err}");
     let err = run
-        .review(3, BACK, Android, call(None, Some(Cause::App)), "crashed")
+        .review(3, BACK, ANDROID, call(None, Some(Cause::App)), "crashed")
         .unwrap_err();
     assert!(
         err.to_string().contains("give the failure a title"),
@@ -1561,14 +1565,14 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_failure() {
     run.review(
         3,
         BACK,
-        Android,
+        ANDROID,
         call(Some("The app crashes going back"), Some(Cause::App)),
         "crashed",
     )
     .unwrap();
     assert_eq!(run.state().problems[0].kind, ProblemKind::Failure);
     assert_eq!(
-        result(&run, BACK, Android),
+        result(&run, BACK, ANDROID),
         Some(Final::Fail),
         "the app stopped it, so it failed"
     );
@@ -1578,14 +1582,14 @@ fn a_blocked_needs_its_cause_and_an_app_cause_is_a_failure() {
 #[test]
 fn an_unsure_is_judged_pass_or_fail_only() {
     let (mut run, _) = open("judge-blocked");
-    let t = run.dispatch(1, BACK, Android, brief).unwrap();
+    let t = run.dispatch(1, BACK, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Unsure])).unwrap();
     let judge = Call::Judge {
         result: Final::Blocked,
         title: None,
     };
     assert!(
-        run.review(3, BACK, Android, judge, "r")
+        run.review(3, BACK, ANDROID, judge, "r")
             .unwrap_err()
             .to_string()
             .contains("spec unclear")
@@ -1603,11 +1607,11 @@ fn degraded() -> soundcheck_driver::Health {
 #[test]
 fn a_failure_on_a_degraded_device_must_reproduce_on_a_healthy_one() {
     let (mut run, path) = open("degraded");
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     run.post(2, &t, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.device_health(3, DRAW, Android, 1, degraded()).unwrap();
-    let err = run.review(4, DRAW, Android, bug(), "real").unwrap_err();
+    run.device_health(3, DRAW, ANDROID, 1, degraded()).unwrap();
+    let err = run.review(4, DRAW, ANDROID, bug(), "real").unwrap_err();
     assert!(
         err.to_string().contains("verify it on a healthy device"),
         "{err}"
@@ -1616,15 +1620,15 @@ fn a_failure_on_a_degraded_device_must_reproduce_on_a_healthy_one() {
     run.review(
         4,
         DRAW,
-        Android,
+        ANDROID,
         Call::Verify { claim: "c".into() },
         "device was low on memory",
     )
     .unwrap();
-    let t2 = run.dispatch(5, DRAW, Android, brief).unwrap();
+    let t2 = run.dispatch(5, DRAW, ANDROID, brief).unwrap();
     run.post(6, &t2, judged(&[Answer::Failed, Answer::Held]))
         .unwrap();
-    run.review(7, DRAW, Android, bug(), "reproduced").unwrap();
+    run.review(7, DRAW, ANDROID, bug(), "reproduced").unwrap();
     assert!(run.state().problems[0].verified);
     // The degradation is a note in the record, and survives a replay of the journal.
     let notes: Vec<String> = run.state().notes.iter().map(|n| n.text.clone()).collect();
@@ -1641,26 +1645,26 @@ fn a_failure_on_a_degraded_device_must_reproduce_on_a_healthy_one() {
 #[test]
 fn a_spec_running_when_the_server_stopped_goes_first_without_using_an_attempt() {
     let (mut run, path) = open("interrupted");
-    run.dispatch(1, DRAW, Android, brief).unwrap();
+    run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     drop(run);
     // The server died; a resume replays the journal and puts the running spec back.
     let mut resumed = Run::open(plan(false), &path, 2).unwrap();
     assert_eq!(resumed.interrupt_running(3).unwrap(), 1);
-    let row = resumed.row(DRAW, Android).unwrap();
+    let row = resumed.row(DRAW, ANDROID).unwrap();
     assert!(matches!(row.row, Row::Queued { .. }), "{:?}", row.row);
     assert_eq!(row.budget, 0);
     // Attempt numbers still only go up, so a later pass can't be mistaken for the interrupted one.
-    resumed.dispatch(4, DRAW, Android, brief).unwrap();
-    assert_eq!(resumed.row(DRAW, Android).unwrap().attempts, 2);
+    resumed.dispatch(4, DRAW, ANDROID, brief).unwrap();
+    assert_eq!(resumed.row(DRAW, ANDROID).unwrap().attempts, 2);
     drop(resumed);
     let replayed = Run::open(plan(false), &path, 5).unwrap();
-    assert_eq!(replayed.row(DRAW, Android).unwrap().budget, 1);
+    assert_eq!(replayed.row(DRAW, ANDROID).unwrap().budget, 1);
 }
 
 #[test]
 fn evidence_added_after_review_shows_on_the_problem_and_survives_a_reopen() {
     let (mut run, path) = open("add-evidence");
-    fail_and_uphold(&mut run, 1, DRAW, Android);
+    fail_and_uphold(&mut run, 1, DRAW, ANDROID);
     let id = run.state().problems[0].id;
     let shot = "annotations-001-draw-1-android-slider.png";
     assert!(
@@ -1699,14 +1703,14 @@ fn the_next_rows_are_queued_ones_first_then_untested_in_spec_order() {
     assert_eq!(
         rows(&run),
         vec![
-            (DRAW.to_string(), Android),
-            (DRAW.to_string(), Ios),
-            (BACK.to_string(), Android),
+            (DRAW.to_string(), ANDROID),
+            (DRAW.to_string(), IOS),
+            (BACK.to_string(), ANDROID),
         ],
         "each spec's platforms in turn"
     );
 
-    let t = run.dispatch(1, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(1, DRAW, ANDROID, brief).unwrap();
     assert!(
         run.next_rows(None, None)
             .unwrap_err()
@@ -1714,20 +1718,20 @@ fn the_next_rows_are_queued_ones_first_then_untested_in_spec_order() {
             .contains("one spec at a time")
     );
     run.stall(2, &t, "silent").unwrap();
-    let t = run.dispatch(3, DRAW, Ios, brief).unwrap();
+    let t = run.dispatch(3, DRAW, IOS, brief).unwrap();
     run.post(4, &t, judged(&[Answer::Held, Answer::Held]))
         .unwrap();
     assert_eq!(
         rows(&run),
-        vec![(DRAW.to_string(), Android), (BACK.to_string(), Android)],
+        vec![(DRAW.to_string(), ANDROID), (BACK.to_string(), ANDROID)],
         "the stalled row goes first"
     );
     assert_eq!(
         run.next_rows(Some(BACK), None).unwrap(),
-        vec![(BACK.to_string(), Android)]
+        vec![(BACK.to_string(), ANDROID)]
     );
     assert!(
-        run.next_rows(None, Some(Ios)).is_err(),
+        run.next_rows(None, Some(IOS)).is_err(),
         "nothing left on iOS"
     );
     assert!(run.next_rows(Some("nope/001"), None).is_err());
@@ -1749,12 +1753,12 @@ fn a_dispatch_for_one_platform_speaks_only_of_that_platform() {
         ..plan(true)
     };
     let mut run = Run::open(plan, &path, 0).unwrap();
-    let android = prepare(&mut run, 1, Android);
+    let android = prepare(&mut run, 1, ANDROID);
     run.prepared(2, &android).unwrap();
-    pass(&mut run, 3, DRAW, Android);
-    pass(&mut run, 10, BACK, Android);
-    prepare(&mut run, 20, Ios);
-    let err = run.next_rows(None, Some(Ios)).unwrap_err().to_string();
+    pass(&mut run, 3, DRAW, ANDROID);
+    pass(&mut run, 10, BACK, ANDROID);
+    prepare(&mut run, 20, IOS);
+    let err = run.next_rows(None, Some(IOS)).unwrap_err().to_string();
     assert!(err.starts_with("ios is being prepared"), "{err}");
 }
 
@@ -1776,20 +1780,20 @@ fn prepare(run: &mut Run, at: u64, platform: Platform) -> String {
 #[test]
 fn a_platforms_specs_wait_until_it_is_prepared() {
     let (mut run, _) = prepared("prepare-waits");
-    let refused = run.check_dispatch(BACK, Android).unwrap_err();
+    let refused = run.check_dispatch(BACK, ANDROID).unwrap_err();
     assert!(refused.to_string().contains("isn't prepared yet"));
-    let token = prepare(&mut run, 1, Android);
-    let refused = run.check_dispatch(BACK, Android).unwrap_err();
+    let token = prepare(&mut run, 1, ANDROID);
+    let refused = run.check_dispatch(BACK, ANDROID).unwrap_err();
     assert!(
         refused.to_string().contains("is being prepared: wait"),
         "{refused}"
     );
-    assert_eq!(run.running(&token).unwrap(), (PREPARE.to_string(), Android));
+    assert_eq!(run.running(&token).unwrap(), (PREPARE.to_string(), ANDROID));
     assert_eq!(run.brief(&token).unwrap(), "steps");
-    assert!(run.check_dispatch(DRAW, Ios).is_err(), "one at a time");
+    assert!(run.check_dispatch(DRAW, IOS).is_err(), "one at a time");
     run.prepared(2, &token).unwrap();
-    assert!(run.check_dispatch(BACK, Android).is_ok());
-    assert_eq!(run.next_prepare(None), Some(Ios));
+    assert!(run.check_dispatch(BACK, ANDROID).is_ok());
+    assert_eq!(run.next_prepare(None), Some(IOS));
     // Preparation is no row: the verdict and the rows are the specs'.
     assert_eq!(run.state().rows.len(), 3);
 }
@@ -1798,7 +1802,7 @@ fn a_platforms_specs_wait_until_it_is_prepared() {
 fn a_platform_that_cant_be_prepared_blocks_only_its_specs() {
     let (mut run, _) = prepared("prepare-fails");
     for attempt in 1..=MAX_ATTEMPTS {
-        let token = prepare(&mut run, u64::from(attempt) * 10, Android);
+        let token = prepare(&mut run, u64::from(attempt) * 10, ANDROID);
         assert!(token.starts_with(&format!("prepare#{attempt}@")));
         run.prepare_failed(
             u64::from(attempt) * 10 + 1,
@@ -1807,27 +1811,27 @@ fn a_platform_that_cant_be_prepared_blocks_only_its_specs() {
         )
         .unwrap();
     }
-    assert_eq!(run.next_prepare(Some(Android)), None);
-    assert_eq!(result(&run, BACK, Android), Some(Final::Blocked));
-    assert_eq!(result(&run, DRAW, Android), Some(Final::Blocked));
-    assert_eq!(result(&run, DRAW, Ios), None);
-    assert_eq!(run.next_prepare(None), Some(Ios));
+    assert_eq!(run.next_prepare(Some(ANDROID)), None);
+    assert_eq!(result(&run, BACK, ANDROID), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, ANDROID), Some(Final::Blocked));
+    assert_eq!(result(&run, DRAW, IOS), None);
+    assert_eq!(run.next_prepare(None), Some(IOS));
 }
 
 #[test]
 fn a_stalled_preparation_is_tried_again() {
     let (mut run, _) = prepared("prepare-stalls");
-    let token = prepare(&mut run, 1, Ios);
+    let token = prepare(&mut run, 1, IOS);
     run.stall(5, &token, "no tool call for 2 minutes").unwrap();
     assert!(run.running(&token).is_err());
-    let again = prepare(&mut run, 6, Ios);
+    let again = prepare(&mut run, 6, IOS);
     assert_eq!(again, "prepare#2@ios");
 }
 
 #[test]
 fn a_new_server_prepares_every_platform_again() {
     let (mut run, path) = prepared("prepare-again");
-    let token = prepare(&mut run, 1, Android);
+    let token = prepare(&mut run, 1, ANDROID);
     run.prepared(2, &token).unwrap();
     drop(run);
     let plan = Plan {
@@ -1835,8 +1839,8 @@ fn a_new_server_prepares_every_platform_again() {
         ..plan(false)
     };
     let run = Run::open(plan, &path, 100).unwrap();
-    assert!(run.check_dispatch(BACK, Android).is_err());
-    assert_eq!(run.next_prepare(Some(Android)), Some(Android));
+    assert!(run.check_dispatch(BACK, ANDROID).is_err());
+    assert_eq!(run.next_prepare(Some(ANDROID)), Some(ANDROID));
 }
 
 #[test]
@@ -1844,21 +1848,21 @@ fn each_platform_judges_its_own_outcomes() {
     let mut plan = plan(false);
     plan.specs[0]
         .outcomes
-        .insert(Ios, vec!["Undo removes the stroke".into()]);
+        .insert(IOS, vec!["Undo removes the stroke".into()]);
     let mut run = Run::open(plan, &journal("per-platform"), 0).unwrap();
 
-    let t = run.dispatch(1, DRAW, Ios, brief).unwrap();
+    let t = run.dispatch(1, DRAW, IOS, brief).unwrap();
     assert!(
         run.post(2, &t, judged(&[Answer::Held, Answer::Held]))
             .is_err()
     );
     run.post(3, &t, judged(&[Answer::Held])).unwrap();
     assert_eq!(
-        run.row(DRAW, Ios).unwrap().judged_against,
+        run.row(DRAW, IOS).unwrap().judged_against,
         vec!["Undo removes the stroke"]
     );
 
-    let t = run.dispatch(4, DRAW, Android, brief).unwrap();
+    let t = run.dispatch(4, DRAW, ANDROID, brief).unwrap();
     let err = run.post(5, &t, judged(&[Answer::Held])).unwrap_err();
     assert!(err.to_string().contains("outcome 1"), "{err}");
 }

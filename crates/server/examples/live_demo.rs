@@ -9,6 +9,9 @@ use soundcheck::suite::{self, config::Platform};
 use std::path::Path;
 use std::time::Duration;
 
+const ANDROID: Platform = Platform::literal("android");
+const IOS: Platform = Platform::literal("ios");
+
 const PORT: u16 = 7401;
 
 #[tokio::main]
@@ -18,7 +21,7 @@ async fn main() -> Result<()> {
     let run_dir = demo.join("reports/live-demo");
     let _ = std::fs::remove_dir_all(&run_dir);
     std::fs::create_dir_all(&run_dir)?;
-    let platforms = vec![Platform::Android, Platform::Ios];
+    let platforms = vec![ANDROID, IOS];
     let label = "v3.5.0 · live demo";
     let info = saved::RunInfo {
         id: saved::new_id(),
@@ -42,7 +45,7 @@ async fn main() -> Result<()> {
     wait(6).await;
 
     say("1. A spec starts: its cell turns blue, Running.");
-    let t = dispatch(&hub, "items/001-add-items", Platform::Android)?;
+    let t = dispatch(&hub, "items/001-add-items", ANDROID)?;
     wait(5).await;
     say("2. The tester settles the first outcome: it fills in with a ✓.");
     judge(
@@ -69,7 +72,7 @@ async fn main() -> Result<()> {
     say(
         "5. Next spec. One outcome holds, then one doesn't: an orange ?, since nothing is decided yet.",
     );
-    let t = dispatch(&hub, "items/003-reorder", Platform::Android)?;
+    let t = dispatch(&hub, "items/003-reorder", ANDROID)?;
     wait(4).await;
     judge(
         &hub,
@@ -96,7 +99,7 @@ async fn main() -> Result<()> {
     review(
         &hub,
         "items/003-reorder",
-        Platform::Android,
+        ANDROID,
         Call::Verify {
             claim: "The new order is lost after a relaunch".into(),
         },
@@ -104,7 +107,7 @@ async fn main() -> Result<()> {
     )?;
     wait(7).await;
     say("8. The second attempt runs and sees the same.");
-    let t = dispatch(&hub, "items/003-reorder", Platform::Android)?;
+    let t = dispatch(&hub, "items/003-reorder", ANDROID)?;
     wait(4).await;
     judge(
         &hub,
@@ -128,7 +131,7 @@ async fn main() -> Result<()> {
     review(
         &hub,
         "items/003-reorder",
-        Platform::Android,
+        ANDROID,
         Call::Uphold {
             title: Some("A reordered list goes back to its old order after a relaunch".into()),
             cause: None,
@@ -138,7 +141,7 @@ async fn main() -> Result<()> {
     wait(7).await;
 
     say("10. An outcome the tester can't observe: an orange ? while it's checked.");
-    let t = dispatch(&hub, "sharing/002-leave", Platform::Android)?;
+    let t = dispatch(&hub, "sharing/002-leave", ANDROID)?;
     wait(4).await;
     judge(
         &hub,
@@ -162,7 +165,7 @@ async fn main() -> Result<()> {
     review(
         &hub,
         "sharing/002-leave",
-        Platform::Android,
+        ANDROID,
         Call::Uphold {
             title: None,
             cause: Some(Cause::Harness),
@@ -172,7 +175,7 @@ async fn main() -> Result<()> {
     wait(7).await;
 
     say("12. An Unsure: the tester can't tell if what it saw is right.");
-    let t = dispatch(&hub, "items/004-quantities", Platform::Ios)?;
+    let t = dispatch(&hub, "items/004-quantities", IOS)?;
     wait(4).await;
     judge(&hub, &t, 0, Answer::Held, "The row read Eggs × 12.")?;
     wait(3).await;
@@ -190,7 +193,7 @@ async fn main() -> Result<()> {
     review(
         &hub,
         "items/004-quantities",
-        Platform::Ios,
+        IOS,
         Call::Judge {
             result: Final::Pass,
             title: None,
