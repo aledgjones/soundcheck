@@ -104,7 +104,7 @@ readers/android/build.sh               # the Android reader APK
 readers/ios/build.sh                   # the iOS reader
 ```
 
-Add the checkout as the marketplace (`/plugin marketplace add /path/to/soundcheck`) and set `SOUNDCHECK_DEV=1` (e.g. under `env` in `.claude/settings.json`), so the plugin runs this build instead of downloading a release.
+To try a build in a project that pins a release, run `node /path/to/soundcheck/scripts/dev-plugin.mjs on` from the project: it points the plugin at this checkout and sets `SOUNDCHECK_DEV=1`, so the plugin runs the `soundcheck` on your PATH instead of downloading a release. Both go only into the project's `.claude/settings.local.json`; `off` returns to the pinned release (the plugin CLI doesn't fall back by itself, so the script adds it again). Start a new session after either. Moved the checkout? Reinstall: a source build finds its readers through the checkout path.
 
 ### Releasing
 
