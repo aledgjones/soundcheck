@@ -426,6 +426,11 @@ impl Ios {
     }
 
     async fn reader_get(&self, path: &str) -> Result<String> {
+        let body = self.reader_get_bytes(path).await?;
+        Ok(String::from_utf8_lossy(&body).into_owned())
+    }
+
+    async fn reader_get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         let get = async {
             let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", READER_PORT)).await?;
             stream
@@ -433,21 +438,26 @@ impl Ios {
                 .await?;
             let mut buf = Vec::new();
             stream.read_to_end(&mut buf).await?;
-            std::io::Result::Ok(String::from_utf8_lossy(&buf).into_owned())
+            std::io::Result::Ok(buf)
         };
         let response = timeout(Duration::from_secs(15), get)
             .await
             .map_err(|_| device("the reader didn't answer within 15 s"))?
             .map_err(device)?;
-        let (head, body) = response.split_once("\r\n\r\n").unwrap_or((&response, ""));
+        let split = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .unwrap_or(response.len());
+        let head = String::from_utf8_lossy(&response[..split]);
+        let body = response.get(split + 4..).unwrap_or_default();
         if !head.starts_with("HTTP/1.0 200") {
             return Err(device(format!(
                 "reader: {} {}",
                 head.lines().next().unwrap_or(""),
-                body.trim()
+                String::from_utf8_lossy(body).trim()
             )));
         }
-        Ok(body.to_string())
+        Ok(body.to_vec())
     }
 
     /// Whatever reader answers on the port, whichever simulator it's for.
@@ -921,19 +931,9 @@ impl Device for Ios {
     }
 
     async fn screenshot(&self, path: &Path) -> Result<()> {
-        let absolute = std::path::absolute(path).map_err(device)?;
-        run(
-            "xcrun",
-            &[
-                "simctl",
-                "io",
-                &self.udid,
-                "screenshot",
-                &absolute.display().to_string(),
-            ],
-        )
-        .await
-        .map(|_| ())
+        self.ensure_reader().await?;
+        let png = self.reader_get_bytes("/screenshot").await?;
+        std::fs::write(path, png).map_err(device)
     }
 
     /// Crash reports for the app written since its launch.

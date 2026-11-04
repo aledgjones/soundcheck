@@ -344,6 +344,15 @@ struct Main {
               status = "500 Error"
               body = error.localizedDescription.data(using: .utf8)!
             }
+          } else if line.hasPrefix("GET /screenshot"), let simulator = reader.simulator {
+            // From the framebuffer the reader already holds: `simctl io screenshot` starts a process each time, about
+            // 0.5 s idle and over a second on a busy Mac.
+            do {
+              body = try await simulator.takeScreenshot(format: .png)
+            } catch {
+              status = "500 Error"
+              body = error.localizedDescription.data(using: .utf8)!
+            }
           } else if line.hasPrefix("GET /hid?") {
             let query = String(line.dropFirst("GET /hid?".count).prefix { $0 != " " })
             let script = query.removingPercentEncoding ?? query
