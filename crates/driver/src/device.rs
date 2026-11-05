@@ -23,6 +23,14 @@ pub enum DriverError {
 
 pub type Result<T> = std::result::Result<T, DriverError>;
 
+/// A device error with `secret` (a link that may carry a token) taken out, so it never reaches a journal.
+pub fn without(error: DriverError, secret: &str) -> DriverError {
+    match error {
+        DriverError::Device(message) => DriverError::Device(message.replace(secret, "<the link>")),
+        other => other,
+    }
+}
+
 /// From one tap's start to the next in a double-tap: a person's rhythm, inside Android's 300 ms window. Nothing
 /// taps faster, since an 80 ms double Undo once left a state no finger could reach (SA-673).
 pub const DOUBLE_TAP_MS: u64 = 150;
@@ -262,6 +270,19 @@ pub trait Device {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_device_error_never_repeats_the_link() {
+        let link = "'sync://e2e/session?token=secret&id=1'";
+        let error = without(
+            DriverError::Device(format!("adb -s emulator-5554 shell am start -d {link}: no")),
+            link,
+        );
+        assert_eq!(
+            error.to_string(),
+            "device: adb -s emulator-5554 shell am start -d <the link>: no"
+        );
+    }
 
     fn stop(x: f64, y: f64, pause_ms: u64) -> Stop {
         Stop { x, y, pause_ms }

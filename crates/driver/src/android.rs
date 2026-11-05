@@ -844,8 +844,11 @@ impl Device for Android {
         self.input(&format!("k {code}")).await
     }
 
-    /// A deep link, sent to the app under test only, so no chooser can take the screen.
+    /// A deep link, sent to the app under test only, so no chooser can take the screen. `adb shell` hands its words to
+    /// the device's shell, so the link is quoted there: its `&`s would otherwise end the command. A failure never
+    /// repeats the link, which may carry a token.
     async fn goto(&self, url: &str) -> Result<()> {
+        let quoted = format!("'{}'", url.replace('\'', r"'\''"));
         self.adb(&[
             "shell",
             "am",
@@ -854,11 +857,12 @@ impl Device for Android {
             "-a",
             "android.intent.action.VIEW",
             "-d",
-            url,
+            &quoted,
             &self.package,
         ])
         .await
         .map(|_| ())
+        .map_err(|e| crate::device::without(e, &quoted))
     }
 
     async fn clear_data(&self) -> Result<()> {

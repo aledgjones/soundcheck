@@ -1075,10 +1075,12 @@ impl Device for Ios {
     }
 
     /// A deep link, opened in the app as a tap on it elsewhere would.
+    /// A failure never repeats the link, which may carry a token.
     async fn goto(&self, url: &str) -> Result<()> {
         run("xcrun", &["simctl", "openurl", &self.udid, url])
             .await
             .map(|_| ())
+            .map_err(|e| crate::device::without(e, url))
     }
 
     /// The app's data container emptied and the simulator's keychain reset (where a stored session lives), with the
