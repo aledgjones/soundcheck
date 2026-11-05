@@ -338,6 +338,7 @@ async fn type_says_when_keys_were_dropped() {
 #[tokio::test(start_paused = true)]
 async fn fill_retries_when_typing_drops_characters() {
     let mut field = el("Title", 0.0);
+    field.focused = true;
     field.role = Some("field".into());
     field.value = Some("Old title".into());
     let driver = Driver::new(Fake::new(vec![vec![field]]));
@@ -421,6 +422,7 @@ async fn a_platform_without_a_tool_refuses_it_clearly() {
 async fn fill_waits_for_the_clear_to_land_before_typing() {
     let field = |value: &str| {
         let mut f = el("Title", 0.0);
+        f.focused = true;
         f.role = Some("field".into());
         f.value = Some(value.into());
         vec![f]
@@ -439,5 +441,53 @@ async fn fill_waits_for_the_clear_to_land_before_typing() {
         actions.iter().filter(|a| a.starts_with("type")).count(),
         1,
         "typed before the field held still, so it had to retry: {actions:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn fill_clears_only_once_the_field_has_focus() {
+    let field = |focused: bool| {
+        let mut f = el("Title", 0.0);
+        f.role = Some("field".into());
+        f.value = Some(if focused { "" } else { "Old title" }.into());
+        f.focused = focused;
+        vec![f]
+    };
+    // Focus is still on another field for a few reads after the tap.
+    let driver = Driver::new(Fake::new(vec![
+        field(false),
+        field(false),
+        field(false),
+        field(true),
+    ]));
+    driver.fill(&m("Title"), "Opener").await.unwrap();
+    let actions = driver.device.actions.lock().unwrap();
+    assert_eq!(
+        actions.iter().filter(|a| a.starts_with("tap")).count(),
+        1,
+        "{actions:?}"
+    );
+    assert_eq!(
+        actions.iter().filter(|a| a.starts_with("clear")).count(),
+        1,
+        "{actions:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn fill_never_clears_a_field_that_wont_take_focus() {
+    let mut field = el("Title", 0.0);
+    field.role = Some("field".into());
+    let driver = Driver::new(Fake::new(vec![vec![field]]));
+    let err = driver
+        .fill(&m("Title"), "Opener")
+        .await
+        .unwrap_err()
+        .to_string();
+    assert_eq!(err, "\"Title\" never took focus after 3 taps");
+    let actions = driver.device.actions.lock().unwrap();
+    assert!(
+        !actions.iter().any(|a| a.starts_with("clear")),
+        "{actions:?}"
     );
 }

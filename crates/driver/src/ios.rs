@@ -104,7 +104,7 @@ pub fn parse(json: &str, all: bool) -> Result<Vec<Element>> {
             frame: f,
             enabled: node.get("enabled").and_then(Value::as_bool) != Some(false),
             expanded: None,
-            focused: false,
+            focused: traits.contains(&"IsEditing"),
             scroll,
         });
     }

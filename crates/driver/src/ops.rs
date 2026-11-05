@@ -26,6 +26,8 @@ const OTHERS_EVERY_MS: u64 = 3_000;
 const FILL_TRIES: u32 = 3;
 /// Reads, `POLL_MS` apart, for typed text to show before `fill` tries again.
 const FILL_LAND_READS: u32 = 6;
+/// Reads, `POLL_MS` apart, for the tapped field to take focus before `fill` taps it again.
+const FILL_FOCUS_READS: u32 = 8;
 
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
     if value < min || value > max {
@@ -316,6 +318,7 @@ impl<D: Device> Driver<D> {
 
     /// Taps the field, empties it, types `text` and checks it landed; typing can drop characters, so it tries 3 times.
     pub async fn fill(&self, target: &Matcher, text: &str) -> Result<()> {
+        let mut unfocused = 0;
         for _ in 0..FILL_TRIES {
             let field = self.wait_for(target, TAP_WAIT_MS, false).await?;
             // At the right end, so the cursor lands after the text: an on-screen keyboard only deletes backwards. A
@@ -327,6 +330,12 @@ impl<D: Device> Driver<D> {
                 (f.x + f.width - 8.0).max(field.tap_point().0)
             };
             self.device.tap_at(x, f.y + f.height / 2.0).await?;
+            // Under load focus moves after the tap returns, and the clear would empty the field that had it.
+            if !self.took_focus(target).await? {
+                unfocused += 1;
+                continue;
+            }
+
             let held = field.value.as_deref().map_or(0, |v| v.chars().count());
             self.device
                 .clear(held.max(text.chars().count()) + 5)
@@ -363,9 +372,36 @@ impl<D: Device> Driver<D> {
                 sleep(Duration::from_millis(POLL_MS)).await;
             }
         }
+        if unfocused == FILL_TRIES {
+            return Err(DriverError::Invalid(format!(
+                "{target} never took focus after {FILL_TRIES} taps"
+            )));
+        }
+
         Err(DriverError::Invalid(format!(
             "{text:?} didn't land in {target} after {FILL_TRIES} tries"
         )))
+    }
+
+    async fn took_focus(&self, target: &Matcher) -> Result<bool> {
+        for _ in 0..FILL_FOCUS_READS {
+            let elements = self.device.read(false).await?;
+            // A date field's focus is on one of its segments, inside it.
+            let inside = |field: &Element| {
+                elements.iter().any(|e| {
+                    let (x, y) = e.frame.centre();
+                    let f = &field.frame;
+                    e.focused && x >= f.x && x <= f.x + f.width && y >= f.y && y <= f.y + f.height
+                })
+            };
+            if elements.iter().filter(|e| target.matches(e)).any(inside) {
+                return Ok(true);
+            }
+
+            sleep(Duration::from_millis(POLL_MS)).await;
+        }
+
+        Ok(false)
     }
 
     /// Types into the focused field and checks it landed: keys can drop under load, and a person would see it. A
