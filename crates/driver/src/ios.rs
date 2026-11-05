@@ -1005,6 +1005,38 @@ impl Device for Ios {
             .map(|_| ())
     }
 
+    /// The app's data container emptied and the simulator's keychain reset (where a stored session lives), with the
+    /// app stopped: a fresh install's state in seconds, without reinstalling. The keychain is the whole simulator's.
+    async fn clear_data(&self) -> Result<()> {
+        let _ = run(
+            "xcrun",
+            &["simctl", "terminate", &self.udid, &self.bundle_id],
+        )
+        .await;
+        let container = run(
+            "xcrun",
+            &[
+                "simctl",
+                "get_app_container",
+                &self.udid,
+                &self.bundle_id,
+                "data",
+            ],
+        )
+        .await?;
+        let container = Path::new(container.trim());
+        for dir in ["Documents", "Library", "tmp"] {
+            let dir = container.join(dir);
+            if dir.exists() {
+                std::fs::remove_dir_all(&dir).map_err(device)?;
+            }
+            std::fs::create_dir_all(&dir).map_err(device)?;
+        }
+        run("xcrun", &["simctl", "keychain", &self.udid, "reset"])
+            .await
+            .map(|_| ())
+    }
+
     async fn screen_size(&self) -> Result<(f64, f64)> {
         let tree: Value = serde_json::from_str(&self.screen_json(true).await?).map_err(device)?;
         let root = tree.as_array().and_then(|r| r.first()).unwrap_or(&tree);

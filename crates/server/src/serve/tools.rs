@@ -1427,14 +1427,16 @@ impl Tools {
         .await
     }
 
-    #[tool(description = "Tester: restart the app. Returns the screen once it holds still.")]
-    async fn launch(
+    #[tool(
+        description = "Tester: a fresh start, the app stopped and launched again. Returns the screen once it holds still."
+    )]
+    async fn relaunch(
         &self,
         Parameters(p): Parameters<TokenParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device("launch", &p.token, async |d| {
+        self.device("relaunch", &p.token, async |d| {
             d.device.launch().await?;
-            Ok(self.acted(&p.token, d, "launched").await)
+            Ok(self.acted(&p.token, d, "relaunched").await)
         })
         .await
     }

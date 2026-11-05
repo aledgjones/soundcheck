@@ -202,6 +202,18 @@ pub trait Device {
     async fn goto(&self, _url: &str) -> Result<()> {
         Err(self.unsupported("goto"))
     }
+    /// The app's data is gone, as on a fresh install: a relaunch afterwards starts it from nothing.
+    async fn clear_data(&self) -> Result<()> {
+        Err(self.unsupported("clear-data"))
+    }
+    /// A browser cookie for the site under test (`path` defaults to the site's).
+    async fn set_cookie(&self, _name: &str, _value: &str, _path: Option<&str>) -> Result<()> {
+        Err(self.unsupported("cookies"))
+    }
+    /// A `localStorage` key on the site under test's origin; the app reads it at its next load.
+    async fn set_storage(&self, _key: &str, _value: &str) -> Result<()> {
+        Err(self.unsupported("storage"))
+    }
     async fn viewport(&self, _width: u32, _height: u32) -> Result<()> {
         Err(self.unsupported("viewport"))
     }

@@ -80,7 +80,11 @@ pub const TOOLS: &[Tool] = &[
         ALL,
         "press a hardware key (ArrowRight, Enter, Escape, Home…), as a keyboard or pedal would",
     ),
-    basic("launch", ALL, "restart the app"),
+    basic(
+        "relaunch",
+        ALL,
+        "a fresh start: the app stopped and launched again",
+    ),
     basic(
         "push",
         ALL,

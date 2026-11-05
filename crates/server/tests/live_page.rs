@@ -415,7 +415,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
 }
 
 #[tokio::test]
-async fn a_prepare_step_that_keeps_failing_files_the_spec_blocked() {
+async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -424,13 +424,18 @@ async fn a_prepare_step_that_keeps_failing_files_the_spec_blocked() {
     let suite_dir = base.join("suite");
     let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
-    for f in [
-        "suite.yaml",
-        "annotations/_feature.md",
-        "annotations/001-draw.spec.md",
-    ] {
+    for f in ["suite.yaml", "annotations/_feature.md"] {
         std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
     }
+    // One step hands the next a value, which reaches the brief through the second's context.
+    let draw = std::fs::read_to_string(good.join("annotations/001-draw.spec.md"))
+        .unwrap()
+        .replace(
+            r#"  - echo '{"context":"seeded"}'"#,
+            r#"  - echo '{"values":{"SCORE":"s-1"}}'
+  - echo "{\"context\":\"$SCORE on $SOUNDCHECK_PLATFORM\"}""#,
+        );
+    std::fs::write(suite_dir.join("annotations/001-draw.spec.md"), draw).unwrap();
     let tries = base.join("tries");
     // Its prepare step always fails, noting each try, so the retries can be counted.
     let back = std::fs::read_to_string(good.join("annotations/002-back.spec.md"))
@@ -511,6 +516,36 @@ async fn a_prepare_step_that_keeps_failing_files_the_spec_blocked() {
         .clone();
     assert_eq!(row["result"], "BLOCKED");
     assert_eq!(row["attempts"], 0, "a reset failure uses no attempt");
+
+    call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/001-draw", "platform": "android" }),
+    )
+    .await;
+    let journal = std::fs::read_to_string(base.join("reports/run/journal.jsonl")).unwrap();
+    let dispatched = journal
+        .lines()
+        .find(|l| l.contains(r#""event":"dispatched""#))
+        .unwrap();
+    assert!(dispatched.contains("s-1 on android"), "{dispatched}");
+    assert!(
+        dispatched.contains(
+            r#""command":"echo \"{\\\"context\\\":\\\"$SCORE on $SOUNDCHECK_PLATFORM\\\"}\"""#
+        ),
+        "commands as written, values unfilled: {dispatched}"
+    );
+
+    // A prepare step's `soundcheck drive` acts through this server, which checks the platform as the CLI would.
+    let url = format!("http://{}", server.addr);
+    let typo = soundcheck::drive::through(&url, "andriod", soundcheck::drive::Action::Relaunch)
+        .await
+        .unwrap_err();
+    assert!(typo.to_string().contains("did you mean android"), "{typo}");
+    let held = soundcheck::drive::through(&url, "android", soundcheck::drive::Action::Relaunch)
+        .await
+        .unwrap_err();
+    assert!(held.to_string().contains("leaves android"), "{held}");
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

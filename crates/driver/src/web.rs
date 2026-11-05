@@ -20,6 +20,9 @@ use chromiumoxide::cdp::browser_protocol::input::{
     DispatchKeyEventParams, DispatchKeyEventType, DispatchMouseEventParams, DispatchMouseEventType,
     InsertTextParams, MouseButton,
 };
+use chromiumoxide::cdp::browser_protocol::network::{
+    ClearBrowserCookiesParams, CookieParam, SetCookiesParams,
+};
 use chromiumoxide::cdp::browser_protocol::page::{
     DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
     FileChooserOpenedMode, HandleJavaScriptDialogParams, SetInterceptFileChooserDialogParams,
@@ -1218,6 +1221,52 @@ impl Device for Chrome {
         Ok(())
     }
 
+    /// Every cookie and the site's storage gone (local and session storage, IndexedDB, OPFS, service workers,
+    /// caches), as a fresh profile has.
+    async fn clear_data(&self) -> Result<()> {
+        self.blocked()?;
+        self.page
+            .execute(ClearBrowserCookiesParams::default())
+            .await
+            .map_err(device)?;
+        self.page
+            .execute(ClearDataForOriginParams::new(origin(&self.base_url), "all"))
+            .await
+            .map_err(device)?;
+        Ok(())
+    }
+
+    async fn set_cookie(&self, name: &str, value: &str, path: Option<&str>) -> Result<()> {
+        self.blocked()?;
+        let mut cookie = CookieParam::new(name, value);
+        cookie.url = Some(self.base_url.clone());
+        cookie.path = path.map(str::to_string);
+        self.page
+            .execute(SetCookiesParams::new(vec![cookie]))
+            .await
+            .map_err(device)?;
+        Ok(())
+    }
+
+    async fn set_storage(&self, key: &str, value: &str) -> Result<()> {
+        self.blocked()?;
+        let site = origin(&self.base_url);
+        let at = self.page.url().await.map_err(device)?.unwrap_or_default();
+        if !at.starts_with(&site) {
+            return Err(DriverError::Invalid(format!(
+                "storage is set on {site}, but the page is on {at}; relaunch first"
+            )));
+        }
+
+        let script = format!(
+            "localStorage.setItem({}, {})",
+            serde_json::Value::from(key),
+            serde_json::Value::from(value)
+        );
+        self.page.evaluate(script).await.map_err(device)?;
+        Ok(())
+    }
+
     async fn goto(&self, url: &str) -> Result<()> {
         self.blocked()?;
         // Back, forward and close act on the tab in front, as the browser's own buttons do.
@@ -1237,6 +1286,11 @@ impl Device for Chrome {
                     ));
                 }
                 front.close().await.map_err(device)?;
+            }
+            // A path is the site under test's, as a link inside it would be.
+            path if path.starts_with('/') => {
+                let url = format!("{}{path}", origin(&self.base_url));
+                self.page.goto(url).await.map_err(device)?;
             }
             url => {
                 self.page.goto(url).await.map_err(device)?;

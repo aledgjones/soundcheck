@@ -750,6 +750,19 @@ impl Device for Android {
         .map(|_| ())
     }
 
+    async fn clear_data(&self) -> Result<()> {
+        let out = self.shell(&format!("pm clear {}", self.package)).await?;
+        if !out.contains("Success") {
+            return Err(DriverError::Device(format!(
+                "pm clear {}: {}",
+                self.package,
+                out.trim()
+            )));
+        }
+
+        Ok(())
+    }
+
     async fn screen_size(&self) -> Result<(f64, f64)> {
         // `wm size` is the panel's natural size, landscape on a tablet even while it shows portrait; the display's
         // `cur=` size is what's on screen now, with rotation and any override applied.

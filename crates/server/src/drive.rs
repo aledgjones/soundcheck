@@ -3,15 +3,16 @@
 //! reader start.
 
 use crate::serve::tools::{Step, TouchStop, line, step};
-use crate::suite::config::DriverKind;
+use crate::suite::config::{DriverKind, Platform};
 use anyhow::{Result, bail};
 use clap::Subcommand;
+use serde::{Deserialize, Serialize};
 use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::parity::compare;
-use soundcheck_driver::{Device, Matcher};
+use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::{Path, PathBuf};
 
-#[derive(Subcommand)]
+#[derive(Subcommand, Serialize, Deserialize)]
 pub enum Action {
     /// What's on screen as a screen reader gets it, optionally only what matches.
     See {
@@ -74,8 +75,23 @@ pub enum Action {
     },
     /// Press a hardware key (ArrowRight, Enter, Escape…).
     Press { key: String },
-    /// Restart the app.
-    Launch,
+    /// A fresh start: the app stopped and launched again (on chrome, the site's url loaded again).
+    Relaunch,
+    /// Show a link: a deep link on ios and android, a URL or a path on the site under test on chrome.
+    Open { link: String },
+    /// The app's data gone, as on a fresh install: android clears the package, ios empties its data container and
+    /// the simulator's keychain, chrome drops cookies and the site's storage. Relaunch after it.
+    ClearData,
+    /// Browser cookies for the site under test (chrome).
+    Cookies {
+        #[command(subcommand)]
+        action: SetCookie,
+    },
+    /// The site's localStorage (chrome); the app reads it at its next load.
+    Storage {
+        #[command(subcommand)]
+        action: SetStorage,
+    },
     /// Save a screenshot.
     Shot { file: PathBuf },
     /// Crashes and app errors since the last launch.
@@ -106,7 +122,38 @@ pub enum Action {
     Parity,
 }
 
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum SetCookie {
+    /// `name=value`, for the site's url; `--path` narrows it (`/auth`).
+    Set {
+        cookie: String,
+        #[arg(long)]
+        path: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Serialize, Deserialize)]
+pub enum SetStorage {
+    /// `key=value` on the site's origin.
+    Set { entry: String },
+}
+
+/// What `soundcheck drive` sends a run's server: the platform as written, and the action.
+#[derive(Serialize, Deserialize)]
+pub struct Request {
+    pub platform: String,
+    pub action: Action,
+}
+
+/// The variable a run gives its prepare steps: with it, `drive` acts through that run's server, on the device the
+/// run already holds, rather than connecting a second time.
+pub const SERVER_VAR: &str = "SOUNDCHECK_SERVER";
+
 pub async fn drive(suite: &Path, platform: &str, action: Action) -> Result<String> {
+    if let Ok(server) = std::env::var(SERVER_VAR) {
+        return through(&server, platform, action).await;
+    }
+
     if !suite.join(crate::suite::CONFIG_FILE).exists() {
         bail!(
             "no {} in {}: run from the suite folder, or pass --suite",
@@ -133,7 +180,57 @@ pub async fn drive(suite: &Path, platform: &str, action: Action) -> Result<Strin
     }
 
     let driver = crate::serve::driver(platform, &loaded, false).await?;
-    let d = &driver;
+    act(&driver, platform, config.driver(&platform), action).await
+}
+
+/// Sends the action to the run's server; a file path in it is made absolute first, since the server runs elsewhere.
+pub async fn through(server: &str, platform: &str, mut action: Action) -> Result<String> {
+    if let Action::Shot { file } | Action::Push { file, .. } = &mut action {
+        *file = std::path::absolute(&*file)?;
+    }
+
+    let response = reqwest::Client::new()
+        .post(format!("{}/drive", server.trim_end_matches('/')))
+        .json(&Request {
+            platform: platform.to_string(),
+            action,
+        })
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("the run's server at {server} didn't answer: {e}"))?;
+    let ok = response.status().is_success();
+    let text = response.text().await?;
+    if !ok {
+        bail!("{text}");
+    }
+
+    Ok(text)
+}
+
+/// A browser-only tool on another driver fails with why, so a script on the wrong branch fails its reset rather
+/// than doing nothing.
+fn needs_browser(action: &Action, platform: Platform, driver: DriverKind) -> Result<()> {
+    let tool = match action {
+        Action::Cookies { .. } => "cookies",
+        Action::Storage { .. } => "storage",
+        _ => return Ok(()),
+    };
+    if driver != DriverKind::Chrome {
+        bail!("{tool} needs a browser; {platform} runs on the {driver} driver");
+    }
+
+    Ok(())
+}
+
+/// One action on a connected device, from the terminal or through a run's server.
+pub async fn act(
+    d: &Driver<AnyDevice>,
+    platform: Platform,
+    driver: DriverKind,
+    action: Action,
+) -> Result<String> {
+    needs_browser(&action, platform, driver)?;
+
     let matcher = |t: &str| Matcher::parse(t).map_err(|e| anyhow::anyhow!("{t}: {e}"));
     let as_step = |s: Step| async move { Ok::<_, anyhow::Error>(step(d, &s).await?) };
     Ok(match action {
@@ -183,9 +280,35 @@ pub async fn drive(suite: &Path, platform: &str, action: Action) -> Result<Strin
         }
         Action::Release { back } => as_step(Step::Release { back }).await?,
         Action::Press { key } => as_step(Step::Press { key }).await?,
-        Action::Launch => {
+        Action::Relaunch => {
             d.device.launch().await?;
-            "launched".into()
+            "relaunched".into()
+        }
+        Action::Open { link } => {
+            d.device.goto(&link).await?;
+            format!("opened {link}")
+        }
+        Action::ClearData => {
+            d.device.clear_data().await?;
+            "data cleared; relaunch to start from it".into()
+        }
+        Action::Cookies {
+            action: SetCookie::Set { cookie, path },
+        } => {
+            let Some((name, value)) = cookie.split_once('=') else {
+                bail!("a cookie is name=value, not {cookie:?}");
+            };
+            d.device.set_cookie(name, value, path.as_deref()).await?;
+            format!("cookie {name} set")
+        }
+        Action::Storage {
+            action: SetStorage::Set { entry },
+        } => {
+            let Some((key, value)) = entry.split_once('=') else {
+                bail!("a storage entry is key=value, not {entry:?}");
+            };
+            d.device.set_storage(key, value).await?;
+            format!("storage {key} set")
         }
         Action::Shot { file } => {
             d.device.screenshot(&file).await?;
@@ -278,4 +401,50 @@ async fn parity(device: &AnyDevice) -> Result<String> {
         full.render(tool),
         spoken.render(tool)
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(subcommand)]
+        action: Action,
+    }
+
+    fn parse(args: &[&str]) -> Action {
+        Cli::try_parse_from(std::iter::once("drive").chain(args.iter().copied()))
+            .unwrap()
+            .action
+    }
+
+    #[test]
+    fn browser_tools_fail_with_why_off_a_browser() {
+        let cookie = parse(&["cookies", "set", "refresh_token=x", "--path", "/auth"]);
+        let ios = Platform::literal("ios");
+        assert_eq!(
+            needs_browser(&cookie, ios, DriverKind::Ios)
+                .unwrap_err()
+                .to_string(),
+            "cookies needs a browser; ios runs on the ios driver"
+        );
+        assert!(needs_browser(&cookie, Platform::literal("chrome"), DriverKind::Chrome).is_ok());
+        assert!(
+            needs_browser(&parse(&["storage", "set", "k=v"]), ios, DriverKind::Android).is_err()
+        );
+        assert!(needs_browser(&parse(&["clear-data"]), ios, DriverKind::Ios).is_ok());
+    }
+
+    #[test]
+    fn an_action_crosses_to_the_server_whole() {
+        let sent = serde_json::to_string(&Request {
+            platform: "ios".into(),
+            action: parse(&["open", "myapp://viewer/s-1"]),
+        })
+        .unwrap();
+        let got: Request = serde_json::from_str(&sent).unwrap();
+        assert!(matches!(got.action, Action::Open { link } if link == "myapp://viewer/s-1"));
+    }
 }

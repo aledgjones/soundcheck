@@ -89,6 +89,15 @@ impl Device for AnyDevice {
     async fn goto(&self, url: &str) -> Result<()> {
         each!(self, d => d.goto(url).await)
     }
+    async fn clear_data(&self) -> Result<()> {
+        each!(self, d => d.clear_data().await)
+    }
+    async fn set_cookie(&self, name: &str, value: &str, path: Option<&str>) -> Result<()> {
+        each!(self, d => d.set_cookie(name, value, path).await)
+    }
+    async fn set_storage(&self, key: &str, value: &str) -> Result<()> {
+        each!(self, d => d.set_storage(key, value).await)
+    }
     async fn viewport(&self, width: u32, height: u32) -> Result<()> {
         each!(self, d => d.viewport(width, height).await)
     }

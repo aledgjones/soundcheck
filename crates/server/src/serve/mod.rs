@@ -1674,6 +1674,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/tokens", post(tokens))
         .route("/ended", post(ended))
         .route("/dispatch", post(dispatch_route))
+        .route("/drive", post(drive_route))
         .route("/summary", get(summary))
         .route("/next", get(next))
         .route("/", get(runs_index))
@@ -2002,6 +2003,32 @@ async fn dispatch_route(
     match hub.dispatch(spec.as_deref(), platform).await {
         Ok(dispatched) => axum::Json(dispatched).into_response(),
         Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
+/// `soundcheck drive` from a prepare step (DESIGN.md 5.6): the action on the device the run already holds.
+async fn drive_route(
+    State(hub): State<Arc<Hub>>,
+    axum::Json(request): axum::Json<crate::drive::Request>,
+) -> Response {
+    let acted = async {
+        let suite = hub.suite();
+        let config = suite
+            .config
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
+        let platform = config
+            .platform(&request.platform)
+            .map_err(anyhow::Error::msg)?;
+        let driver = config.driver(&platform);
+        hub.on_device(platform, async |d| {
+            Ok(crate::drive::act(d, platform, driver, request.action).await)
+        })
+        .await?
+    };
+    match acted.await {
+        Ok(out) => out.into_response(),
+        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")).into_response(),
     }
 }
 
