@@ -196,7 +196,7 @@ What every key does. The reasons behind them are in [DESIGN.md](DESIGN.md) (5.2 
 
 ### Hooks
 
-Shell commands, one set per platform, each naming its platform itself. Exit 0 for ok; JSON on stdout where data comes back. Every hook gets `SOUNDCHECK_UNCOMMITTED=1` in a `--uncommitted` trial.
+Shell commands, one set per platform, each naming its platform itself. Exit 0 for ok; JSON on stdout where data comes back. Every hook gets `SOUNDCHECK_BIN`, the run's own soundcheck executable, for any `soundcheck drive` it runs (never a bare `soundcheck` from the PATH, which can be another version), and `SOUNDCHECK_UNCOMMITTED=1` in a `--uncommitted` trial.
 
 | Hook             | Required          | When soundcheck calls it                                                                                       | What it does and returns                                                                                                                    |
 | ---------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |

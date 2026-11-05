@@ -37,6 +37,9 @@ impl std::error::Error for TimedOut {}
 /// build no commit identifies.
 pub const UNCOMMITTED: &str = "SOUNDCHECK_UNCOMMITTED";
 
+/// This soundcheck's own executable, so a hook's `soundcheck drive` is the run's version and never one on the PATH.
+pub const BIN: &str = "SOUNDCHECK_BIN";
+
 /// What a run tells every hook it runs, through the environment. Every hook command takes one, so none is missed;
 /// a hook outside a run (`stack down`) gets the default.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -49,6 +52,13 @@ impl RunEnv {
     /// it from the shell that started soundcheck.
     pub fn vars(self) -> BTreeMap<String, String> {
         let mut vars = BTreeMap::new();
+
+        if let Some(exe) = std::env::current_exe()
+            .ok()
+            .and_then(|e| e.into_os_string().into_string().ok())
+        {
+            vars.insert(BIN.to_string(), exe);
+        }
 
         if self.uncommitted {
             vars.insert(UNCOMMITTED.to_string(), "1".to_string());
@@ -301,6 +311,20 @@ mod tests {
         };
         assert_eq!(said(RunEnv { uncommitted: true }).await, "1\n");
         assert_eq!(said(RunEnv::default()).await, "unset\n");
+    }
+
+    #[tokio::test]
+    async fn every_hook_is_told_this_soundcheck() {
+        let said = run(
+            &std::env::temp_dir(),
+            "echo \"$SOUNDCHECK_BIN\"",
+            GUARD_TIMEOUT,
+            RunEnv::default(),
+        )
+        .await
+        .unwrap();
+        let exe = std::env::current_exe().unwrap();
+        assert_eq!(said.trim(), exe.to_str().unwrap());
     }
 
     #[tokio::test]
