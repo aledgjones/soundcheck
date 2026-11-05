@@ -5,7 +5,7 @@ use crate::element::Rect;
 use crate::matcher::Matcher;
 use std::path::Path;
 use std::time::Duration;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, sleep_until};
 
 /// Milliseconds everywhere, and anything outside these is refused.
 pub const WAIT_MAX_MS: u64 = 120_000;
@@ -86,12 +86,15 @@ impl<D: Device> Driver<D> {
         })
     }
 
-    /// The screen once two reads in a row match, so a reply after an input isn't a transition caught midway.
+    /// The screen once two reads `POLL_MS` apart match, so a reply after an input isn't a transition caught midway.
     pub async fn settled(&self) -> Result<Vec<Element>> {
         let deadline = Instant::now() + Duration::from_millis(SETTLE_MAX_MS);
+        let mut started = Instant::now();
         let mut last = self.device.read(false).await?;
         while Instant::now() < deadline {
-            sleep(Duration::from_millis(POLL_MS)).await;
+            // Apart from start to start: an iOS read alone takes most of it.
+            sleep_until(started + Duration::from_millis(POLL_MS)).await;
+            started = Instant::now();
             let now = self.device.read(false).await?;
             if now == last {
                 return Ok(now);
