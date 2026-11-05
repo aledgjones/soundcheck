@@ -673,11 +673,14 @@ async fn run(program: &Path, args: &[&str], limit: Duration) -> Result<String> {
         })?
         .map_err(device)?;
     if !out.status.success() {
-        return Err(device(format!(
-            "adb {}: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
+        // `adb shell` passes the device's stderr on stdout, so a shell command's reason is stdout's last line.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let reason = match stderr.trim() {
+            "" => stdout.trim().lines().last().unwrap_or_default(),
+            stderr => stderr,
+        };
+        return Err(device(format!("adb {}: {reason}", args.join(" "))));
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }

@@ -447,7 +447,12 @@ impl Ios {
             recovered_at: std::sync::Mutex::new(None),
         };
         ios.no_hardware_keyboard().await?;
-        run("xcrun", &["simctl", "bootstatus", &ios.udid, "-b"]).await?;
+        run_for(
+            "xcrun",
+            &["simctl", "bootstatus", &ios.udid, "-b"],
+            BOOT_TIMEOUT,
+        )
+        .await?;
         Ok(ios)
     }
 
@@ -780,16 +785,26 @@ fn home() -> PathBuf {
 
 /// Under heavy load a simulator tool can stall for minutes, so every call has a limit.
 pub(crate) async fn run(program: &str, args: &[&str]) -> Result<String> {
+    run_for(program, args, Duration::from_secs(60)).await
+}
+
+/// A simulator's first boot sets up its data, longer still with another booting beside it (iPad mini's took over
+/// a minute next to an iPhone's, 2026-11-05).
+const BOOT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+
+/// [`run`] with its own time limit.
+async fn run_for(program: &str, args: &[&str], limit: Duration) -> Result<String> {
     let child = tokio::process::Command::new(program)
         .args(args)
         .kill_on_drop(true)
         .output();
-    let out = timeout(Duration::from_secs(60), child)
+    let out = timeout(limit, child)
         .await
         .map_err(|_| {
             device(format!(
-                "{program} {} took longer than 60 s",
-                args.join(" ")
+                "{program} {} took longer than {} s",
+                args.join(" "),
+                limit.as_secs()
             ))
         })?
         .map_err(|e| device(format!("{program}: {e}")))?;
@@ -1130,7 +1145,12 @@ impl Device for Ios {
         self.stop_reader().await;
         let _ = run("xcrun", &["simctl", "shutdown", &self.udid]).await;
         run("xcrun", &["simctl", "boot", &self.udid]).await?;
-        run("xcrun", &["simctl", "bootstatus", &self.udid, "-b"]).await?;
+        run_for(
+            "xcrun",
+            &["simctl", "bootstatus", &self.udid, "-b"],
+            BOOT_TIMEOUT,
+        )
+        .await?;
         // The keyboard setting applies at boot, and is off.
         self.hardware_keyboard
             .store(false, std::sync::atomic::Ordering::Relaxed);
