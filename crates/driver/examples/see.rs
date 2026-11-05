@@ -18,15 +18,24 @@ async fn main() {
     let readers = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers");
     let device = if flag("--ios") {
         AnyDevice::Ios(
-            Ios::connect(app, Some(readers.join("ios/build/reader")))
-                .await
-                .expect("connect"),
+            Ios::connect(
+                app,
+                Some(readers.join("ios/build/reader")),
+                &Ios::booted().await.expect("a booted simulator"),
+            )
+            .await
+            .expect("connect"),
         )
     } else {
         AnyDevice::Android(
-            Android::connect(app, Some(readers.join("android/build/reader.apk")))
-                .await
-                .expect("connect"),
+            Android::connect(
+                app,
+                Some(readers.join("android/build/reader.apk")),
+                &Android::running().await.expect("a running emulator"),
+                false,
+            )
+            .await
+            .expect("connect"),
         )
     };
     let driver = Driver::new(device);

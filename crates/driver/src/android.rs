@@ -14,7 +14,18 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, timeout};
 
 const READER_PACKAGE: &str = "dev.soundcheck.reader";
-const READER_PORT: u16 = 9018;
+/// Where the reader listens on the device; each emulator's is forwarded to its own port here ([`reader_port`]).
+const READER_DEVICE_PORT: u16 = 9018;
+
+/// The port on this machine an emulator's reader is forwarded to: read from its console port (`emulator-5556`), so the
+/// CLI and a run's server agree, and emulators side by side never share one.
+pub fn reader_port(serial: &str) -> u16 {
+    let console: u16 = serial
+        .strip_prefix("emulator-")
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(5554);
+    20_000 + console
+}
 /// The reader's `minSdkVersion` (readers/android/AndroidManifest.xml).
 const READER_MIN_API: u32 = 34;
 /// What a crash or hang looks like in logcat, for `errors`.
@@ -31,6 +42,8 @@ static BOUNDS: LazyLock<Regex> =
 pub struct Android {
     adb: PathBuf,
     serial: String,
+    /// Where its reader is forwarded on this machine, [`reader_port`] of the serial.
+    port: u16,
     package: String,
     reader_apk: Option<PathBuf>,
     /// The `adb reverse` forwards at connect, as (device port, host port): what a reboot drops and health restores.
@@ -218,41 +231,137 @@ fn keycode(key: &str) -> Option<u32> {
     })
 }
 
+fn adb_path() -> PathBuf {
+    std::env::var_os("ANDROID_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join("Library/Android/sdk")
+        })
+        .join("platform-tools/adb")
+}
+
+/// Each running emulator's serial and the AVD it runs. Emulators only: a physical device may run a build that
+/// points at production, so it's never listed.
+async fn emulators(adb: &Path) -> Result<Vec<(String, String)>> {
+    let out = run(adb, &["devices"], Duration::from_secs(10)).await?;
+    let mut found = Vec::new();
+    for serial in out
+        .lines()
+        .filter_map(|l| l.strip_suffix("\tdevice"))
+        .filter(|s| s.starts_with("emulator-"))
+    {
+        let avd = run(
+            adb,
+            &["-s", serial, "emu", "avd", "name"],
+            Duration::from_secs(10),
+        )
+        .await?;
+        let avd = avd.lines().next().unwrap_or("").trim().to_string();
+        found.push((serial.to_string(), avd));
+    }
+
+    Ok(found)
+}
+
+/// Starts `avd` on console `port`, in its own process group so it outlives this process. SwiftShader drops taps, so
+/// the host GPU.
+fn spawn_emulator(adb: &Path, avd: &str, port: u16, headed: bool) -> Result<()> {
+    let emulator = adb
+        .parent()
+        .and_then(Path::parent)
+        .map(|sdk| sdk.join("emulator/emulator"))
+        .ok_or_else(|| device("no emulator binary beside adb"))?;
+    std::process::Command::new(emulator)
+        .args([
+            "-avd",
+            avd,
+            "-port",
+            &port.to_string(),
+            "-gpu",
+            "host",
+            "-no-snapshot",
+        ])
+        .args((!headed).then_some("-no-window"))
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map_err(device)?;
+    Ok(())
+}
+
 impl Android {
-    /// Connects to the running emulator (or `ANDROID_SERIAL`, which must be an emulator) to drive `package`.
-    pub async fn connect(package: &str, reader_apk: Option<PathBuf>) -> Result<Android> {
-        let sdk = std::env::var_os("ANDROID_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
-                    .join("Library/Android/sdk")
-            });
-        let adb = sdk.join("platform-tools/adb");
-        let serial = match std::env::var("ANDROID_SERIAL") {
-            Ok(s) => s,
-            Err(_) => {
-                let out = run(&adb, &["devices"], Duration::from_secs(10)).await?;
-                out.lines()
-                    .filter_map(|l| l.strip_suffix("\tdevice"))
-                    .find(|s| s.starts_with("emulator-"))
-                    .ok_or_else(|| DriverError::Device("no running emulator".into()))?
-                    .to_string()
+    /// The one running emulator's AVD name, for tools and tests that drive whatever is up.
+    pub async fn running() -> Result<String> {
+        match emulators(&adb_path()).await?.as_slice() {
+            [(_, avd)] => Ok(avd.clone()),
+            [] => Err(device("no running emulator")),
+            _ => Err(device(
+                "several emulators are running; name the AVD to drive",
+            )),
+        }
+    }
+
+    /// Connects to the emulator running the AVD `avd`, starting it (in a window only when `headed`) if none is, to
+    /// drive `package`.
+    pub async fn connect(
+        package: &str,
+        reader_apk: Option<PathBuf>,
+        avd: &str,
+        headed: bool,
+    ) -> Result<Android> {
+        let adb = adb_path();
+        let running = emulators(&adb).await?;
+        let serial = match running
+            .iter()
+            .find(|(serial, name)| name == avd || serial == avd)
+        {
+            Some((serial, _)) => serial.clone(),
+            None if avd.starts_with("emulator-") => {
+                return Err(device(format!(
+                    "{avd} isn't running; give the AVD's name instead, so soundcheck can boot it"
+                )));
+            }
+            None => {
+                // Console ports are even, from 5554; the next free one.
+                let port = (5554..5682)
+                    .step_by(2)
+                    .find(|p| running.iter().all(|(s, _)| *s != format!("emulator-{p}")))
+                    .ok_or_else(|| device("no free emulator console port"))?;
+                spawn_emulator(&adb, avd, port, headed)?;
+                let serial = format!("emulator-{port}");
+                let mut booted = false;
+                for _ in 0..180 {
+                    let ready = run(
+                        &adb,
+                        &["-s", &serial, "shell", "getprop", "sys.boot_completed"],
+                        Duration::from_secs(10),
+                    )
+                    .await;
+                    if ready.is_ok_and(|v| v.trim() == "1") {
+                        booted = true;
+                        break;
+                    }
+                    sleep(Duration::from_secs(1)).await;
+                }
+                if !booted {
+                    return Err(device(format!(
+                        "{avd} didn't boot within 3 minutes (is it an AVD? `emulator -list-avds`)"
+                    )));
+                }
+                serial
             }
         };
-        // A physical device may run a build that points at production.
-        if !serial.starts_with("emulator-") {
-            return Err(DriverError::Device(format!(
-                "{serial} isn't an emulator; soundcheck drives emulators only"
-            )));
-        }
         let android = Android {
+            port: reader_port(&serial),
             adb,
             serial,
             package: package.into(),
             reader_apk,
             forwards_at_connect: Vec::new(),
             last_launch_ms: std::sync::Mutex::new(None),
-            headed: false,
+            headed,
         };
         // A forward left pointing at a proxy (a driver that stopped mid-drop) would leave the app offline.
         android.restore_forwards().await?;
@@ -355,7 +464,7 @@ impl Android {
 
     async fn reader_get(&self, path: &str) -> Result<String> {
         let get = async {
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", READER_PORT)).await?;
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await?;
             stream
                 .write_all(format!("GET {path} HTTP/1.0\r\n\r\n").as_bytes())
                 .await?;
@@ -431,8 +540,11 @@ impl Android {
 
     /// Starts the reader if it isn't answering. Only one UI automation client can connect at a time.
     async fn ensure_reader(&self) -> Result<()> {
-        let port = format!("tcp:{READER_PORT}");
-        self.adb(&["forward", &port, &port]).await?;
+        let (host, on_device) = (
+            format!("tcp:{}", self.port),
+            format!("tcp:{READER_DEVICE_PORT}"),
+        );
+        self.adb(&["forward", &host, &on_device]).await?;
         if self
             .reader_get("/ping")
             .await
@@ -528,10 +640,6 @@ impl Android {
     }
 
     /// Whether an emulator this driver boots (a restart) shows its window; headless by default.
-    pub fn headed(self, headed: bool) -> Android {
-        Android { headed, ..self }
-    }
-
     /// Forwards each (device port, port on this machine), where the network proxy listens; health keeps them.
     pub async fn forward(mut self, forwards: &[(u16, u16)]) -> Result<Android> {
         for &(device, host) in forwards {
@@ -872,27 +980,12 @@ impl Device for Android {
             }
             sleep(Duration::from_secs(1)).await;
         }
-        let emulator = self
-            .adb
-            .parent()
-            .and_then(Path::parent)
-            .map(|sdk| sdk.join("emulator/emulator"))
-            .ok_or_else(|| device("no emulator binary beside adb"))?;
-        let port = self.serial.strip_prefix("emulator-").unwrap_or("5554");
-        // Its own process group, so it outlives this server; SwiftShader drops taps, so the host GPU.
-        std::process::Command::new(emulator)
-            .args(["-avd", &avd, "-port", port, "-gpu", "host", "-no-snapshot"])
-            .args(if self.headed {
-                None
-            } else {
-                Some("-no-window")
-            })
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(device)?;
+        let port = self
+            .serial
+            .strip_prefix("emulator-")
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(5554);
+        spawn_emulator(&self.adb, &avd, port, self.headed)?;
         let mut booted = false;
         for _ in 0..180 {
             if self
@@ -938,6 +1031,12 @@ impl Device for Android {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_emulator_has_its_own_reader_port() {
+        assert_eq!(reader_port("emulator-5554"), 25554);
+        assert_eq!(reader_port("emulator-5556"), 25556);
+    }
 
     const XML: &str = r#"<?xml version='1.0' encoding='UTF-8' standalone='yes' ?><hierarchy rotation="0"><node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focused="false" selected="false" bounds="[0,0][1600,2560]"><node index="1" text="" resource-id="com.example:id/switch" class="android.widget.Switch" content-desc="Send diagnostic info" checkable="true" checked="true" clickable="true" enabled="true" focused="false" selected="false" bounds="[400,10][500,40]" /><node index="2" text="Opener" resource-id="" class="android.widget.EditText" content-desc="Title" checkable="false" checked="false" clickable="true" enabled="false" focused="true" selected="false" bounds="[0,100][800,160]" /><node index="3" text="" resource-id="phosphor-react-native-list-regular" class="android.view.View" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focused="false" selected="false" bounds="[0,200][80,260]" /><node index="4" text="Off screen" resource-id="" class="android.widget.TextView" content-desc="" bounds="[0,0][0,0]" /></node></hierarchy>"#;
 

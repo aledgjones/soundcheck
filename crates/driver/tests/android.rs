@@ -6,6 +6,15 @@ use soundcheck_driver::{Device, Driver, Matcher};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// The one running emulator, whatever its AVD.
+async fn connect(
+    package: &str,
+    reader: Option<std::path::PathBuf>,
+) -> Result<Android, soundcheck_driver::DriverError> {
+    let avd = Android::running().await?;
+    Android::connect(package, reader, &avd, false).await
+}
+
 /// One emulator: the tests take turns on it.
 static EMULATOR: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -29,7 +38,7 @@ async fn the_android_driver_reads_and_drives_settings() {
     }
     let _turn = EMULATOR.lock().await;
     let apk = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/android/build/reader.apk");
-    let android = match Android::connect("com.android.settings", Some(apk)).await {
+    let android = match connect("com.android.settings", Some(apk)).await {
         Ok(a) => a,
         Err(e) => {
             eprintln!("skipping: {e}");
@@ -122,7 +131,7 @@ async fn the_device_reaches_the_proxy_through_its_forward_and_loses_it_offline()
         return;
     }
     let _turn = EMULATOR.lock().await;
-    let android = match Android::connect("com.android.settings", None).await {
+    let android = match connect("com.android.settings", None).await {
         Ok(a) => a,
         Err(e) => {
             eprintln!("skipping: {e}");
@@ -171,7 +180,7 @@ async fn health_measures_the_emulator_and_puts_back_a_lost_forward() {
     }
     let _turn = EMULATOR.lock().await;
     adb(&["reverse", "tcp:18998", "tcp:18998"]);
-    let android = match Android::connect("com.android.settings", None).await {
+    let android = match connect("com.android.settings", None).await {
         Ok(a) => a,
         Err(e) => {
             eprintln!("skipping: {e}");
@@ -208,9 +217,7 @@ async fn restart_reboots_the_emulator_and_keeps_its_forwards() {
     }
     let _turn = EMULATOR.lock().await;
     let before = adb(&["reverse", "--list"]);
-    let android = Android::connect("com.android.settings", None)
-        .await
-        .unwrap();
+    let android = connect("com.android.settings", None).await.unwrap();
     android.restart().await.unwrap();
     assert_eq!(adb(&["reverse", "--list"]), before);
     android.launch().await.unwrap();

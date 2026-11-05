@@ -31,3 +31,26 @@ platforms:
       build-identity: node hooks/build.mjs identity web
       install: node hooks/build.mjs install web
       check: node hooks/data.mjs --platform web check
+  # Two chrome platforms on `desktop` with one profile: each launch is its own browser on a copy.
+  phone-web:
+    driver: chrome
+    device: desktop
+    viewport: 400x860
+    url: http://localhost:43173/
+    chrome-profile: ~/.soundcheck/chrome/example
+    hooks:
+      guard: "true"
+      build-identity: "true"
+      install: "true"
+      check: "true"
+  wide-web:
+    driver: chrome
+    device: desktop
+    viewport: 1920x1080
+    url: http://localhost:43173/
+    chrome-profile: ~/.soundcheck/chrome/example
+    hooks:
+      guard: "true"
+      build-identity: "true"
+      install: "true"
+      check: "true"

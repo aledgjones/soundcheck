@@ -96,12 +96,16 @@ pub async fn connect(
             ))
         }
         DriverKind::Android => AnyDevice::Android(
-            Android::connect(&app()?, reader("android", "reader.apk"))
-                .await?
-                .headed(headed),
+            Android::connect(
+                &app()?,
+                reader("android", "reader.apk"),
+                &config.device,
+                headed,
+            )
+            .await?,
         ),
         DriverKind::Ios => AnyDevice::Ios(
-            Ios::connect(&app()?, reader("ios", "reader"))
+            Ios::connect(&app()?, reader("ios", "reader"), &config.device)
                 .await?
                 .headed(headed),
         ),

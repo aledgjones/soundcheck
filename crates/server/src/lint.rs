@@ -216,7 +216,6 @@ fn platform_problems(config: &SuiteConfig) -> Vec<String> {
     let mut problems = Vec::new();
     let mut listens: BTreeMap<u16, String> = BTreeMap::new();
     let mut devices: BTreeMap<(DriverKind, &str), Platform> = BTreeMap::new();
-    let mut drivers: BTreeMap<DriverKind, Platform> = BTreeMap::new();
     for (&platform, p) in &config.platforms {
         let at = format!("platforms.{platform}");
         let mut need = |field: &str, value: &Option<String>| {
@@ -274,17 +273,13 @@ fn platform_problems(config: &SuiteConfig) -> Vec<String> {
 
         if p.device.trim().is_empty() {
             problems.push(format!("{at}.device: name the device it runs on"));
-        } else if let Some(other) = devices.insert((p.driver, p.device.as_str()), platform) {
+        // Each chrome platform launches its own browser on a copy of its profile, so `desktop` is never shared.
+        } else if p.driver != DriverKind::Chrome
+            && let Some(other) = devices.insert((p.driver, p.device.as_str()), platform)
+        {
             problems.push(format!(
                 "{at}.device: {other} runs on {} too; give each platform its own",
                 p.device
-            ));
-        }
-
-        if let Some(other) = drivers.insert(p.driver, platform) {
-            problems.push(format!(
-                "{at}: {other} uses the {} driver too; two platforms on one driver need a device each, which lands with per-platform readers (SA-880)",
-                p.driver
             ));
         }
 

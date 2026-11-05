@@ -13,7 +13,15 @@ use std::time::{Duration, SystemTime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, timeout};
 
-const READER_PORT: u16 = 9019;
+/// Each simulator's reader listens on its own port, read from its UDID, so the CLI and a run's server agree with no
+/// state between them, and simulators side by side never share one. A clash is caught by `/ping`, which names the UDID.
+pub fn reader_port(udid: &str) -> u16 {
+    // FNV-1a: stable across builds, unlike std's hasher.
+    let hash = udid.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+    });
+    30_000 + (hash % 10_000) as u16
+}
 
 fn device(e: impl std::fmt::Display) -> DriverError {
     DriverError::Device(e.to_string())
@@ -183,6 +191,8 @@ fn keycode(key: &str) -> Option<u32> {
 
 pub struct Ios {
     udid: String,
+    /// Its reader's port, [`reader_port`] of the UDID.
+    port: u16,
     bundle_id: String,
     reader: Option<PathBuf>,
     /// When the app was last launched: crash reports from before then are someone else's problem.
@@ -354,35 +364,76 @@ impl Ios {
         };
         self.tap_at(at.0, at.1).await
     }
-    /// Connects to the booted simulator (or `SOUNDCHECK_IOS_UDID`) to drive `bundle_id`. Simulators only:
-    /// `simctl` never lists a physical device.
-    pub async fn connect(bundle_id: &str, reader: Option<PathBuf>) -> Result<Ios> {
-        let udid = match std::env::var("SOUNDCHECK_IOS_UDID") {
-            Ok(u) => u,
-            Err(_) => {
-                let list = run("xcrun", &["simctl", "list", "devices", "booted", "--json"]).await?;
-                let parsed: Value = serde_json::from_str(&list).map_err(device)?;
-                let booted: Vec<String> = parsed["devices"]
-                    .as_object()
-                    .into_iter()
-                    .flat_map(|runtimes| runtimes.values())
-                    .filter_map(Value::as_array)
-                    .flatten()
-                    .filter(|d| d["state"] == "Booted")
-                    .filter_map(|d| d["udid"].as_str().map(str::to_string))
-                    .collect();
-                match booted.as_slice() {
-                    [one] => one.clone(),
-                    [] => return Err(device("no booted simulator")),
-                    _ => {
-                        return Err(device(
-                            "several simulators are booted; set SOUNDCHECK_IOS_UDID to the one to drive",
-                        ));
-                    }
-                }
+    /// Every simulator `simctl` can run, as (name, UDID, booted).
+    async fn simulators() -> Result<Vec<(String, String, bool)>> {
+        let list = run(
+            "xcrun",
+            &["simctl", "list", "devices", "available", "--json"],
+        )
+        .await?;
+        let parsed: Value = serde_json::from_str(&list).map_err(device)?;
+        Ok(parsed["devices"]
+            .as_object()
+            .into_iter()
+            .flat_map(|runtimes| runtimes.values())
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|d| {
+                Some((
+                    d["name"].as_str()?.to_string(),
+                    d["udid"].as_str()?.to_string(),
+                    d["state"] == "Booted",
+                ))
+            })
+            .collect())
+    }
+
+    /// The one booted simulator's UDID, for tools and tests that drive whatever is up.
+    pub async fn booted() -> Result<String> {
+        let booted: Vec<String> = Self::simulators()
+            .await?
+            .into_iter()
+            .filter_map(|(_, udid, booted)| booted.then_some(udid))
+            .collect();
+        match booted.as_slice() {
+            [one] => Ok(one.clone()),
+            [] => Err(device("no booted simulator")),
+            _ => Err(device(
+                "several simulators are booted; name the one to drive",
+            )),
+        }
+    }
+
+    /// Connects to the simulator named `name` (or with that UDID, where two runtimes share a name), booting it if
+    /// it's shut down, to drive `bundle_id`. Simulators only: `simctl` never lists a physical device.
+    pub async fn connect(bundle_id: &str, reader: Option<PathBuf>, name: &str) -> Result<Ios> {
+        let all = Self::simulators().await?;
+        let matching: Vec<&(String, String, bool)> = all
+            .iter()
+            .filter(|(n, udid, _)| n == name || udid == name)
+            .collect();
+        let udid = match matching.as_slice() {
+            [(_, udid, _)] => udid.clone(),
+            [] => {
+                let mut names: Vec<&str> = all.iter().map(|(n, _, _)| n.as_str()).collect();
+                names.sort_unstable();
+                names.dedup();
+                return Err(device(format!(
+                    "no simulator is named {name:?} (there are {})",
+                    names.join(", ")
+                )));
+            }
+            several => {
+                let udids: Vec<&str> = several.iter().map(|(_, u, _)| u.as_str()).collect();
+                return Err(device(format!(
+                    "{} simulators are named {name:?}; give the device as one of their UDIDs ({})",
+                    several.len(),
+                    udids.join(", ")
+                )));
             }
         };
         let ios = Ios {
+            port: reader_port(&udid),
             udid,
             bundle_id: bundle_id.into(),
             reader,
@@ -432,7 +483,7 @@ impl Ios {
 
     async fn reader_get_bytes(&self, path: &str) -> Result<Vec<u8>> {
         let get = async {
-            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", READER_PORT)).await?;
+            let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", self.port)).await?;
             stream
                 .write_all(format!("GET {path} HTTP/1.0\r\n\r\n").as_bytes())
                 .await?;
@@ -481,15 +532,17 @@ impl Ios {
             Some(pid) => Some(pid.to_string()),
             None => run(
                 "lsof",
-                &["-t", &format!("-iTCP:{READER_PORT}"), "-sTCP:LISTEN"],
+                &["-t", &format!("-iTCP:{}", self.port), "-sTCP:LISTEN"],
             )
             .await
             .ok()
             .and_then(|out| out.lines().next().map(str::to_string)),
         };
         let Some(pid) = pid else {
+            // Only this simulator's: another platform's reader runs the same binary.
             if let Some(binary) = &self.reader {
-                let _ = run("pkill", &["-f", &binary.display().to_string()]).await;
+                let pattern = format!("{} --udid {}", binary.display(), self.udid);
+                let _ = run("pkill", &["-f", &pattern]).await;
             }
             return;
         };
@@ -537,11 +590,19 @@ impl Ios {
     /// Starts the reader if none answers for this simulator, or replaces a stale one; one attached to another
     /// simulator is no use. True when it started a fresh one.
     async fn ensure_reader(&self) -> Result<bool> {
-        if let Some(ping) = self.ping().await.filter(|p| p.udid == self.udid) {
-            match self.reader_stale(&ping).await {
+        match self.ping().await {
+            Some(ping) if ping.udid == self.udid => match self.reader_stale(&ping).await {
                 None => return Ok(false),
                 Some(why) => self.note_restart(format!("restarted the reader: {why}")),
+            },
+            // Ports come from UDIDs, so two that land on one are left alone rather than stopping the other's reader.
+            Some(ping) => {
+                return Err(device(format!(
+                    "port {} answers for simulator {}, not {}: two UDIDs share a reader port",
+                    self.port, ping.udid, self.udid
+                )));
             }
+            None => {}
         }
         let Some(binary) = &self.reader else {
             return Err(device("no iOS reader built (readers/ios/build.sh)"));
@@ -549,7 +610,7 @@ impl Ios {
         self.stop_reader().await;
         let spawn = || {
             std::process::Command::new(binary)
-                .args(["--udid", &self.udid, "--port", &READER_PORT.to_string()])
+                .args(["--udid", &self.udid, "--port", &self.port.to_string()])
                 .stdin(std::process::Stdio::null())
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
@@ -1087,6 +1148,19 @@ impl Device for Ios {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_simulator_has_its_own_reader_port() {
+        let a = reader_port("68A7F6A7-4339-4BC4-8A04-072296D06525");
+        let b = reader_port("1C3B0E7A-9D2F-4A61-8E55-3F0B6C2D9A10");
+        assert_eq!(
+            a,
+            reader_port("68A7F6A7-4339-4BC4-8A04-072296D06525"),
+            "stable"
+        );
+        assert_ne!(a, b);
+        assert!((30_000..40_000).contains(&a));
+    }
 
     #[test]
     fn a_scroll_area_marks_what_it_scrolls_out_of_view() {

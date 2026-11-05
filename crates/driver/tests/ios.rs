@@ -5,6 +5,15 @@ use soundcheck_driver::{Device, Driver, Matcher};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+/// The one booted simulator, whichever it is.
+async fn connect(
+    bundle: &str,
+    reader: Option<std::path::PathBuf>,
+) -> Result<Ios, soundcheck_driver::DriverError> {
+    let udid = Ios::booted().await?;
+    Ios::connect(bundle, reader, &udid).await
+}
+
 /// These drive whatever simulator is running, which may be a live run's: they run only when asked for.
 fn device_tests() -> bool {
     let on = std::env::var_os("SOUNDCHECK_DEVICE_TESTS").is_some_and(|v| v == "1");
@@ -28,7 +37,7 @@ async fn the_ios_driver_reads_and_drives_settings() {
         eprintln!("skipping: no iOS reader built (readers/ios/build.sh)");
         return;
     }
-    let ios = match Ios::connect("com.apple.Preferences", Some(reader)).await {
+    let ios = match connect("com.apple.Preferences", Some(reader)).await {
         Ok(i) => i,
         Err(e) => {
             eprintln!("skipping: {e}");
@@ -85,7 +94,7 @@ async fn restart_reboots_the_simulator_and_reads_again() {
         return;
     }
     let reader = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../readers/ios/build/reader");
-    let ios = Ios::connect("com.apple.Preferences", reader.exists().then_some(reader))
+    let ios = connect("com.apple.Preferences", reader.exists().then_some(reader))
         .await
         .unwrap();
     ios.restart().await.unwrap();

@@ -169,7 +169,6 @@ fn platforms_are_checked_against_each_other() {
         report,
         [
             "suite.yaml: platforms.ios-tablet.device: ios runs on iPad Pro 13-inch (M5) too; give each platform its own",
-            "suite.yaml: platforms.ios-tablet: ios uses the ios driver too; two platforms on one driver need a device each, which lands with per-platform readers (SA-880)",
             "suite.yaml: platforms.web.device: a chrome platform runs on `desktop`, not \"laptop\"",
             "suite.yaml: platforms.web.app: a chrome platform opens its `url`; app is for ios and android",
             "suite.yaml: platforms.ios-tablet.hooks.check names ios, another platform: copied from its block?",
