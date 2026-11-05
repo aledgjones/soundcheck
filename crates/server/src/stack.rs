@@ -24,11 +24,21 @@ pub struct Record {
     /// The suite folder and the command that removes the stack, as they were when it started.
     pub suite: PathBuf,
     pub down: String,
+    /// Whether its run was a trial on uncommitted code, so `down` is told so whoever removes the stack. A record
+    /// written before 0.3.1 has none: its run wasn't one.
+    #[serde(default)]
+    pub uncommitted: bool,
 }
 
 impl Record {
     pub fn owner_alive(&self) -> bool {
         started_at(self.pid).as_deref() == Some(self.started.as_str())
+    }
+
+    fn run_env(&self) -> hooks::RunEnv {
+        hooks::RunEnv {
+            uncommitted: self.uncommitted,
+        }
     }
 }
 
@@ -109,7 +119,7 @@ pub async fn reap(dir: &Path, live: Live) -> Result<Vec<String>> {
         if !path.exists() {
             continue;
         }
-        hooks::run(&record.suite, &record.down, DOWN_TIMEOUT)
+        hooks::run(&record.suite, &record.down, DOWN_TIMEOUT, record.run_env())
             .await
             .with_context(|| {
                 format!(
@@ -134,17 +144,29 @@ pub struct Stack {
 }
 
 /// Starts `platform`'s blank stack, or nothing when the suite has no stack hooks.
-pub async fn up(root: &Path, config: &SuiteConfig, platform: Platform) -> Result<Option<Stack>> {
+pub async fn up(
+    root: &Path,
+    config: &SuiteConfig,
+    platform: Platform,
+    run: hooks::RunEnv,
+) -> Result<Option<Stack>> {
     let hooks = &config.of(&platform).hooks;
     let (Some(up), Some(down)) = (&hooks.stack_up, &hooks.stack_down) else {
         return Ok(None);
     };
-    start(root, &records_dir(root, config), platform, up, down)
+    start(root, &records_dir(root, config), platform, up, down, run)
         .await
         .map(Some)
 }
 
-async fn start(root: &Path, dir: &Path, platform: Platform, up: &str, down: &str) -> Result<Stack> {
+async fn start(
+    root: &Path,
+    dir: &Path,
+    platform: Platform,
+    up: &str,
+    down: &str,
+    run: hooks::RunEnv,
+) -> Result<Stack> {
     std::fs::create_dir_all(dir)?;
     let pid = std::process::id();
     let record = Record {
@@ -153,12 +175,13 @@ async fn start(root: &Path, dir: &Path, platform: Platform, up: &str, down: &str
         started: started_at(pid).context("reading this server's start time")?,
         suite: std::fs::canonicalize(root)?,
         down: down.to_string(),
+        uncommitted: run.uncommitted,
     };
     let path = dir.join(format!("{platform}.json"));
     // Written first, so a server killed while the stack starts still leaves it to the next one to remove.
     std::fs::write(&path, serde_json::to_string_pretty(&record)?)?;
     let stack = Stack { record, path };
-    hooks::run(root, up, UP_TIMEOUT)
+    hooks::run(root, up, UP_TIMEOUT, run)
         .await
         .with_context(|| format!("{platform}: the stack didn't start"))?;
     Ok(stack)
@@ -169,6 +192,8 @@ fn remove(record: &Record) -> bool {
     let Ok(mut child) = std::process::Command::new("sh")
         .args(["-c", &record.down])
         .current_dir(&record.suite)
+        .env_remove(hooks::UNCOMMITTED)
+        .envs(record.run_env().vars())
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -240,6 +265,7 @@ mod tests {
             started,
             suite: dir.to_path_buf(),
             down: "touch down-ran".into(),
+            uncommitted: false,
         };
         std::fs::write(&path, serde_json::to_string(&record).unwrap()).unwrap();
         path
@@ -249,13 +275,40 @@ mod tests {
     async fn a_stack_is_removed_when_dropped_and_its_record_with_it() {
         let dir = scratch("drop");
         let records = dir.join("records");
-        let stack = start(&dir, &records, p("ios"), "true", "touch down-ran")
-            .await
-            .unwrap();
+        let stack = start(
+            &dir,
+            &records,
+            p("ios"),
+            "true",
+            "touch down-ran",
+            hooks::RunEnv::default(),
+        )
+        .await
+        .unwrap();
         assert!(records.join("ios.json").exists());
         drop(stack);
         assert!(dir.join("down-ran").exists());
         assert!(!records.join("ios.json").exists());
+    }
+
+    #[tokio::test]
+    async fn an_uncommitted_runs_stack_is_told_so_coming_up_and_going_down() {
+        let dir = scratch("uncommitted");
+        let records = dir.join("records");
+        let stack = start(
+            &dir,
+            &records,
+            p("ios"),
+            "echo $SOUNDCHECK_UNCOMMITTED > up-said",
+            "echo $SOUNDCHECK_UNCOMMITTED > down-said",
+            hooks::RunEnv { uncommitted: true },
+        )
+        .await
+        .unwrap();
+        drop(stack);
+        for said in ["up-said", "down-said"] {
+            assert_eq!(std::fs::read_to_string(dir.join(said)).unwrap(), "1\n");
+        }
     }
 
     #[tokio::test]
@@ -268,6 +321,7 @@ mod tests {
             p("android"),
             "echo port taken >&2; false",
             "touch down-ran",
+            hooks::RunEnv::default(),
         )
         .await
         .err()
@@ -282,9 +336,16 @@ mod tests {
     async fn a_new_servers_record_survives_the_old_one_stepping_down() {
         let dir = scratch("handover");
         let records = dir.join("records");
-        let old = start(&dir, &records, p("ios"), "true", "true")
-            .await
-            .unwrap();
+        let old = start(
+            &dir,
+            &records,
+            p("ios"),
+            "true",
+            "true",
+            hooks::RunEnv::default(),
+        )
+        .await
+        .unwrap();
         let newer = record(&dir, "a later server".into());
         drop(old);
         assert!(newer.exists());

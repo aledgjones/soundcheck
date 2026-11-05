@@ -29,6 +29,7 @@ async fn main() -> Result<()> {
         label: label.into(),
         platforms: platforms.clone(),
         scope: vec!["items".into(), "sharing".into()],
+        uncommitted: false,
     };
     saved::save(&run_dir, &info, &suite)?;
     let plan = saved::plan_for(&suite, &platforms, &info.scope)?;

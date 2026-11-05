@@ -183,6 +183,11 @@ function Header({ view, onRuns }: { view: V.View; onRuns: () => void }) {
           <span class="eyebrow">Soundcheck · local regression</span>
         </div>
         <h1>{view.label}</h1>
+        {view.trial === undefined ? null : (
+          <p class="trial" role="note">
+            {view.trial}
+          </p>
+        )}
         <div class="facts">
           {view.facts.map((f, i) => (
             <span key={i} title={f.title}>

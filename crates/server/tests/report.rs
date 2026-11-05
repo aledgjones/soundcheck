@@ -48,8 +48,13 @@ fn sample() -> (suite::Suite, Run) {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let dir =
-        std::env::temp_dir().join(format!("soundcheck-report-{}-{nanos}", std::process::id()));
+    // The clock ticks in microseconds here, so tests sampling at once need the count to keep their journals apart.
+    static SAMPLES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SAMPLES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!(
+        "soundcheck-report-{}-{nanos}-{n}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let mut run = Run::open(plan, &dir.join("journal.jsonl"), 0).unwrap();
     let brief = |_: &str, _: Option<&str>| String::from("brief");
@@ -118,6 +123,7 @@ fn page<'a>(suite: &'a suite::Suite, run: &'a Run, label: &'a str, live: bool) -
         suite,
         run,
         label,
+        uncommitted: false,
         live,
         run_dir: None,
         export: None,
@@ -226,6 +232,43 @@ fn the_page_shows_failures_findings_and_checks() {
         !view.to_string().contains("null"),
         "a null would delete its key in a patch"
     );
+}
+
+#[test]
+fn an_uncommitted_run_says_it_is_a_trial_and_files_no_tickets() {
+    let (suite, mut run) = sample();
+    let finding = run
+        .state()
+        .problems
+        .iter()
+        .find(|p| p.kind == ProblemKind::Finding)
+        .unwrap()
+        .id;
+    run.triage(
+        10_000_000,
+        finding,
+        Decision::Defer { ticket: None },
+        "accepted for the trial",
+    )
+    .unwrap();
+    let deferred = |view: &Value| view["problems"][finding.to_string()]["badge"].clone();
+
+    let trial = report::view::json(&Page {
+        uncommitted: true,
+        ..page(&suite, &run, "v2.16.2", true)
+    });
+    assert_eq!(trial["trial"], report::view::TRIAL);
+    assert_eq!(
+        deferred(&trial),
+        json!({ "class": "muted", "text": report::view::NO_TICKET })
+    );
+
+    let regression = report::view::json(&page(&suite, &run, "v2.16.2", true));
+    assert!(regression.get("trial").is_none());
+    assert!(deferred(&regression).is_null(), "no tracker, no badge");
+
+    let listed = report::run_summary(&run, "v2.16.2", true);
+    assert!(report::index(&[("r".into(), listed, None)], "").contains("Uncommitted"));
 }
 
 #[test]

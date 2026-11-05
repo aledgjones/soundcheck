@@ -125,11 +125,12 @@ async fn run_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
         return StatusCode::NOT_FOUND.into_response();
     };
     let rendered = tokio::task::spawn_blocking(move || {
-        let (suite, run, label) = saved::load(&dir, now_ms())?;
+        let (suite, run, info) = saved::load(&dir, now_ms())?;
         anyhow::Ok(report::document(&report::Page {
             suite: &suite,
             run: &run,
-            label: &label,
+            label: &info.label,
+            uncommitted: info.uncommitted,
             live: false,
             run_dir: Some(&dir),
             export: None,
@@ -188,12 +189,13 @@ async fn download(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
         return StatusCode::NOT_FOUND.into_response();
     };
     let rendered = tokio::task::spawn_blocking(move || {
-        let (suite, run, label) = saved::load(&dir, now_ms())?;
+        let (suite, run, info) = saved::load(&dir, now_ms())?;
         let finished = run.state().finished;
         let html = report::document(&report::Page {
             suite: &suite,
             run: &run,
-            label: &label,
+            label: &info.label,
+            uncommitted: info.uncommitted,
             live: false,
             run_dir: Some(&dir),
             export: Some(report::Export {

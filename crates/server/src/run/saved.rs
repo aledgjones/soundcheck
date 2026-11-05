@@ -24,6 +24,10 @@ pub struct RunInfo {
     pub platforms: Vec<Platform>,
     /// Features or spec IDs; empty for every spec.
     pub scope: Vec<String>,
+    /// A trial on uncommitted code (`run --uncommitted`), not a regression result: its hooks are told so, and it
+    /// files no tickets. Set when the run starts, and kept when it's opened again. Runs from before 0.3.1 have none.
+    #[serde(default)]
+    pub uncommitted: bool,
 }
 
 /// The rows a run holds: the specs in scope, each on the platforms it runs on that the run covers.
@@ -210,11 +214,11 @@ pub fn read_info(run_dir: &Path) -> Result<RunInfo> {
     Ok(serde_json::from_str(&text)?)
 }
 
-/// A run rebuilt from its folder: the snapshot suite, the replayed journal and its label. Read only.
-pub fn load(run_dir: &Path, now: u64) -> Result<(Suite, Run, String)> {
+/// A run rebuilt from its folder: the snapshot suite, the replayed journal and how it was started. Read only.
+pub fn load(run_dir: &Path, now: u64) -> Result<(Suite, Run, RunInfo)> {
     let info = read_info(run_dir)?;
     let suite = suite::load(&run_dir.join(SNAPSHOT_DIR));
     let plan = plan_for(&suite, &info.platforms, &info.scope)?;
     let run = Run::open(plan, &run_dir.join(JOURNAL_FILE), now)?;
-    Ok((suite, run, info.label))
+    Ok((suite, run, info))
 }

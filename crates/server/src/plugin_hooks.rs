@@ -161,6 +161,10 @@ pub async fn session_start(port: u16) -> Result<Option<String>> {
     };
     let mut state = vec![format!("verdict {}", s.verdict)];
 
+    if s.uncommitted {
+        state.push("a trial on uncommitted code, so no tickets".into());
+    }
+
     if s.paused {
         state.push("paused".into());
     }

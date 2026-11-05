@@ -10,6 +10,9 @@ use serde_json::{Map, Value};
 #[derive(Serialize)]
 pub struct View {
     label: String,
+    /// Set for a trial on uncommitted code, saying what its results aren't.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trial: Option<&'static str>,
     version: &'static str,
     platforms: Vec<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,6 +306,12 @@ struct Line {
     text: String,
 }
 
+/// What an uncommitted run's page says at the top.
+pub const TRIAL: &str = "A trial on uncommitted code, not a regression result: no commit identifies the build, so it files no tickets.";
+
+/// Where a fixed or deferred problem's ticket would be on an uncommitted run.
+pub const NO_TICKET: &str = "No ticket: uncommitted";
+
 pub fn build(page: &Page) -> View {
     let state = page.run.state();
     let shown = platforms(page);
@@ -313,6 +322,7 @@ pub fn build(page: &Page) -> View {
     let (problems, groups) = problems(page);
     View {
         label: page.label.to_string(),
+        trial: page.uncommitted.then_some(TRIAL),
         version: crate::VERSION,
         platforms: shown.iter().map(|p| platform_name(*p)).collect(),
         bar,
@@ -1059,11 +1069,16 @@ fn problems(page: &Page) -> (BTreeMap<String, ProblemView>, Vec<Group>) {
         .iter()
         .filter(|p| !matches!(p.status, Status::Duplicate { .. }))
         .collect();
-    let ticket = |t: &Option<String>| {
-        t.as_ref().map(|t| Chip {
+    let ticket = |t: &Option<String>| match t {
+        Some(t) => Some(Chip {
             class: "ticket",
             text: t.clone(),
-        })
+        }),
+        None if page.uncommitted => Some(Chip {
+            class: "muted",
+            text: NO_TICKET.into(),
+        }),
+        None => None,
     };
     let mut items = BTreeMap::new();
     for p in &originals {

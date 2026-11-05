@@ -41,6 +41,19 @@ async fn server_hub(
     std::path::PathBuf,
     std::sync::Arc<Hub>,
 ) {
+    server_hub_as(platforms, false).await
+}
+
+/// [`server_hub`], as a trial on uncommitted code when `uncommitted`.
+async fn server_hub_as(
+    platforms: &[Platform],
+    uncommitted: bool,
+) -> (
+    serve::Server,
+    String,
+    std::path::PathBuf,
+    std::sync::Arc<Hub>,
+) {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     let suite = suite::load(&root);
     let plan = Plan {
@@ -70,7 +83,7 @@ async fn server_hub(
         .join("20261021-090000");
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let hub = Hub::without_devices(
+    let mut hub = Hub::without_devices(
         suite,
         run,
         "v0.0.0 · test".into(),
@@ -78,6 +91,7 @@ async fn server_hub(
         120_000,
         vec![ANDROID, IOS],
     );
+    std::sync::Arc::get_mut(&mut hub).unwrap().uncommitted = uncommitted;
     let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
     (server, url, dir, hub)
@@ -145,6 +159,37 @@ async fn a_suite_with_a_tracker_needs_its_ticket() {
     )
     .await;
     assert!(refused.as_str().unwrap().contains("need its ticket"));
+}
+
+#[tokio::test]
+async fn an_uncommitted_run_files_no_tickets_and_its_page_says_so() {
+    let (_server, url, _, hub) = server_hub_as(&[ANDROID, IOS, WEB], true).await;
+    let client = client(&url).await;
+    let refused = call(
+        &client,
+        "triage",
+        json!({"problem": 1, "decision": {"decision": "defer", "ticket": "SA-1"}, "reason": "known"}),
+    )
+    .await;
+    assert!(
+        refused.as_str().unwrap().contains("files no tickets"),
+        "{refused}"
+    );
+    // The suite's tracker asks for no ticket: the reason is the record.
+    let untracked = call(
+        &client,
+        "triage",
+        json!({"problem": 1, "decision": {"decision": "defer"}, "reason": "known"}),
+    )
+    .await;
+    assert!(!untracked.to_string().contains("ticket"), "{untracked}");
+
+    assert_eq!(
+        call(&client, "status", json!({})).await["uncommitted"],
+        true
+    );
+    let view = view_at(&format!("{url}/{}/view", hub.page_key())).await;
+    assert_eq!(view["trial"], soundcheck::report::view::TRIAL);
 }
 
 #[tokio::test]
@@ -816,6 +861,67 @@ async fn the_build_identity_hook_records_each_platforms_build() {
 }
 
 #[tokio::test]
+async fn only_an_uncommitted_run_tells_the_build_identity_hook_so() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-uncommitted-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in [
+        "annotations/_feature.md",
+        "annotations/001-draw.spec.md",
+        "annotations/002-back.spec.md",
+    ] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    // As a project's hook does: a dirty tree's build is refused unless the run is a trial.
+    let config: String = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("build-identity:") {
+                r#"      build-identity: "test \"$SOUNDCHECK_UNCOMMITTED\" = 1 || { echo 'uncommitted changes' >&2; exit 1; }; echo '{\"commit\": \"abc1234def\", \"version\": \"2.16.2\"}'""#.to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+    for uncommitted in [false, true] {
+        let suite = suite::load(&suite_dir);
+        assert!(suite.problems.is_empty(), "{:?}", suite.problems);
+        let plan = Plan {
+            specs: Vec::new(),
+            parallel: false,
+        };
+        let run_dir = base.join(format!("reports/{uncommitted}"));
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+        let mut hub = Hub::without_devices(
+            suite,
+            run,
+            "trial".into(),
+            run_dir,
+            120_000,
+            vec![ANDROID, IOS],
+        );
+        std::sync::Arc::get_mut(&mut hub).unwrap().uncommitted = uncommitted;
+        let read = hub.read_build(ANDROID).await;
+
+        if uncommitted {
+            assert_eq!(read.unwrap().commit, "abc1234def");
+        } else {
+            let refused = format!("{:#}", read.unwrap_err());
+            assert!(refused.contains("uncommitted changes"), "{refused}");
+        }
+    }
+}
+
+#[tokio::test]
 async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -923,6 +1029,7 @@ fn a_run_is_found_again_by_its_id() {
             label: "Release 5".into(),
             platforms: vec![IOS],
             scope: vec![],
+            uncommitted: false,
         },
     )
     .unwrap();
@@ -1124,6 +1231,7 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
         label: "v0.0.0 · test".into(),
         platforms: vec![ANDROID, IOS],
         scope: vec!["annotations/001-draw".into()],
+        uncommitted: false,
     };
     let dir = base.join("reports").join("20261021-090000");
     std::fs::create_dir_all(&dir).unwrap();

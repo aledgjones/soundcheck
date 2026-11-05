@@ -35,6 +35,8 @@ pub struct Page<'a> {
     pub run: &'a Run,
     /// The release under test, e.g. "v2.16.2 · candidate".
     pub label: &'a str,
+    /// A trial on uncommitted code (`run --uncommitted`): the page says it isn't a regression result.
+    pub uncommitted: bool,
     /// The live page follows the event stream; an export is a still copy.
     pub live: bool,
     /// Where the run keeps its evidence; screenshots are linked from it live and embedded in an export.
@@ -347,7 +349,7 @@ fn image(page: &Page, name: &str) -> Option<String> {
 }
 
 /// What the runs index shows for a run, rewritten after every event.
-pub fn run_summary(run: &Run, label: &str) -> serde_json::Value {
+pub fn run_summary(run: &Run, label: &str, uncommitted: bool) -> serde_json::Value {
     let state = run.state();
     let mut t = Tally::default();
     for r in state.rows.values() {
@@ -356,6 +358,7 @@ pub fn run_summary(run: &Run, label: &str) -> serde_json::Value {
     let entries = run.entries_after(0);
     serde_json::json!({
         "label": label,
+        "uncommitted": uncommitted,
         "started": entries.first().map(|e| e.at),
         "updated": entries.last().map(|e| e.at),
         "finished": state.finished,
@@ -398,8 +401,13 @@ pub fn index(runs: &[(String, serde_json::Value, Option<String>)], current: &str
         } else {
             ""
         };
+        let trial = if s["uncommitted"].as_bool().unwrap_or(false) {
+            " <span class=\"chip finding\">Uncommitted</span>"
+        } else {
+            ""
+        };
         let inner = format!(
-            "<span class=\"run-ring\">{}</span><span class=\"run-text\"><span class=\"run-title\"><b>{}</b>{live}</span><span class=\"muted\">{when}</span></span><span class=\"run-verdict\"><strong class=\"{class}\">{word}</strong><span class=\"muted\">{}</span></span>",
+            "<span class=\"run-ring\">{}</span><span class=\"run-text\"><span class=\"run-title\"><b>{}</b>{trial}{live}</span><span class=\"muted\">{when}</span></span><span class=\"run-verdict\"><strong class=\"{class}\">{word}</strong><span class=\"muted\">{}</span></span>",
             ring(&t),
             esc(s["label"].as_str().unwrap_or(name)),
             esc(&reasons)

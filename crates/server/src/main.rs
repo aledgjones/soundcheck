@@ -181,6 +181,11 @@ struct RunArgs {
     /// start hook then serves the new build). Without it, only a platform whose build can't be identified is built.
     #[arg(long)]
     install: bool,
+    /// A trial on uncommitted code, not a regression result: every project hook gets `SOUNDCHECK_UNCOMMITTED=1`, so
+    /// it may accept a build no commit identifies, the page and report say so, and the run files no tickets. Set
+    /// when a run starts; an opened run keeps what it started with.
+    #[arg(long)]
+    uncommitted: bool,
     /// Also open the live page through an ngrok tunnel, behind Google sign-in for suite.yaml's `remote.allow`.
     /// Read-only: the tunnel passes only the page's GETs, never `/mcp` or dispatch.
     #[arg(long)]
@@ -340,6 +345,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         prepare_timeout,
         headed,
         install,
+        uncommitted,
         remote,
     } = args;
     let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
@@ -372,6 +378,16 @@ fn run_command(args: RunArgs) -> Result<()> {
     let saved = resume
         .as_deref()
         .and_then(|dir| soundcheck::run::saved::read_info(dir).ok());
+
+    // Results from a committed build and an uncommitted one never share a run.
+    if uncommitted && saved.as_ref().is_some_and(|info| !info.uncommitted) {
+        bail!(
+            "--uncommitted: this run started on committed code, so it can't take a trial; start a new run with --uncommitted"
+        );
+    }
+
+    let uncommitted = uncommitted || saved.as_ref().is_some_and(|info| info.uncommitted);
+    let run_env = serve::hooks::RunEnv { uncommitted };
     let platforms = platforms
         .iter()
         .map(|name| config.platform(name))
@@ -495,6 +511,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                 label: label.clone(),
                 platforms: platforms.clone(),
                 scope: scope.clone(),
+                uncommitted,
             },
             &suite,
         )?;
@@ -502,7 +519,7 @@ fn run_command(args: RunArgs) -> Result<()> {
     // Listed among the runs from the start, even if the server dies before anything happens.
     std::fs::write(
         run_dir.join(serve::SUMMARY_FILE),
-        soundcheck::report::run_summary(&run, &label).to_string(),
+        soundcheck::report::run_summary(&run, &label, uncommitted).to_string(),
     )?;
     // The chrome platform the run serves its site for, with that site's command and the routes it may go through.
     let served = config.served();
@@ -522,6 +539,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         let mut hub = serve::Hub::new(suite, run, label, run_dir.clone(), stall_ms);
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
+            only.uncommitted = uncommitted;
             only.start_ms = first_call_seconds * 1000;
             only.prepare_timeout = std::time::Duration::from_secs(prepare_timeout);
         }
@@ -565,7 +583,9 @@ fn run_command(args: RunArgs) -> Result<()> {
         for &platform in &platforms {
             let started = std::time::Instant::now();
             hub.start_step(format!("{platform}: starting a blank stack"));
-            if let Some(stack) = soundcheck::stack::up(&root_dir, &stack_config, platform).await? {
+            if let Some(stack) =
+                soundcheck::stack::up(&root_dir, &stack_config, platform, run_env).await?
+            {
                 _stacks.push(stack);
                 pass(format!(
                     "{platform}: a blank stack is up ({} s)",
@@ -577,7 +597,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         for &platform in &platforms {
             hub.start_step(format!("{platform}: running the guard"));
             let guard = &stack_config.of(&platform).hooks.guard;
-            let said = serve::hooks::run(&root_dir, guard, serve::hooks::GUARD_TIMEOUT)
+            let said = serve::hooks::run(&root_dir, guard, serve::hooks::GUARD_TIMEOUT, run_env)
                 .await
                 .context("the guard hook refused")?;
             let said = said.trim();
@@ -891,7 +911,13 @@ fn stack_command(action: &str, root: &Path) -> Result<()> {
                 continue;
             };
 
-            serve::hooks::run(root, down, soundcheck::stack::DOWN_TIMEOUT).await?;
+            serve::hooks::run(
+                root,
+                down,
+                soundcheck::stack::DOWN_TIMEOUT,
+                serve::hooks::RunEnv::default(),
+            )
+            .await?;
             println!("{platform}: no stack left");
         }
         Ok(())

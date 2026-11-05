@@ -232,6 +232,8 @@ pub struct Summary {
     pub side_finds: usize,
     /// Whether the session asked about has started testers in this run.
     pub coordinator: bool,
+    /// A trial on uncommitted code, which files no tickets.
+    pub uncommitted: bool,
 }
 
 /// What `queue` did: rows that joined the run, and rows queued again with what each was.
@@ -259,6 +261,9 @@ pub struct Hub {
     pub start_ms: u64,
     /// Web's Chrome in a window to watch, rather than headless.
     pub headed: bool,
+    /// A trial on uncommitted code (`run --uncommitted`, kept in run.json): every hook is told so, and it files no
+    /// tickets.
+    pub uncommitted: bool,
     /// How long one prepare step may take before the reset fails (`run --prepare-timeout`).
     pub prepare_timeout: std::time::Duration,
     /// The server's own address, set once it listens: prepare steps get it, so `soundcheck drive` acts through it.
@@ -362,6 +367,7 @@ impl Hub {
             stall_ms,
             start_ms: START_STALL_MS,
             headed: false,
+            uncommitted: false,
             prepare_timeout: PREPARE_TIMEOUT,
             url: std::sync::OnceLock::new(),
             restart_due: Mutex::new(std::collections::HashMap::new()),
@@ -408,7 +414,7 @@ impl Hub {
         if !fresh.is_empty() {
             let _ = std::fs::write(
                 self.run_dir.join(SUMMARY_FILE),
-                report::run_summary(&run, self.label_of(&run)).to_string(),
+                report::run_summary(&run, self.label_of(&run), self.uncommitted).to_string(),
             );
         }
         result
@@ -649,6 +655,13 @@ impl Hub {
         run.state().label.as_deref().unwrap_or(&self.label)
     }
 
+    /// What every hook this run starts is told about it.
+    pub fn run_env(&self) -> hooks::RunEnv {
+        hooks::RunEnv {
+            uncommitted: self.uncommitted,
+        }
+    }
+
     fn page<'a>(
         &'a self,
         suite: &'a Suite,
@@ -660,6 +673,7 @@ impl Hub {
             suite,
             run,
             label: self.label_of(run),
+            uncommitted: self.uncommitted,
             live: export.is_none(),
             run_dir: Some(&self.run_dir),
             export,
@@ -797,6 +811,7 @@ impl Hub {
             root,
             &config.of(&platform).hooks.guard,
             hooks::GUARD_TIMEOUT,
+            self.run_env(),
         )
         .await
         .context("the guard refused")?;
@@ -882,7 +897,7 @@ impl Hub {
 
             let at = format!("prepare step {}", n + 1);
             let started = std::time::Instant::now();
-            let out = hooks::run_with(root, command, self.prepare_timeout, &env)
+            let out = hooks::run_with(root, command, self.prepare_timeout, self.run_env(), &env)
                 .await
                 .map_err(|e| match e.downcast_ref::<hooks::TimedOut>() {
                     Some(_) => {
@@ -1240,6 +1255,7 @@ impl Hub {
             review,
             side_finds: state.pending_finds.len(),
             coordinator: session.is_some_and(|s| self.is_coordinator(s)),
+            uncommitted: self.uncommitted,
         }
     }
 
@@ -1365,7 +1381,7 @@ impl Hub {
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
         let command = format!("{hook} {}", quoted.join(" "));
-        match hooks::run(&suite.root, &command, hooks::CHECK_TIMEOUT).await {
+        match hooks::run(&suite.root, &command, hooks::CHECK_TIMEOUT, self.run_env()).await {
             Ok(out) => Ok(out),
             Err(e) => Ok(format!("{kind} failed: {e:#}")),
         }
@@ -1379,7 +1395,13 @@ impl Hub {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let command = &config.of(&platform).hooks.build_identity;
-        let out = hooks::run(&suite.root, command, hooks::BUILD_IDENTITY_TIMEOUT).await?;
+        let out = hooks::run(
+            &suite.root,
+            command,
+            hooks::BUILD_IDENTITY_TIMEOUT,
+            self.run_env(),
+        )
+        .await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
             format!(
                 "the build-identity hook should print {{\"commit\": ...}}, but printed {:?}",
@@ -1404,6 +1426,7 @@ impl Hub {
             &suite.root,
             &platform_config.hooks.install,
             hooks::INSTALL_TIMEOUT,
+            self.run_env(),
         )
         .await
         .with_context(|| format!("the install hook failed on {platform}"))?;
@@ -1453,6 +1476,7 @@ impl Hub {
                 &served.command,
                 &served.url,
                 hooks::START_TIMEOUT,
+                self.run_env(),
             )
             .await?,
         );
@@ -1935,7 +1959,7 @@ async fn runs_index(State(hub): State<Arc<Hub>>) -> Response {
     // The current run comes from memory: before its first event it has no summary on disk.
     runs.retain(|(name, _, _)| *name != current);
     let live = hub
-        .with_run(|run, _| Ok(report::run_summary(run, hub.label_of(run))))
+        .with_run(|run, _| Ok(report::run_summary(run, hub.label_of(run), hub.uncommitted)))
         .unwrap_or_default();
     runs.push((current.clone(), live, Some(format!("{}/", hub.page_key()))));
     reports::newest_first(&mut runs);

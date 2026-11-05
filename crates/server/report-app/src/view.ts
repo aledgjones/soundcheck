@@ -3,6 +3,8 @@
 
 export interface View {
   label: string;
+  /** Set for a trial on uncommitted code, saying what its results aren't. */
+  trial?: string;
   version: string;
   platforms: string[];
   bar?: Bar;

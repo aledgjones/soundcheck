@@ -33,6 +33,7 @@ fn main() -> Result<()> {
         label: LABEL.into(),
         platforms: platforms.clone(),
         scope: vec![],
+        uncommitted: false,
     };
     saved::save(&run_dir, &info, &suite)?;
     let plan = saved::plan_for(&suite, &platforms, &[])?;
@@ -326,7 +327,7 @@ fn main() -> Result<()> {
 
     std::fs::write(
         run_dir.join(SUMMARY_FILE),
-        soundcheck::report::run_summary(&run, LABEL).to_string(),
+        soundcheck::report::run_summary(&run, LABEL, false).to_string(),
     )?;
     println!("wrote {}", run_dir.display());
     in_progress(&demo, &suite)
@@ -345,6 +346,7 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
         label: label.into(),
         platforms: platforms.clone(),
         scope: vec![],
+        uncommitted: false,
     };
     saved::save(&run_dir, &info, suite)?;
     let plan = saved::plan_for(suite, &platforms, &[])?;
@@ -464,7 +466,7 @@ fn in_progress(demo: &Path, suite: &suite::Suite) -> Result<()> {
     )?;
     std::fs::write(
         run_dir.join(SUMMARY_FILE),
-        soundcheck::report::run_summary(&run, label).to_string(),
+        soundcheck::report::run_summary(&run, label, false).to_string(),
     )?;
     println!("wrote {}", run_dir.display());
     Ok(())

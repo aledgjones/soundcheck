@@ -729,7 +729,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: the run at a glance: verdict and its reasons, counts (rows not run yet are counted, per platform too, not listed), the rows that are running, queued, waiting for review or didn't pass, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row."
+        description = "Coordinator: the run at a glance: verdict and its reasons, whether it's an uncommitted trial (no tickets), counts (rows not run yet are counted, per platform too, not listed), the rows that are running, queued, waiting for review or didn't pass, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row."
     )]
     async fn status(
         &self,
@@ -856,6 +856,7 @@ impl Tools {
                 .collect();
             Ok(json!({
                 "verdict": verdict::verdict(state),
+                "uncommitted": self.hub.uncommitted,
                 "paused": state.paused,
                 "finished": state.finished,
                 "counts": counts,
@@ -981,18 +982,31 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: record a triage decision the person made: dismiss, fix (its row must have passed again), defer, or duplicate of another problem. Fix and defer take the ticket when the suite names a tracker; without one, the reason is the record."
+        description = "Coordinator: record a triage decision the person made: dismiss, fix (its row must have passed again), defer, or duplicate of another problem. Fix and defer take the ticket when the suite names a tracker; without one, or on an uncommitted run (which files no tickets), the reason is the record."
     )]
     async fn triage(
         &self,
         Parameters(p): Parameters<TriageParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let tracked = self
-            .hub
-            .suite()
-            .config
-            .as_ref()
-            .is_some_and(|c| c.tickets.is_some());
+        // A trial on uncommitted code is evidence for no commit, so nothing from it goes to the tracker.
+        if self.hub.uncommitted
+            && matches!(
+                p.decision,
+                Decision::Fix { ticket: Some(_) } | Decision::Defer { ticket: Some(_) }
+            )
+        {
+            return reply(Err(anyhow::anyhow!(
+                "this run is a trial on uncommitted code (`run --uncommitted`), so it files no tickets: leave `ticket` out and let the reason be the record"
+            )));
+        }
+
+        let tracked = !self.hub.uncommitted
+            && self
+                .hub
+                .suite()
+                .config
+                .as_ref()
+                .is_some_and(|c| c.tickets.is_some());
         if tracked
             && matches!(
                 p.decision,

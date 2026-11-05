@@ -33,9 +33,34 @@ impl std::fmt::Display for TimedOut {
 
 impl std::error::Error for TimedOut {}
 
+/// Tells a run's hooks it's a trial on uncommitted code (`run --uncommitted`), so a project's hooks may accept a
+/// build no commit identifies.
+pub const UNCOMMITTED: &str = "SOUNDCHECK_UNCOMMITTED";
+
+/// What a run tells every hook it runs, through the environment. Every hook command takes one, so none is missed;
+/// a hook outside a run (`stack down`) gets the default.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RunEnv {
+    pub uncommitted: bool,
+}
+
+impl RunEnv {
+    /// The variables to set. Each command also removes [`UNCOMMITTED`] first, so a committed run's hooks never inherit
+    /// it from the shell that started soundcheck.
+    pub fn vars(self) -> BTreeMap<String, String> {
+        let mut vars = BTreeMap::new();
+
+        if self.uncommitted {
+            vars.insert(UNCOMMITTED.to_string(), "1".to_string());
+        }
+
+        vars
+    }
+}
+
 /// Runs a hook and returns its stdout. A failure carries the end of its stderr, which is where the reason is.
-pub async fn run(root: &Path, command: &str, timeout: Duration) -> Result<String> {
-    run_with(root, command, timeout, &BTreeMap::new()).await
+pub async fn run(root: &Path, command: &str, timeout: Duration, run: RunEnv) -> Result<String> {
+    run_with(root, command, timeout, run, &BTreeMap::new()).await
 }
 
 /// [`run`] with `env` added to the command's environment.
@@ -43,11 +68,14 @@ pub async fn run_with(
     root: &Path,
     command: &str,
     timeout: Duration,
+    run: RunEnv,
     env: &BTreeMap<String, String>,
 ) -> Result<String> {
     let child = tokio::process::Command::new("sh")
         .args(["-c", command])
         .current_dir(root)
+        .env_remove(UNCOMMITTED)
+        .envs(run.vars())
         .envs(env)
         .kill_on_drop(true)
         .output();
@@ -143,6 +171,7 @@ impl Service {
         command: &str,
         url: &str,
         timeout: Duration,
+        run: RunEnv,
     ) -> Result<Service> {
         let client = reqwest::Client::new();
         // Something else at `url` would answer for the service, which then can't take its port: the run would test
@@ -156,6 +185,8 @@ impl Service {
         let child = tokio::process::Command::new("sh")
             .args(["-c", command])
             .current_dir(root)
+            .env_remove(UNCOMMITTED)
+            .envs(run.vars())
             .process_group(0)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
@@ -247,6 +278,7 @@ mod tests {
             &std::env::temp_dir(),
             "echo \"$SCORE\"",
             Duration::from_secs(5),
+            RunEnv::default(),
             &env,
         )
         .await
@@ -255,13 +287,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_an_uncommitted_runs_hooks_are_told_so() {
+        let dir = std::env::temp_dir();
+        let said = async |run| {
+            super::run(
+                &dir,
+                "echo \"${SOUNDCHECK_UNCOMMITTED:-unset}\"",
+                GUARD_TIMEOUT,
+                run,
+            )
+            .await
+            .unwrap()
+        };
+        assert_eq!(said(RunEnv { uncommitted: true }).await, "1\n");
+        assert_eq!(said(RunEnv::default()).await, "unset\n");
+    }
+
+    #[tokio::test]
     async fn a_hook_that_runs_out_of_time_is_told_apart_from_one_that_fails() {
         let dir = std::env::temp_dir();
-        let slow = run(&dir, "sleep 5", Duration::from_millis(100))
+        let slow = run(
+            &dir,
+            "sleep 5",
+            Duration::from_millis(100),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap_err();
+        assert!(slow.chain().any(|e| e.is::<TimedOut>()));
+        let failing = run(&dir, "exit 1", GUARD_TIMEOUT, RunEnv::default())
             .await
             .unwrap_err();
-        assert!(slow.chain().any(|e| e.is::<TimedOut>()));
-        let failing = run(&dir, "exit 1", GUARD_TIMEOUT).await.unwrap_err();
         assert!(!failing.chain().any(|e| e.is::<TimedOut>()));
     }
 
@@ -272,17 +328,26 @@ mod tests {
             &dir,
             "echo noise >&2; echo 'not localhost' >&2; exit 3",
             GUARD_TIMEOUT,
+            RunEnv::default(),
         )
         .await
         .unwrap_err();
         assert!(err.to_string().contains("not localhost"), "{err}");
         assert_eq!(
-            run(&dir, "echo ok", GUARD_TIMEOUT).await.unwrap().trim(),
+            run(&dir, "echo ok", GUARD_TIMEOUT, RunEnv::default())
+                .await
+                .unwrap()
+                .trim(),
             "ok"
         );
-        let slow = run(&dir, "sleep 5", Duration::from_millis(100))
-            .await
-            .unwrap_err();
+        let slow = run(
+            &dir,
+            "sleep 5",
+            Duration::from_millis(100),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap_err();
         assert!(slow.to_string().contains("took longer"), "{slow}");
     }
 
@@ -298,19 +363,31 @@ mod tests {
             .port();
         let url = format!("http://127.0.0.1:{port}/");
         let command = format!("sleep 0.5 && exec python3 -m http.server {port} --bind 127.0.0.1");
-        let service = Service::start(&dir, &command, &url, Duration::from_secs(20))
-            .await
-            .unwrap();
+        let service = Service::start(
+            &dir,
+            &command,
+            &url,
+            Duration::from_secs(20),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap();
         let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
         assert!(body.contains("<h1>app</h1>"));
         drop(service);
         tokio::time::sleep(Duration::from_millis(500)).await;
         assert!(reqwest::get(&url).await.is_err(), "stopped with the run");
 
-        let err = Service::start(&dir, "exit 4", &url, Duration::from_secs(5))
-            .await
-            .err()
-            .unwrap();
+        let err = Service::start(
+            &dir,
+            "exit 4",
+            &url,
+            Duration::from_secs(5),
+            RunEnv::default(),
+        )
+        .await
+        .err()
+        .unwrap();
         assert!(err.to_string().contains("stopped"), "{err}");
     }
 
@@ -325,16 +402,28 @@ mod tests {
             .port();
         let url = format!("http://127.0.0.1:{port}/");
         let command = format!("exec python3 -m http.server {port} --bind 127.0.0.1");
-        let first = Service::start(&dir, &command, &url, Duration::from_secs(20))
-            .await
-            .unwrap();
+        let first = Service::start(
+            &dir,
+            &command,
+            &url,
+            Duration::from_secs(20),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap();
         first.stop(&url, Duration::from_secs(10)).await.unwrap();
         assert!(reqwest::get(&url).await.is_err(), "gone once stop returns");
 
         std::fs::write(dir.join("index.html"), "<h1>rebuilt</h1>").unwrap();
-        let second = Service::start(&dir, &command, &url, Duration::from_secs(20))
-            .await
-            .unwrap();
+        let second = Service::start(
+            &dir,
+            &command,
+            &url,
+            Duration::from_secs(20),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap();
         let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
         assert!(body.contains("<h1>rebuilt</h1>"));
         drop(second);
@@ -351,9 +440,15 @@ mod tests {
             .port();
         let url = format!("http://127.0.0.1:{port}/");
         let command = format!("exec python3 -m http.server {port} --bind 127.0.0.1");
-        let other = Service::start(&dir, &command, &url, Duration::from_secs(20))
-            .await
-            .unwrap();
+        let other = Service::start(
+            &dir,
+            &command,
+            &url,
+            Duration::from_secs(20),
+            RunEnv::default(),
+        )
+        .await
+        .unwrap();
 
         let ran = dir.join("ran");
         let err = Service::start(
@@ -361,6 +456,7 @@ mod tests {
             &format!("touch {}", ran.display()),
             &url,
             Duration::from_secs(5),
+            RunEnv::default(),
         )
         .await
         .err()

@@ -120,12 +120,13 @@ Shell commands, run from the folder holding suite.yaml, in any language. Exit 0 
 - **Every hook is its platform's own.** There are no placeholders but a check's name and args: each command names its platform, stack and account itself. Hook scripts can still be one shared file that takes the platform as an argument.
 - **Stacks make platforms independent.** With `stack-up` and `stack-down`, each platform gets its own blank backend per run (containers on their own ports, under a project name per platform) and shares no account or data with the others. Point each platform's `guard`, `check` and `proxy` at its own stack. Make `up` start from nothing every time and `down` remove everything, data included, and give the containers no restart policy, so nothing comes back after a crash.
 - **The guard is the project's safety net.** Make it refuse unless everything points at the local stack, and never weaken it to make a run start.
+- **`build-identity` refuses a build no commit identifies** (uncommitted changes), except in a trial: `soundcheck run --uncommitted` gives every hook `SOUNDCHECK_UNCOMMITTED=1`, and then the hook may accept a dirty tree's build. A trial says on its page that it isn't a regression result, and files no tickets.
 
 ### Prepare scripts
 
 Hooks answer "how does the app get running?"; a spec's `prepare` answers "how is this spec readied?". soundcheck runs each spec's steps after the guard and a fresh relaunch, in order, from the suite folder. Seeding, signing in and where to start are the project's scripts; soundcheck has no seed, session or start link of its own.
 
-- **A step gets** `SOUNDCHECK_PLATFORM`, `SOUNDCHECK_DRIVER`, `SOUNDCHECK_DEVICE`, `SOUNDCHECK_SERVER` (so `soundcheck drive` acts on the run's device) and every value earlier steps printed.
+- **A step gets** `SOUNDCHECK_PLATFORM`, `SOUNDCHECK_DRIVER`, `SOUNDCHECK_DEVICE`, `SOUNDCHECK_SERVER` (so `soundcheck drive` acts on the run's device), `SOUNDCHECK_UNCOMMITTED=1` in a trial (below) and every value earlier steps printed.
 - **A step may print** `{"values": {"NAME": "…"}, "context": {...}}`: each value becomes an environment variable for the steps after it, and `context` goes into the tester's brief. The journal records the commands as written, so a token passed as a value never reaches a report.
 - **Steps reach the device through `soundcheck drive <platform> <tool>`**: `open <link>` (with `--relaunch`, the app starts from the link, so it can't miss it while starting), `relaunch`, `clear-data`, and on chrome `cookies set` and `storage set`. Each has the same effect on every driver; a browser-only tool fails elsewhere, saying why.
 - **A step that fails or passes `--prepare-timeout`** (60 s by default) fails the reset, which is retried twice and then filed BLOCKED. A seed that's slower raises the flag for the run, not per step.
