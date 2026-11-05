@@ -415,7 +415,7 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
 }
 
 #[tokio::test]
-async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
+async fn a_prepare_step_that_keeps_failing_files_the_spec_blocked() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -425,31 +425,25 @@ async fn a_seed_that_keeps_failing_files_the_spec_blocked() {
     let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
     std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
     for f in [
+        "suite.yaml",
         "annotations/_feature.md",
         "annotations/001-draw.spec.md",
-        "annotations/002-back.spec.md",
     ] {
         std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
     }
     let tries = base.join("tries");
-    // Every seed fails, noting each try, so the retries can be counted.
-    let config: String = std::fs::read_to_string(good.join("suite.yaml"))
+    // Its prepare step always fails, noting each try, so the retries can be counted.
+    let back = std::fs::read_to_string(good.join("annotations/002-back.spec.md"))
         .unwrap()
-        .lines()
-        .map(|line| {
-            if line.trim_start().starts_with("seed:") {
-                format!(
-                    "      seed: \"echo try >> {} && echo 'database is down' >&2 && exit 1 # {{scenario}}\"",
-                    tries.display()
-                )
-            } else {
-                line.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    assert!(config.contains("database is down"));
-    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+        .replace(
+            r#"  - echo '{"context":"seeded"}'"#,
+            &format!(
+                "  - echo try >> {} && echo 'database is down' >&2 && exit 1",
+                tries.display()
+            ),
+        );
+    assert!(back.contains("database is down"));
+    std::fs::write(suite_dir.join("annotations/002-back.spec.md"), back).unwrap();
     let suite = suite::load(&suite_dir);
     let plan = Plan {
         specs: suite

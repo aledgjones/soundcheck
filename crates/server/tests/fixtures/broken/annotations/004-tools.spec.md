@@ -1,8 +1,9 @@
 ---
 title: Clear a layer and tap through it
-seed: viewer
 platforms: [android, ios, web]
 tools: [tap, network-drop]
+prepare:
+  - node scripts/missing.js viewer
 ---
 
 ## Goal

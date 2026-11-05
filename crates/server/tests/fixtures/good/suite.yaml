@@ -6,7 +6,6 @@ platforms:
     app: com.example.app
     hooks:
       guard: "true"
-      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
       build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-android\"}'"
       install: "true"
       check: echo checked
@@ -20,7 +19,6 @@ platforms:
     app: com.example.app
     hooks:
       guard: "true"
-      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
       build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-ios\"}'"
       install: "true"
       check: echo checked
@@ -35,12 +33,10 @@ platforms:
     url: http://localhost:5173
     hooks:
       guard: "true"
-      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
       build-identity: "echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-web\"}'"
       install: "true"
       serve: npm run dev
       check: echo checked
       act: echo acted
-seeds: [viewer, empty]
 tickets:
   url: https://example.atlassian.net/browse/{id}

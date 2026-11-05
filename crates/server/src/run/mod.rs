@@ -9,7 +9,7 @@ pub mod verdict;
 
 use crate::suite::{config::Platform, spec::Spec};
 use anyhow::{Result, bail};
-use event::{Event, ResultCounts, RowRef};
+use event::{Event, PreparedStep, ResultCounts, RowRef};
 use journal::{Entry, Journal};
 use model::*;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -274,17 +274,18 @@ impl Run {
         platform: Platform,
         brief: impl FnOnce(&str, Option<&str>) -> String,
     ) -> Result<String> {
-        self.dispatch_after_reset(now, spec, platform, None, brief)
+        self.dispatch_after_reset(now, spec, platform, None, Vec::new(), brief)
     }
 
     /// [`Run::dispatch`], recording how long the reset before it took, so the gap after the last post splits into
-    /// the reset and the coordinator's own lag.
+    /// the reset and the coordinator's own lag, and the prepare steps it ran.
     pub fn dispatch_after_reset(
         &mut self,
         now: u64,
         spec: &str,
         platform: Platform,
         reset_ms: Option<u64>,
+        steps: Vec<PreparedStep>,
         brief: impl FnOnce(&str, Option<&str>) -> String,
     ) -> Result<String> {
         let (attempt, verify) = self.check_dispatch(spec, platform)?;
@@ -299,6 +300,7 @@ impl Run {
                 prompt: brief(&token, verify.as_deref()),
                 verify,
                 reset_ms,
+                steps,
             },
         )?;
         self.activity.insert(

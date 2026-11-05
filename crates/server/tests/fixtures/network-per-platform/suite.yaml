@@ -6,7 +6,6 @@ platforms:
     app: com.example.app
     hooks:
       guard: "true"
-      seed: "true # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
@@ -21,11 +20,9 @@ platforms:
     url: http://localhost:43173
     hooks:
       guard: "true"
-      seed: "true # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
     proxy:
       - { name: api, listen: 33000, device: 24000, upstream: 41000 }
-seeds: [empty]
 parallel: true

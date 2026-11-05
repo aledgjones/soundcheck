@@ -1,6 +1,7 @@
 ---
 title: Go back from a score after annotating
-seed: viewer
+prepare:
+  - echo '{"context":"seeded"}'
 platforms: [android]
 tools: [double-tap, offline]
 model: opus

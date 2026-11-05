@@ -6,10 +6,8 @@ platforms:
     app: com.example.app
     hooks:
       guard: "true"
-      seed: "true # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
     proxy:
       - { name: store, listen: 28100, upstream: https://api.example.com/v1 }
-seeds: [empty]

@@ -3,6 +3,14 @@ use crate::suite::config::Platform;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// A prepare step a reset ran: its command as the spec wrote it, so no value it was given (a token) is recorded, and
+/// how long it took.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedStep {
+    pub command: String,
+    pub ms: u64,
+}
+
 /// Everything that happens in a run, in the order it happened. State is rebuilt by replaying these.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "kebab-case")]
@@ -16,9 +24,13 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         verify: Option<String>,
         prompt: String,
-        /// How long the seed, relaunch and start took; the entry is written as they finish.
+        /// How long the reset (guard, relaunch, prepare steps, retries) took; the entry is written as it finishes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reset_ms: Option<u64>,
+        /// The prepare steps the reset ran on this platform. A failing step's command and reason are in the reset's
+        /// failure instead.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        steps: Vec<PreparedStep>,
     },
     /// A tester settled one outcome before posting, so the page can show progress. Provisional: a later judgment of
     /// the same outcome replaces it, and the post files them all.

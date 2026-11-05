@@ -1,6 +1,7 @@
 ---
 title: Draw a pen stroke, undo and redo it
-seed: viewer
+prepare:
+  - echo '{"context":"seeded"}'
 platforms: [android, ios, web]
 viewport: 1440x900
 past-bugs: [SA-611]

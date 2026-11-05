@@ -106,8 +106,6 @@ pub struct SuiteConfig {
     pub soundcheck: String,
     /// Each platform's whole map: nothing about one platform is shared from the top level.
     pub platforms: BTreeMap<Platform, PlatformConfig>,
-    /// Seed scenario names the `seed` hook accepts.
-    pub seeds: Vec<String>,
     /// The folder holding the feature folders, relative to the suite; defaults to the suite folder itself.
     pub specs: Option<PathBuf>,
     /// Files testers can `push` onto a device, relative to the suite; defaults to `fixtures/` inside it.
@@ -270,11 +268,15 @@ pub struct Served {
 const MOVED_TOP: &[(&str, &str)] = &[
     ("hooks", "each platform has its own `hooks`"),
     ("network", "each platform has its own `proxy` routes"),
-    ("prepare", "gone; every spec starts from its own seed"),
+    ("prepare", "gone; each spec has its own `prepare` steps"),
+    ("seeds", "gone; seeding is a script a spec's `prepare` runs"),
 ];
 const MOVED_PLATFORM: &[(&str, &str)] = &[
-    ("prepare", "gone; every spec starts from its own seed"),
-    ("ready", "gone; each spec names its `start`"),
+    ("prepare", "gone; each spec has its own `prepare` steps"),
+    (
+        "ready",
+        "gone; a spec's `prepare` steps leave the app where it starts",
+    ),
     ("account", "gone; the platform's hooks name their account"),
     ("app-id", "now `app`"),
     ("base-url", "now `url`"),
@@ -317,6 +319,14 @@ fn old_shape(value: &serde_yaml_ng::Value) -> Vec<String> {
             .get("hooks")
             .and_then(serde_yaml_ng::Value::as_mapping);
         for (hook, command) in hooks.into_iter().flatten() {
+            if hook.as_str() == Some("seed") {
+                problems.push(format!(
+                    "platforms.{name}.hooks.seed: gone; seeding is a script a spec's `prepare` runs ({migrate})"
+                ));
+
+                continue;
+            }
+
             let command = command.as_str().unwrap_or_default();
             for placeholder in ["{platform}", "{account}"] {
                 if command.contains(placeholder) {
@@ -364,8 +374,6 @@ pub fn parse_viewport(text: &str) -> Option<(u32, u32)> {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Hooks {
     pub guard: String,
-    /// Must contain `{scenario}`.
-    pub seed: String,
     pub build_identity: String,
     /// Makes the build current; skipped when `build-identity` says it is.
     pub install: String,
@@ -432,13 +440,10 @@ mod tests {
         assert!(!compatible("latest", "0.1.0"));
     }
 
-    const HOOKS: &str =
-        "{ guard: g, seed: \"s {scenario}\", build-identity: b, install: i, check: c }";
+    const HOOKS: &str = "{ guard: g, build-identity: b, install: i, check: c }";
 
     fn config(platforms: &str) -> Result<SuiteConfig, Vec<String>> {
-        SuiteConfig::parse(&format!(
-            "soundcheck: \"0.3\"\nseeds: [empty]\nplatforms:\n{platforms}"
-        ))
+        SuiteConfig::parse(&format!("soundcheck: \"0.3\"\nplatforms:\n{platforms}"))
     }
 
     #[test]
@@ -478,16 +483,18 @@ mod tests {
         let problems = SuiteConfig::parse(
             "soundcheck: \"0.2\"\nseeds: [s]\nhooks: { guard: g }\nprepare: prepare.md\n\
              platforms:\n  web:\n    base-url: http://x\n    ready: [Library]\n    \
-             hooks: { seed: \"s {platform}\" }\n",
+             hooks: { seed: \"s {scenario}\", guard: \"g {platform}\" }\n",
         )
         .unwrap_err();
         let joined = problems.join("\n");
         for expected in [
             "hooks: each platform has its own `hooks`",
             "prepare: gone",
+            "seeds: gone",
             "platforms.web.base-url: now `url`",
             "platforms.web.ready: gone",
-            "platforms.web.hooks.seed: {platform} is gone",
+            "platforms.web.hooks.seed: gone",
+            "platforms.web.hooks.guard: {platform} is gone",
             "MIGRATIONS.md",
         ] {
             assert!(joined.contains(expected), "{expected:?} in {joined}");

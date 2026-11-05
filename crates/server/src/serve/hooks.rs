@@ -1,11 +1,12 @@
 //! A project's hooks: shell commands run from the suite folder. Exit 0 is ok; anything else is a refusal.
 
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-/// A seed can rebuild a whole account; anything slower than this is stuck.
-pub const SEED_TIMEOUT: Duration = Duration::from_secs(300);
+/// A check or act hook reads or changes the stack; anything slower than this is stuck.
+pub const CHECK_TIMEOUT: Duration = Duration::from_secs(300);
 pub const GUARD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Run only once the Mac is calm, so a hook slower than this is stuck, not starved.
 pub const BUILD_IDENTITY_TIMEOUT: Duration = Duration::from_secs(60);
@@ -32,21 +33,22 @@ impl std::fmt::Display for TimedOut {
 
 impl std::error::Error for TimedOut {}
 
-/// Single-quoted for `sh`, so a scenario can't become shell syntax.
-fn quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-/// Fills `{scenario}` in a hook's command line; the command names its platform, stack and account itself.
-pub fn fill(command: &str, scenario: &str) -> String {
-    command.replace("{scenario}", &quote(scenario))
-}
-
 /// Runs a hook and returns its stdout. A failure carries the end of its stderr, which is where the reason is.
 pub async fn run(root: &Path, command: &str, timeout: Duration) -> Result<String> {
+    run_with(root, command, timeout, &BTreeMap::new()).await
+}
+
+/// [`run`] with `env` added to the command's environment.
+pub async fn run_with(
+    root: &Path,
+    command: &str,
+    timeout: Duration,
+    env: &BTreeMap<String, String>,
+) -> Result<String> {
     let child = tokio::process::Command::new("sh")
         .args(["-c", command])
         .current_dir(root)
+        .envs(env)
         .kill_on_drop(true)
         .output();
     let output = tokio::time::timeout(timeout, child)
@@ -80,47 +82,49 @@ pub async fn run(root: &Path, command: &str, timeout: Duration) -> Result<String
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The context a seed hook may print as `{"context": ...}`, for the tester's brief.
-pub fn context(stdout: &str) -> Option<String> {
-    let value: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
-    let context = value.get("context")?;
-    Some(match context {
-        serde_json::Value::String(s) => s.clone(),
+/// What a prepare step printed as `{"values": {...}, "context": ...}`: values become environment variables for the
+/// steps after it, and context goes into the tester's brief. Output that isn't such an object hands over nothing.
+#[derive(Debug, Default, PartialEq)]
+pub struct Printed {
+    pub values: BTreeMap<String, String>,
+    pub context: Option<String>,
+}
+
+pub fn printed(stdout: &str) -> Result<Printed, String> {
+    let Ok(serde_json::Value::Object(out)) = serde_json::from_str(stdout.trim()) else {
+        return Ok(Printed::default());
+    };
+
+    let context = out.get("context").and_then(|context| match context {
+        serde_json::Value::String(s) => Some(s.clone()),
         // Compact: the brief is read on every turn of the tester's, and indentation was most of a big seed's size.
-        other => serde_json::to_string(other).ok()?,
-    })
-}
+        other => serde_json::to_string(other).ok(),
+    });
+    let mut values = BTreeMap::new();
+    let given = out.get("values").and_then(serde_json::Value::as_object);
+    for (name, value) in given.into_iter().flatten() {
+        let mut chars = name.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+            && !name.starts_with("SOUNDCHECK_");
+        if !valid {
+            return Err(format!(
+                "value {name:?} isn't a variable name (letters, digits and _, not SOUNDCHECK_…)"
+            ));
+        }
 
-/// The ids the seed made, by name (`{"ids": {"E2E Seed Library Collection": "…"}}`), for a spec's start link.
-pub fn ids(stdout: &str) -> std::collections::BTreeMap<String, String> {
-    serde_json::from_str::<serde_json::Value>(stdout.trim())
-        .ok()
-        .and_then(|v| serde_json::from_value(v.get("ids")?.clone()).ok())
-        .unwrap_or_default()
-}
-
-/// A start link with each `{name}` replaced by the seed's id for it; a name the seed didn't report is an error, since
-/// the link would open nothing.
-pub fn link_with_ids(
-    link: &str,
-    ids: &std::collections::BTreeMap<String, String>,
-) -> Result<String, String> {
-    let mut out = String::new();
-    let mut rest = link;
-    while let Some(open) = rest.find('{') {
-        let close = rest[open..]
-            .find('}')
-            .ok_or_else(|| format!("start link {link:?} has an unclosed `{{`"))?;
-        let name = &rest[open + 1..open + close];
-        let id = ids
-            .get(name)
-            .ok_or_else(|| format!("the seed reported no id for {name:?}"))?;
-        out.push_str(&rest[..open]);
-        out.push_str(id);
-        rest = &rest[open + close + 1..];
+        let text = match value {
+            serde_json::Value::String(s) => s.clone(),
+            serde_json::Value::Number(n) => n.to_string(),
+            serde_json::Value::Bool(b) => b.to_string(),
+            _ => return Err(format!("value {name} is a {value}; give it a string")),
+        };
+        values.insert(name.clone(), text);
     }
-    out.push_str(rest);
-    Ok(out)
+
+    Ok(Printed { values, context })
 }
 
 /// How long a web app's dev server gets to start answering.
@@ -208,37 +212,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_start_link_takes_the_seeds_ids() {
-        let ids = ids(r#"{"context": "x", "ids": {"Library Collection": "c-1"}}"#);
+    fn a_step_hands_on_values_and_context() {
+        let out =
+            printed(r#"{"values": {"SCORE": "s-1", "PARTS": 2}, "context": "Elgar"}"#).unwrap();
+        assert_eq!(out.values["SCORE"], "s-1");
+        assert_eq!(out.values["PARTS"], "2");
+        assert_eq!(out.context.as_deref(), Some("Elgar"));
+        assert_eq!(printed("seeded\n").unwrap(), Printed::default());
         assert_eq!(
-            link_with_ids("sync://collection/{Library Collection}", &ids).unwrap(),
-            "sync://collection/c-1"
-        );
-        assert_eq!(link_with_ids("/support", &ids).unwrap(), "/support");
-        assert!(link_with_ids("sync://collection/{Gone}", &ids).is_err());
-    }
-
-    #[test]
-    fn placeholders_are_quoted() {
-        assert_eq!(
-            fill("seed {scenario} --on ios", "viewer"),
-            "seed 'viewer' --on ios"
-        );
-        assert_eq!(fill("seed {scenario}", "a'b; rm"), r"seed 'a'\''b; rm'");
-    }
-
-    #[test]
-    fn a_seed_can_hand_the_tester_context() {
-        assert_eq!(
-            context(r#"{"context": "Collection: E2E Seed Library"}"#).as_deref(),
-            Some("Collection: E2E Seed Library")
-        );
-        assert!(context("seeded").is_none());
-        assert_eq!(
-            context(r#"{"context": {"scores": [{"title": "Elgar", "parts": 2}]}}"#).as_deref(),
+            printed(r#"{"context": {"scores": [{"title": "Elgar", "parts": 2}]}}"#)
+                .unwrap()
+                .context
+                .as_deref(),
             Some(r#"{"scores":[{"parts":2,"title":"Elgar"}]}"#),
             "all of it, compact"
         );
+        assert!(printed(r#"{"values": {"my-score": "x"}}"#).is_err());
+        assert!(printed(r#"{"values": {"SOUNDCHECK_PLATFORM": "x"}}"#).is_err());
+        assert!(printed(r#"{"values": {"SCORE": {"id": 1}}}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_step_reads_its_environment() {
+        let env = BTreeMap::from([("SCORE".to_string(), "s 1".to_string())]);
+        let out = run_with(
+            &std::env::temp_dir(),
+            "echo \"$SCORE\"",
+            Duration::from_secs(5),
+            &env,
+        )
+        .await
+        .unwrap();
+        assert_eq!(out, "s 1\n");
     }
 
     #[tokio::test]

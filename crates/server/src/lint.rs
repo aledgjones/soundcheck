@@ -1,4 +1,5 @@
 use crate::suite::config::{DriverKind, Platform, SuiteConfig, compatible, parse_viewport};
+use crate::suite::spec::{Step, script_paths};
 use crate::suite::{CONFIG_FILE, FEATURE_FILE, Problem, Suite};
 use regex::Regex;
 use soundcheck_driver::Kind;
@@ -59,10 +60,6 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
         push(CONFIG_FILE.into(), message);
     }
 
-    if config.seeds.is_empty() {
-        push(CONFIG_FILE.into(), "seeds: list the seed scenarios".into());
-    }
-
     if !MODELS.contains(&config.models.default.as_str()) {
         push(
             CONFIG_FILE.into(),
@@ -110,37 +107,28 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
             push("title: no tool names".into());
         }
 
-        if !config.seeds.contains(&f.seed) {
-            push(format!(
-                "seed: {} isn't in suite.yaml's seeds ({})",
-                f.seed,
-                config.seeds.join(", ")
-            ));
-        }
-        if f.starts_on.is_some() {
-            push(
-                "starts-on: gone; a spec starts on the home screen, or give it a `start` link"
-                    .into(),
-            );
-        }
-        // Unknown platforms are reported below; nothing else is asked of them.
-        let driver = |p: &Platform| config.platforms.get(p).map(|c| c.driver);
-        for (platform, link) in &f.start {
-            if !f.platforms.contains(platform) {
-                push(format!("start: {platform} isn't in platforms"));
-            } else if driver(platform) == Some(DriverKind::Chrome) {
-                if !link.starts_with('/') && !link.starts_with("http") {
-                    push(format!(
-                        "start: {platform}'s link is a URL or a path from the site's root, not {link:?}"
-                    ));
-                }
-            } else if driver(platform).is_some() && !link.contains("://") {
+        // Steps run from the suite folder, so a script they name is found from there.
+        for (n, step) in f.prepare.iter().enumerate() {
+            let commands: Vec<&str> = match step {
+                Step::All(command) => vec![command],
+                Step::Each(each) => each.values().flatten().map(String::as_str).collect(),
+            };
+            let mut missing: Vec<&str> = commands
+                .into_iter()
+                .flat_map(script_paths)
+                .filter(|path| !suite.root.join(path).exists())
+                .collect();
+            missing.dedup();
+            for path in missing {
                 push(format!(
-                    "start: {platform}'s link is a deep link such as myapp://screen, not {link:?}"
+                    "prepare step {}: {path} isn't in the suite folder",
+                    n + 1
                 ));
             }
         }
 
+        // Unknown platforms are reported below; nothing else is asked of them.
+        let driver = |p: &Platform| config.platforms.get(p).map(|c| c.driver);
         let on_chrome = f
             .platforms
             .iter()
@@ -300,10 +288,6 @@ fn platform_problems(config: &SuiteConfig) -> Vec<String> {
             ));
         }
 
-        if !p.hooks.seed.contains("{scenario}") {
-            problems.push(format!("{at}.hooks.seed must contain {{scenario}}"));
-        }
-
         if p.hooks.stack_up.is_some() != p.hooks.stack_down.is_some() {
             problems.push(format!(
                 "{at}.hooks: stack-up and stack-down go together, so every stack started is removed"
@@ -355,7 +339,6 @@ fn names_of_others(config: &SuiteConfig) -> Vec<String> {
         let hooks = &p.hooks;
         let fields = [
             ("hooks.guard", Some(&hooks.guard)),
-            ("hooks.seed", Some(&hooks.seed)),
             ("hooks.build-identity", Some(&hooks.build_identity)),
             ("hooks.install", Some(&hooks.install)),
             ("hooks.check", Some(&hooks.check)),

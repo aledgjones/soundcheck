@@ -10,7 +10,7 @@ pub fn render(
     token: &str,
     verify: Option<&str>,
     rerun: Option<&str>,
-    seeded: Option<&str>,
+    prepared: Option<&str>,
 ) -> String {
     let spec = &spec.for_platform(platform);
     let mut out = String::new();
@@ -35,16 +35,21 @@ pub fn render(
             "## Before you start\n\nAn earlier attempt was stopped by the harness, not the app; that's been fixed. {note}\n"
         );
     }
-    if let Some(seeded) = seeded.map(str::trim).filter(|s| !s.is_empty()) {
+    if let Some(prepared) = prepared.map(str::trim).filter(|s| !s.is_empty()) {
         let _ = writeln!(
             out,
-            "## Starting state\n\nThe spec starts from the `{}` seed:\n\n{seeded}\n",
-            spec.front.seed
+            "## Starting state\n\nThe spec's prepare steps report:\n\n{prepared}\n"
         );
     }
-    let start = match spec.front.start.get(&platform) {
-        Some(link) => format!("on the screen its start link opens (`{link}`)"),
-        None => "with a fresh launch of the app".to_string(),
+    let start = if spec
+        .front
+        .prepare
+        .iter()
+        .any(|step| step.on(platform).is_some())
+    {
+        "where the spec's prepare steps left it"
+    } else {
+        "with a fresh launch of the app"
     };
     let _ = writeln!(
         out,
@@ -156,17 +161,34 @@ mod tests {
     use crate::suite::config::Platform;
     use crate::suite::spec::parse;
 
-    const SPEC: &str = "---\ntitle: Open a collection\nseed: library\nplatforms: [android, ios]\nstart:\n  ios: sync://collection/1\n---\n\n## Goal\n\nOpen it.\n\n## Outcomes\n\n- Its scores are listed.\n";
+    const SPEC: &str = "---\ntitle: Open a collection\nplatforms: [android, ios]\nprepare:\n  - ios: soundcheck drive ios open sync://collection/1\n    android: true\n---\n\n## Goal\n\nOpen it.\n\n## Outcomes\n\n- Its scores are listed.\n";
 
     #[test]
     fn the_brief_says_where_the_spec_starts() {
         let spec = parse("lists/001-open", "lists", SPEC).unwrap();
-        let on = |name: &'static str| {
-            super::render(&spec, None, Platform::literal(name), "t", None, None, None)
+        let on = |name: &'static str, prepared: Option<&str>| {
+            super::render(
+                &spec,
+                None,
+                Platform::literal(name),
+                "t",
+                None,
+                None,
+                prepared,
+            )
         };
-        assert!(on("ios").contains(
-            "The app is ready for you on the screen its start link opens (`sync://collection/1`). If it isn't there, judge the outcomes couldn't check"
+        let ios = on("ios", Some(r#"{"scores":2}"#));
+        assert!(ios.contains(
+            "The app is ready for you where the spec's prepare steps left it. If it isn't there, judge the outcomes couldn't check"
         ));
-        assert!(on("android").contains("The app is ready for you with a fresh launch of the app."));
+        assert!(ios.contains("The spec's prepare steps report:\n\n{\"scores\":2}"));
+        assert!(
+            !ios.contains("drive ios open"),
+            "the commands, values and all, stay out of the brief"
+        );
+        assert!(
+            on("android", None)
+                .contains("The app is ready for you with a fresh launch of the app.")
+        );
     }
 }

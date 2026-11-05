@@ -7,7 +7,7 @@ pub mod reports;
 pub mod tools;
 
 use crate::report;
-use crate::run::event::RowRef;
+use crate::run::event::{PreparedStep, RowRef};
 use crate::run::journal::Entry;
 use crate::run::model::Build;
 use crate::run::{Run, saved};
@@ -31,6 +31,7 @@ use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::ios::Ios;
 use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, DriverError};
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -132,20 +133,6 @@ pub async fn driver(platform: Platform, suite: &Suite, headed: bool) -> Result<D
         ),
     };
     Ok(Driver::new(device).with_network(network))
-}
-
-/// A spec's start link, with a path read from the root of the base URL's site.
-fn link_on(base_url: Option<&str>, link: &str) -> String {
-    match (link.strip_prefix('/'), base_url) {
-        (Some(path), Some(base)) => {
-            let after_scheme = base.find("://").map_or(0, |i| i + 3);
-            let origin = base[after_scheme..]
-                .find('/')
-                .map_or(base, |i| &base[..after_scheme + i]);
-            format!("{origin}/{path}")
-        }
-        _ => link.to_string(),
-    }
 }
 
 pub fn now_ms() -> u64 {
@@ -268,6 +255,10 @@ pub struct Hub {
     pub start_ms: u64,
     /// Web's Chrome in a window to watch, rather than headless.
     pub headed: bool,
+    /// How long one prepare step may take before the reset fails (`run --prepare-timeout`).
+    pub prepare_timeout: std::time::Duration,
+    /// The server's own address, set once it listens: prepare steps get it, so `soundcheck drive` acts through it.
+    pub url: std::sync::OnceLock<String>,
     /// Devices found degraded after a spec, to restart before the next: platform → (spec, reason).
     restart_due: Mutex<std::collections::HashMap<Platform, (String, String)>>,
     /// When each platform's device was last restarted, so a device that stays degraded isn't rebooted in a loop.
@@ -310,6 +301,15 @@ const HOST_WAIT_MAX_MS: u64 = 10 * 60_000;
 /// How often `soundcheck ready --wait` asks whether a held platform is free.
 pub const READY_POLL_MS: u64 = 15_000;
 pub const START_STALL_MS: u64 = 10 * 60_000;
+/// `run --prepare-timeout`'s default: one step seeding an account or signing in.
+pub const PREPARE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What a reset's prepare steps left: the context they printed for the tester, and the steps for the journal.
+#[derive(Debug, Default)]
+pub struct Prepared {
+    pub context: Option<String>,
+    pub steps: Vec<PreparedStep>,
+}
 
 /// A wait for a busy host: when it started, the latest reading, and when it ended and whether the host settled.
 struct Wait {
@@ -342,6 +342,8 @@ impl Hub {
             stall_ms,
             start_ms: START_STALL_MS,
             headed: false,
+            prepare_timeout: PREPARE_TIMEOUT,
+            url: std::sync::OnceLock::new(),
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
             restarting: Mutex::new(std::collections::HashMap::new()),
@@ -755,7 +757,7 @@ impl Hub {
     }
 
     /// What every attempt starts from: online with no faults, whatever the last one
-    /// left (first, since the seed may go through it), and the guard passed.
+    /// left (first, since prepare steps may go through it), and the guard passed.
     async fn online_and_guarded(&self, platform: Platform) -> Result<()> {
         let suite = self.suite();
         let config = suite
@@ -781,33 +783,21 @@ impl Hub {
         Ok(())
     }
 
-    /// Resets a platform for a spec: guard, seed, relaunch, then its `start` link if it has one for this platform.
+    /// Resets a platform for a spec (DESIGN.md 5.6): guard, a fresh relaunch, then the spec's prepare steps in order.
     /// Tried three times; the error after the last says why, and the caller files the spec BLOCKED as a reset failure.
     /// Whether the start screen is right is the tester's to judge: a wrong one is "couldn't check".
-    pub async fn reset(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
+    pub async fn reset(&self, spec: &Spec, platform: Platform) -> Result<Prepared> {
         let suite = self.suite();
         let config = suite
             .config
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
-        let root = &suite.root;
         let mut last = anyhow::anyhow!("not tried");
         for _ in 0..3 {
             let attempt = async {
                 self.online_and_guarded(platform).await?;
                 let platform_config = config.of(&platform);
-                let seed = hooks::fill(&platform_config.hooks.seed, &spec.front.seed);
-                let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
-                    let start = spec.front.start.get(&platform);
-                    let link = match start {
-                        Some(link) => Some(link_on(
-                            platform_config.url.as_deref(),
-                            &hooks::link_with_ids(link, &hooks::ids(&out))
-                                .map_err(|e| anyhow::anyhow!(e))?,
-                        )),
-                        None => None,
-                    };
                     let hardware = spec.front.keyboard == crate::suite::spec::Keyboard::Hardware;
                     // Every spec sets it, so one spec's size never carries into the next.
                     let size = (platform_config.driver == DriverKind::Chrome)
@@ -824,23 +814,68 @@ impl Hub {
                         if let Some((width, height)) = size {
                             d.device.viewport(width, height).await?;
                         }
-                        Device::launch(&d.device).await?;
-                        if let Some(link) = &link {
-                            return d.device.goto(link).await;
-                        }
-
-                        Ok(())
+                        Device::launch(&d.device).await
                     })
                     .await?;
                 }
-                anyhow::Ok(hooks::context(&out))
+
+                self.prepare(&suite.root, spec, platform, platform_config)
+                    .await
             };
             match attempt.await {
-                Ok(context) => return Ok(context),
+                Ok(prepared) => return Ok(prepared),
                 Err(e) => last = e,
             }
         }
         Err(last)
+    }
+
+    /// Runs a spec's prepare steps for `platform`, each with the platform's variables and the values earlier steps
+    /// printed. Its commands go to the journal as written; the values never do.
+    async fn prepare(
+        &self,
+        root: &std::path::Path,
+        spec: &Spec,
+        platform: Platform,
+        config: &PlatformConfig,
+    ) -> Result<Prepared> {
+        let mut env = BTreeMap::from([
+            ("SOUNDCHECK_PLATFORM".to_string(), platform.to_string()),
+            ("SOUNDCHECK_DRIVER".to_string(), config.driver.to_string()),
+            ("SOUNDCHECK_DEVICE".to_string(), config.device.clone()),
+        ]);
+        if let Some(url) = self.url.get() {
+            env.insert("SOUNDCHECK_SERVER".to_string(), url.clone());
+        }
+
+        let mut prepared = Prepared::default();
+        let mut contexts = Vec::new();
+        for (n, step) in spec.front.prepare.iter().enumerate() {
+            let Some(command) = step.on(platform) else {
+                continue;
+            };
+
+            let at = format!("prepare step {}", n + 1);
+            let started = std::time::Instant::now();
+            let out = hooks::run_with(root, command, self.prepare_timeout, &env)
+                .await
+                .map_err(|e| match e.downcast_ref::<hooks::TimedOut>() {
+                    Some(_) => {
+                        e.context(format!("{at} (`run --prepare-timeout` raises the limit)"))
+                    }
+                    None => e.context(at.clone()),
+                })?;
+            let printed = hooks::printed(&out).map_err(|e| anyhow::anyhow!("{at}: {e}"))?;
+            env.extend(printed.values);
+            contexts.extend(printed.context);
+            prepared.steps.push(PreparedStep {
+                command: command.to_string(),
+                ms: started.elapsed().as_millis() as u64,
+            });
+        }
+
+        prepared.context = (!contexts.is_empty()).then(|| contexts.join("\n"));
+        Ok(prepared)
     }
 
     /// Why `platform` can't take a spec yet, after starting what it waits for: a due restart, or a busy host. It's
@@ -1062,8 +1097,8 @@ impl Hub {
         };
         self.end_wait(spec_id, platform);
         let reset_started = std::time::Instant::now();
-        let seeded = match self.reset(spec, platform).await {
-            Ok(context) => context,
+        let prepared = match self.reset(spec, platform).await {
+            Ok(prepared) => prepared,
             Err(e) => {
                 let reason = format!("{e:#}");
                 let _ = self.with_run(|run, now| run.reset_failed(now, spec_id, platform, &reason));
@@ -1101,6 +1136,7 @@ impl Hub {
                 spec_id,
                 platform,
                 Some(reset_ms),
+                prepared.steps,
                 |token, verify| {
                     prompt::render(
                         &briefed,
@@ -1109,7 +1145,7 @@ impl Hub {
                         token,
                         verify,
                         rerun.as_deref(),
-                        seeded.as_deref(),
+                        prepared.context.as_deref(),
                     )
                 },
             )?;
@@ -1304,7 +1340,7 @@ impl Hub {
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
         let command = format!("{hook} {}", quoted.join(" "));
-        match hooks::run(&suite.root, &command, hooks::SEED_TIMEOUT).await {
+        match hooks::run(&suite.root, &command, hooks::CHECK_TIMEOUT).await {
             Ok(out) => Ok(out),
             Err(e) => Ok(format!("{kind} failed: {e:#}")),
         }
@@ -2100,23 +2136,4 @@ async fn events_stream(State(hub): State<Arc<Hub>>, Query(q): Query<EventsQuery>
         Body::from_stream(ReceiverStream::new(rx)),
     )
         .into_response()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::link_on;
-
-    #[test]
-    fn a_start_path_is_read_from_the_sites_root() {
-        let base = Some("http://localhost:43173/app");
-        assert_eq!(link_on(base, "/support"), "http://localhost:43173/support");
-        assert_eq!(
-            link_on(base, "http://example.test/x"),
-            "http://example.test/x"
-        );
-        assert_eq!(
-            link_on(Some("http://localhost:43173"), "/app"),
-            "http://localhost:43173/app"
-        );
-    }
 }

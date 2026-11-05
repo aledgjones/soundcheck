@@ -20,18 +20,13 @@ pub struct Spec {
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct Frontmatter {
     pub title: String,
-    pub seed: String,
-    /// Where a platform starts when it isn't the app's home screen: a link opened after the seed (on web, a URL or a
-    /// path on the base URL's site).
-    #[serde(default)]
-    pub start: BTreeMap<Platform, String>,
-    /// Gone (every spec starts on the home screen or its `start` link), but read so a run's saved copy of an older
-    /// suite still opens; lint refuses it in a live suite.
-    #[serde(default)]
-    pub starts_on: Option<serde_yaml_ng::Value>,
     pub platforms: Vec<Platform>,
-    /// Web only: the page's size for this spec, `WIDTHxHEIGHT`, in place of the suite's (a layout only a wide or a
-    /// narrow window has).
+    /// Commands run after the fresh relaunch, in order: the spec's data, who is signed in, where it starts
+    /// (DESIGN.md 5.6). Empty, the spec starts on a fresh launch.
+    #[serde(default)]
+    pub prepare: Vec<Step>,
+    /// `chrome` only: the page's size for this spec, `WIDTHxHEIGHT`, in place of the platform's (a layout only a wide
+    /// or a narrow window has).
     pub viewport: Option<String>,
     pub model: Option<String>,
     #[serde(default)]
@@ -54,6 +49,75 @@ pub enum Keyboard {
     Software,
 }
 
+/// One `prepare` step: a command for every platform the spec lists, or one per platform.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(try_from = "serde_yaml_ng::Value")]
+pub enum Step {
+    All(String),
+    /// Names every platform the spec lists; `None` is `true`, nothing on that platform.
+    Each(BTreeMap<Platform, Option<String>>),
+}
+
+impl Step {
+    /// The command this step runs on `platform`, if any.
+    pub fn on(&self, platform: Platform) -> Option<&str> {
+        match self {
+            Step::All(command) => Some(command),
+            Step::Each(each) => each.get(&platform)?.as_deref(),
+        }
+    }
+}
+
+impl TryFrom<serde_yaml_ng::Value> for Step {
+    type Error = String;
+
+    fn try_from(value: serde_yaml_ng::Value) -> Result<Step, String> {
+        use serde_yaml_ng::Value;
+
+        let command = |value: &Value| match value {
+            Value::String(s) if !s.trim().is_empty() => Ok(Some(s.clone())),
+            Value::Bool(true) => Ok(None),
+            _ => Err("a command, or `true` for nothing"),
+        };
+        match &value {
+            Value::String(_) => match command(&value) {
+                Ok(Some(c)) => Ok(Step::All(c)),
+                _ => Err("a prepare step can't be empty".into()),
+            },
+            Value::Mapping(map) => map
+                .iter()
+                .map(|(platform, value)| {
+                    let name = platform.as_str().unwrap_or_default();
+                    // YAML reads an unquoted command holding `: ` as a map, so say so rather than only that the key
+                    // isn't a platform.
+                    let platform = name.parse::<Platform>().map_err(|e| {
+                        format!(
+                            "{e}; a command with `: ` in it needs quotes, or YAML reads it as a map"
+                        )
+                    })?;
+                    let command = command(value).map_err(|e| format!("`{name}`: {e}"))?;
+                    Ok((platform, command))
+                })
+                .collect::<Result<_, String>>()
+                .map(Step::Each),
+            _ => Err("a prepare step is a command, or a map of one per platform".into()),
+        }
+    }
+}
+
+/// 0.2 frontmatter 0.3 refuses by name, and where each went.
+const MOVED: &[(&str, &str)] = &[
+    ("seed", "now a script the spec's `prepare` runs"),
+    (
+        "start",
+        "now a `soundcheck drive <platform> open` step in `prepare`",
+    ),
+    (
+        "starts-on",
+        "gone; `prepare` leaves the app where the spec starts",
+    ),
+];
+
 pub const SECTIONS: &[&str] = &["Goal", "Outcomes", "Probe around it", "Pinned"];
 
 /// Parses a spec file's text. Errors are lint problems, so they're plain messages.
@@ -65,11 +129,22 @@ pub fn parse(id: &str, feature: &str, text: &str) -> Result<Spec, Vec<String>> {
         .find("\n---\n")
         .or_else(|| rest.strip_suffix("\n---").map(str::len))
         .ok_or_else(|| vec!["frontmatter has no closing `---`".to_string()])?;
-    let front: Frontmatter =
+    let raw: serde_yaml_ng::Value =
         serde_yaml_ng::from_str(&rest[..end]).map_err(|e| vec![format!("frontmatter: {e}")])?;
+    let moved: Vec<String> = MOVED
+        .iter()
+        .filter(|(key, _)| raw.get(key).is_some())
+        .map(|(key, went)| format!("`{key}`: {went} (see MIGRATIONS.md for 0.2 → 0.3)"))
+        .collect();
+    if !moved.is_empty() {
+        return Err(moved);
+    }
+
+    let front: Frontmatter =
+        serde_yaml_ng::from_value(raw).map_err(|e| vec![format!("frontmatter: {e}")])?;
     let body = rest.get(end + 5..).unwrap_or("");
 
-    let mut problems = Vec::new();
+    let mut problems = prepare_problems(&front);
     let mut sections: Vec<(String, String)> = Vec::new();
     for line in body.lines() {
         if let Some(heading) = line.strip_prefix("## ") {
@@ -138,6 +213,84 @@ pub fn parse(id: &str, feature: &str, text: &str) -> Result<Spec, Vec<String>> {
         return Err(problems);
     }
     Ok(spec)
+}
+
+/// A map step names every platform the spec lists and no other, and a `soundcheck drive` names the platform its
+/// command runs on.
+fn prepare_problems(front: &Frontmatter) -> Vec<String> {
+    let mut problems = Vec::new();
+    for (n, step) in front.prepare.iter().enumerate() {
+        let at = format!("prepare step {}", n + 1);
+        match step {
+            Step::All(command) => {
+                for named in drives(command).into_iter().filter(|p| *p != "$") {
+                    if front.platforms.len() > 1
+                        || front.platforms.iter().all(|p| p.as_str() != named)
+                    {
+                        problems.push(format!(
+                            "{at} drives {named} on every platform the spec lists; give each platform its own \
+                             command, or drive $SOUNDCHECK_PLATFORM"
+                        ));
+                    }
+                }
+            }
+            Step::Each(each) => {
+                for platform in &front.platforms {
+                    if !each.contains_key(platform) {
+                        problems.push(format!(
+                            "{at} has nothing for {platform}; give it a command, or `true` for nothing"
+                        ));
+                    }
+                }
+
+                for (platform, command) in each {
+                    if !front.platforms.contains(platform) {
+                        problems.push(format!(
+                            "{at} names {platform}, which the spec doesn't run on"
+                        ));
+                    }
+
+                    let wrong = command
+                        .iter()
+                        .flat_map(|c| drives(c))
+                        .filter(|named| *named != "$" && *named != platform.as_str());
+                    for named in wrong {
+                        problems.push(format!("{at} drives {named} in {platform}'s command"));
+                    }
+                }
+            }
+        }
+    }
+
+    problems
+}
+
+/// The platform each `soundcheck drive <platform>` in a command names, quotes and braces stripped.
+fn drives(command: &str) -> Vec<&str> {
+    let words: Vec<&str> = command.split_whitespace().collect();
+    words
+        .windows(3)
+        .filter(|w| w[0].ends_with("soundcheck") && w[1] == "drive")
+        .map(|w| {
+            let named = w[2].trim_matches(['"', '\'']);
+            if named.contains('$') { "$" } else { named }
+        })
+        .collect()
+}
+
+/// The relative paths a command runs (`node scripts/seed.js viewer` → `scripts/seed.js`), for lint to find on disk:
+/// a word with a `/` and a file extension, not a URL, an option or a variable.
+pub fn script_paths(command: &str) -> Vec<&str> {
+    command
+        .split_whitespace()
+        .map(|w| w.trim_matches(['"', '\'']))
+        .filter(|w| {
+            w.contains('/')
+                && !w.starts_with(['/', '-', '~'])
+                && !w.contains([':', '$', '=', '{'])
+                && w.rsplit('/').next().is_some_and(|file| file.contains('.'))
+        })
+        .collect()
 }
 
 impl Spec {
@@ -276,7 +429,6 @@ mod tests {
 
     const GOOD: &str = "---
 title: Draw a pen stroke, undo and redo it
-seed: viewer
 platforms: [android, ios]
 ---
 
@@ -298,7 +450,7 @@ Undo twice quickly.
     #[test]
     fn parses_a_spec() {
         let spec = parse("annotations/001-draw", "annotations", GOOD).unwrap();
-        assert_eq!(spec.front.seed, "viewer");
+        assert!(spec.front.prepare.is_empty());
         assert_eq!(spec.front.platforms, vec![p("android"), p("ios")]);
         assert_eq!(
             spec.outcomes,
@@ -311,24 +463,80 @@ Undo twice quickly.
     }
 
     #[test]
-    fn a_start_names_each_platforms_link() {
-        let home = parse("annotations/001-draw", "annotations", GOOD).unwrap();
-        assert!(home.front.start.is_empty());
-
-        let linked = GOOD.replace(
+    fn prepare_steps_run_everywhere_or_per_platform() {
+        let prepared = GOOD.replace(
             "platforms: [android, ios]",
-            "platforms: [android, ios]\nstart:\n  ios: sync://collection/1",
+            "platforms: [android, ios]\nprepare:\n  - node scripts/seed.js viewer\n  \
+             - ios: soundcheck drive ios open \"myapp://viewer/$SCORE\"\n    android: true",
         );
-        let spec = parse("annotations/001-draw", "annotations", &linked).unwrap();
+        let spec = parse("annotations/001-draw", "annotations", &prepared).unwrap();
+        let [seed, open] = &spec.front.prepare[..] else {
+            panic!("two steps: {:?}", spec.front.prepare);
+        };
+        assert_eq!(seed.on(p("android")), Some("node scripts/seed.js viewer"));
         assert_eq!(
-            spec.front.start.get(&p("ios")).map(String::as_str),
-            Some("sync://collection/1")
+            open.on(p("ios")),
+            Some("soundcheck drive ios open \"myapp://viewer/$SCORE\"")
+        );
+        assert_eq!(open.on(p("android")), None, "`true` does nothing");
+    }
+
+    #[test]
+    fn a_prepare_map_covers_the_specs_platforms_and_drives_its_own() {
+        let problems = |prepare: &str| {
+            let text = GOOD.replace(
+                "platforms: [android, ios]",
+                &format!("platforms: [android, ios]\nprepare:\n{prepare}"),
+            );
+            parse("annotations/001-draw", "annotations", &text).unwrap_err()
+        };
+
+        assert_eq!(
+            problems("  - ios: soundcheck drive ios relaunch\n"),
+            vec![
+                "prepare step 1 has nothing for android; give it a command, or `true` for nothing"
+            ]
+        );
+        assert_eq!(
+            problems("  - { ios: true, android: true, chrome: true }\n"),
+            vec!["prepare step 1 names chrome, which the spec doesn't run on"]
+        );
+        assert_eq!(
+            problems("  - { ios: soundcheck drive android clear, android: true }\n"),
+            vec!["prepare step 1 drives android in ios's command"]
+        );
+        assert!(
+            problems("  - soundcheck drive ios relaunch\n")[0]
+                .contains("drive $SOUNDCHECK_PLATFORM")
+        );
+        assert!(problems("  - { ios: false, android: true }\n")[0].contains("`true` for nothing"));
+        assert!(
+            problems("  - node scripts/seed.js --label: viewer\n")[0].contains("needs quotes"),
+            "an unquoted `: ` makes a map"
+        );
+
+        let shared = GOOD.replace(
+            "platforms: [android, ios]",
+            "platforms: [android, ios]\nprepare:\n  - soundcheck drive \"$SOUNDCHECK_PLATFORM\" relaunch",
+        );
+        assert!(parse("annotations/001-draw", "annotations", &shared).is_ok());
+    }
+
+    #[test]
+    fn a_script_path_is_a_relative_file() {
+        assert_eq!(
+            script_paths("node scripts/seed.js --seed new-user && ./bin/sign-in.sh x/y"),
+            vec!["scripts/seed.js", "./bin/sign-in.sh"]
+        );
+        assert!(
+            script_paths("soundcheck drive chrome open /app/viewer/$SCORE https://x.io/a.js")
+                .is_empty()
         );
     }
 
     #[test]
     fn reports_missing_sections_and_unknown_ones() {
-        let text = "---\ntitle: T\nseed: s\nplatforms: [web]\n---\n## Goal\n\n## Steps\nx\n";
+        let text = "---\ntitle: T\nplatforms: [web]\n---\n## Goal\n\n## Steps\nx\n";
         let problems = parse("f/001-x", "f", text).unwrap_err();
         assert!(
             problems
@@ -341,7 +549,7 @@ Undo twice quickly.
 
     #[test]
     fn rejects_unknown_frontmatter_keys() {
-        let text = "---\ntitle: T\nseed: s\nplatforms: [web]\nchecks: [x]\n---\n";
+        let text = "---\ntitle: T\nplatforms: [web]\nchecks: [x]\n---\n";
         let problems = parse("f/001-x", "f", text).unwrap_err();
         assert!(
             problems[0].contains("unknown field `checks`"),
@@ -366,7 +574,6 @@ Undo twice quickly.
 
     const TAGGED: &str = "---
 title: Delete a score
-seed: library
 platforms: [android, ios, web]
 ---
 
@@ -492,12 +699,17 @@ Delete Beta while organising.
     }
 
     #[test]
-    fn a_saved_suite_from_before_start_links_still_reads() {
+    fn the_0_2_frontmatter_is_refused_by_name() {
         let old = GOOD.replace(
             "platforms: [android, ios]",
-            "starts-on: [Annotate]\nplatforms: [android, ios]",
+            "seed: viewer\nstart: { ios: \"sync://x\" }\nstarts-on: [Annotate]\nplatforms: [android, ios]",
         );
-        let spec = parse("annotations/001-draw", "annotations", &old).unwrap();
-        assert!(spec.front.starts_on.is_some());
+        let problems = parse("annotations/001-draw", "annotations", &old).unwrap_err();
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(
+            problems[0].starts_with("`seed`: now a script"),
+            "{problems:?}"
+        );
+        assert!(problems.iter().all(|p| p.contains("MIGRATIONS.md")));
     }
 }

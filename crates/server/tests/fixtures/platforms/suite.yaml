@@ -6,7 +6,6 @@ platforms:
     app: com.example.app
     hooks:
       guard: node hooks/data.mjs guard --platform ios
-      seed: node hooks/data.mjs seed {scenario} --platform ios
       build-identity: node hooks/build.mjs identity ios
       # A word that merely contains another platform's name isn't that name.
       install: node hooks/build.mjs install ios --skip-web-build
@@ -18,10 +17,9 @@ platforms:
     app: com.example.app
     hooks:
       guard: node hooks/data.mjs guard --platform ios-tablet
-      seed: node hooks/data.mjs seed {scenario} --platform ios
       build-identity: node hooks/build.mjs identity ios-tablet
       install: node hooks/build.mjs install ios-tablet
-      check: node hooks/data.mjs --platform ios-tablet check
+      check: node hooks/data.mjs --platform ios check
   web:
     driver: chrome
     device: laptop
@@ -30,8 +28,6 @@ platforms:
     url: http://localhost:43173/
     hooks:
       guard: node hooks/data.mjs guard --platform web
-      seed: node hooks/data.mjs seed {scenario} --platform web
       build-identity: node hooks/build.mjs identity web
       install: node hooks/build.mjs install web
       check: node hooks/data.mjs --platform web check
-seeds: [empty]

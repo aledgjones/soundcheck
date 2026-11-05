@@ -169,6 +169,10 @@ struct RunArgs {
     /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
     #[arg(long, default_value_t = 600)]
     first_call_seconds: u64,
+    /// How long one prepare step may take before its reset fails (retried twice, then BLOCKED). Raise it for the
+    /// whole run when a project's seeding is slow.
+    #[arg(long, default_value_t = 60)]
+    prepare_timeout: u64,
     /// Show the devices to watch the run (Chrome, Simulator.app, and the window of an emulator soundcheck restarts),
     /// rather than headless. Look only: a click or resize in one can steer a test.
     #[arg(long)]
@@ -333,6 +337,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         no_open,
         stall_seconds,
         first_call_seconds,
+        prepare_timeout,
         headed,
         install,
         remote,
@@ -518,6 +523,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         if let Some(only) = std::sync::Arc::get_mut(&mut hub) {
             only.headed = headed;
             only.start_ms = first_call_seconds * 1000;
+            only.prepare_timeout = std::time::Duration::from_secs(prepare_timeout);
         }
         if let Some(new) = relabel_to {
             hub.with_run(|run, now| {
@@ -705,6 +711,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                 return Err(AlreadySaid.into());
             }
         };
+        let _ = hub.url.set(url.to_string());
         hub.started();
         let info = serde_json::json!({
             "url": url,

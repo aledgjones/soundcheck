@@ -29,20 +29,16 @@ fn a_broken_suite_reports_every_rule() {
         "suite.yaml: pinned to soundcheck 0.4",
         "suite.yaml: platforms.android: needs app for the android driver",
         "suite.yaml: platforms.android.device: name the device it runs on",
-        "suite.yaml: platforms.android.hooks.seed must contain {scenario}",
         "suite.yaml: platforms.web: needs viewport for the chrome driver",
-        "suite.yaml: seeds: list the seed scenarios",
         "suite.yaml: models.default: gpt",
         "stray.spec.md: specs belong in a feature folder",
         "Bad_Feature: feature folders are lower-case",
         "annotations/02-misnamed.spec.md: spec files are named NNN-name.spec.md",
-        "annotations/004-tools.spec.md: seed: viewer isn't in suite.yaml's seeds",
+        "annotations/004-tools.spec.md: prepare step 1: scripts/missing.js isn't in the suite folder",
         "annotations/004-tools.spec.md: platforms: ios isn't one of suite.yaml's platforms (android, web)",
         "annotations/004-tools.spec.md: tools: tap is a basic tool",
         "annotations/004-tools.spec.md: tools: network-drop needs suite.yaml to give android, web proxy routes",
-        "annotations/005-links.spec.md: seed: viewer isn't in suite.yaml's seeds",
-        "annotations/005-links.spec.md: start: android's link is a deep link such as myapp://screen",
-        "annotations/005-links.spec.md: start: web's link is a URL or a path from the site's root",
+        "annotations/005-links.spec.md: prepare step 1 drives web in android's command",
         "annotations/003-empty.spec.md: needs a `## Goal` with text",
         "annotations/003-empty.spec.md: needs a `## Outcomes` list",
         "annotations/_feature.md: every feature needs a _feature.md",
@@ -54,8 +50,6 @@ fn a_broken_suite_reports_every_rule() {
         "annotations/001-noisy.spec.md: title: no row or ticket IDs",
         "annotations/001-noisy.spec.md: title: no command flags",
         "annotations/001-noisy.spec.md: title: no tool names",
-        "annotations/001-noisy.spec.md: seed: viewer isn't in suite.yaml's seeds",
-        "annotations/001-noisy.spec.md: start: web isn't in platforms",
         "annotations/001-noisy.spec.md: viewport: sizes a chrome platform's window, so the spec must run on one",
         "annotations/001-noisy.spec.md: platforms: ios listed twice",
         "annotations/001-noisy.spec.md: platforms: ios isn't one of suite.yaml's platforms (android, web)",
@@ -178,7 +172,7 @@ fn platforms_are_checked_against_each_other() {
             "suite.yaml: platforms.ios-tablet: ios uses the ios driver too; two platforms on one driver need a device each, which lands with per-platform readers (SA-880)",
             "suite.yaml: platforms.web.device: a chrome platform runs on `desktop`, not \"laptop\"",
             "suite.yaml: platforms.web.app: a chrome platform opens its `url`; app is for ios and android",
-            "suite.yaml: platforms.ios-tablet.hooks.seed names ios, another platform: copied from its block?",
+            "suite.yaml: platforms.ios-tablet.hooks.check names ios, another platform: copied from its block?",
         ]
     );
 }
@@ -194,7 +188,7 @@ fn the_old_shape_is_refused_with_where_it_went() {
     std::fs::write(
         root.join("suite.yaml"),
         "soundcheck: \"0.2\"\nseeds: [empty]\nprepare: prepare.md\n\
-         hooks: { guard: \"true\", seed: \"s {scenario} --on {platform}\" }\n\
+         hooks: { guard: \"true\" }\n\
          platforms:\n  android: { app-id: com.example.app, ready: [Library] }\n",
     )
     .unwrap();
@@ -207,9 +201,12 @@ fn the_old_shape_is_refused_with_where_it_went() {
         report,
         [
             format!("suite.yaml: hooks: each platform has its own `hooks` {migrate}"),
-            format!("suite.yaml: prepare: gone; every spec starts from its own seed {migrate}"),
+            format!("suite.yaml: prepare: gone; each spec has its own `prepare` steps {migrate}"),
             format!(
-                "suite.yaml: platforms.android.ready: gone; each spec names its `start` {migrate}"
+                "suite.yaml: seeds: gone; seeding is a script a spec's `prepare` runs {migrate}"
+            ),
+            format!(
+                "suite.yaml: platforms.android.ready: gone; a spec's `prepare` steps leave the app where it starts {migrate}"
             ),
             format!("suite.yaml: platforms.android.app-id: now `app` {migrate}"),
             format!(

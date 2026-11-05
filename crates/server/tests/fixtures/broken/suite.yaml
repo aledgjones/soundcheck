@@ -5,7 +5,6 @@ platforms:
     device: ""
     hooks:
       guard: "true"
-      seed: node seed.mjs
       build-identity: "true"
       install: "true"
       check: "true"
@@ -15,10 +14,8 @@ platforms:
     url: http://localhost:5173
     hooks:
       guard: "true"
-      seed: "true # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
-seeds: []
 models:
   default: gpt

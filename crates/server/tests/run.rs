@@ -115,14 +115,22 @@ fn a_tester_gets_its_brief_only_while_its_spec_runs() {
 }
 
 #[test]
-fn a_dispatch_records_how_long_its_reset_took() {
+fn a_dispatch_records_its_reset_and_prepare_steps() {
     let (mut run, path) = open("reset-time");
-    run.dispatch_after_reset(9_000, DRAW, ANDROID, Some(6_400), brief)
+    let steps = vec![soundcheck::run::event::PreparedStep {
+        command: "node scripts/sign-in.js".into(),
+        ms: 1_200,
+    }];
+    run.dispatch_after_reset(9_000, DRAW, ANDROID, Some(6_400), steps, brief)
         .unwrap();
     let line = soundcheck::serve::events::summary(run.entries_after(0).last().unwrap());
     assert!(line.ends_with("(attempt 1, after a 6.4 s reset)"), "{line}");
     let journal = std::fs::read_to_string(path).unwrap();
     assert!(journal.contains(r#""reset_ms":6400"#), "{journal}");
+    assert!(
+        journal.contains(r#""steps":[{"command":"node scripts/sign-in.js","ms":1200}]"#),
+        "{journal}"
+    );
 }
 
 #[test]
