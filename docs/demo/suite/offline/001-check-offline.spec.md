@@ -1,7 +1,8 @@
 ---
 title: Check items off with no connection
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 tools: [offline]
 ---
 

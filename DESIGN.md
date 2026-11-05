@@ -311,6 +311,7 @@ A suite with `stack-up` and `stack-down` hooks (5.3) gives each platform its own
   SKILL.md                     # accounts, device setup and quirks; takes a scope, delegates the run to soundcheck:run
   suite.yaml                   # with `specs: suite`
   hooks/                       # the project's hook scripts, each self-contained
+  scripts/                     # what specs' `prepare` steps run (seeding, signing in)
   fixtures/                    # files testers can push onto a device
   suite/                       # only the specs
     <feature>/
@@ -318,7 +319,7 @@ A suite with `stack-up` and `stack-down` hooks (5.3) gives each platform its own
       001-<name>.spec.md
 ```
 
-Scaffolding sits beside `suite.yaml`; the specs folder holds nothing but features, so it reads as the description of what's tested.
+Scaffolding sits beside `suite.yaml` (a suite with its specs in its own folder skips `hooks`, `scripts` and `fixtures` as features); the specs folder holds nothing but features, so it reads as the description of what's tested.
 
 ### 5.2 `suite.yaml`
 

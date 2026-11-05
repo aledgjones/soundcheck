@@ -1,7 +1,8 @@
 ---
 title: Create a first list
-seed: empty
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh empty
 ---
 
 ## Goal

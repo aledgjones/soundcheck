@@ -1,7 +1,8 @@
 ---
 title: Add items with no connection
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 tools: [offline]
 ---
 

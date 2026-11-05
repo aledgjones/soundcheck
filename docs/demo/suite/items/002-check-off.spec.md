@@ -1,7 +1,8 @@
 ---
 title: Check items off
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 ---
 
 ## Goal

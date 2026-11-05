@@ -48,7 +48,7 @@ pub struct Suite {
 pub const CONFIG_FILE: &str = "suite.yaml";
 pub const FEATURE_FILE: &str = "_feature.md";
 /// Folders in the suite root that aren't features.
-const NOT_FEATURES: &[&str] = &["hooks", "fixtures"];
+const NOT_FEATURES: &[&str] = &["hooks", "scripts", "fixtures"];
 
 static FEATURE_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[a-z0-9]+(-[a-z0-9]+)*$").unwrap());

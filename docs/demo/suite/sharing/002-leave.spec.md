@@ -1,7 +1,8 @@
 ---
 title: Leave a shared list
-seed: shared
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh shared
 ---
 
 ## Goal

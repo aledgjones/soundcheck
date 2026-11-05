@@ -1,7 +1,8 @@
 ---
 title: Set an item's quantity
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 ---
 
 ## Goal

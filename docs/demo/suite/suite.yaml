@@ -7,7 +7,6 @@ platforms:
     app: com.example.larder
     hooks:
       guard: "true"
-      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
@@ -19,13 +18,11 @@ platforms:
     app: com.example.larder
     hooks:
       guard: "true"
-      seed: "echo '{\"context\": \"seeded\"}' # {scenario}"
       build-identity: "true"
       install: "true"
       check: "true"
     proxy:
       - { name: api, listen: 24000, upstream: 3000 }
-seeds: [empty, kitchen, shared]
 reports: ../reports
 tickets:
   url: https://example.atlassian.net/browse/{id}

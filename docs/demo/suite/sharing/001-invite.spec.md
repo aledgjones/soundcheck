@@ -1,7 +1,8 @@
 ---
 title: Share a list by email
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 ---
 
 ## Goal

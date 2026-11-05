@@ -8,6 +8,55 @@ names the version it migrates to, what to change, and how to check it. The newes
 Platforms describe themselves, and each spec readies itself with `prepare` steps. soundcheck reads no 0.2 shape:
 `soundcheck lint` names every old key, so work through its list. DESIGN.md 5.2–5.6 has the whole model.
 
+Before, 0.2:
+
+```yaml
+# suite.yaml
+soundcheck: "0.2"
+platforms:
+  ios:
+    app-id: com.example.app
+    account: ios-tester@example.com
+    ready: [Library]
+hooks:
+  guard: node hooks/guard.mjs --platform {platform}
+  seed: node hooks/seed.mjs {scenario}
+  build-identity: node hooks/build.mjs identity {platform}
+  install: node hooks/build.mjs install {platform}
+  check: node hooks/check.mjs
+seeds: [library]
+
+# a spec's frontmatter
+seed: library
+platforms: [ios]
+start:
+  ios: myapp://collection/{Library Collection}
+```
+
+After, 0.3:
+
+```yaml
+# suite.yaml
+soundcheck: "0.3"
+platforms:
+  ios:
+    driver: ios
+    device: iPad Pro 13-inch (M5)
+    app: com.example.app
+    hooks:
+      guard: node hooks/guard.mjs --platform ios
+      build-identity: node hooks/build.mjs identity ios
+      install: node hooks/build.mjs install ios
+      check: node hooks/check.mjs
+
+# a spec's frontmatter
+platforms: [ios]
+prepare:
+  - node scripts/seed.js library # was the seed hook; prints {"values": {"COLLECTION": "…"}}
+  - node scripts/sign-in.js --account ios-tester@example.com # what `account` and `ready` stood for
+  - soundcheck drive ios open "myapp://collection/$COLLECTION"
+```
+
 - **Each platform is a whole block.** Nothing is shared from the top level, and no hook is filled in by a placeholder:
   - add `driver` (`ios`, `android` or `chrome`) and `device`: a simulator's name (or UDID, where two runtimes share a
     name), an AVD name, or `desktop` for chrome. Platform names are the project's own: `ios`, `iphone`, `chrome`…

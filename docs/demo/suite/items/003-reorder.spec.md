@@ -1,7 +1,8 @@
 ---
 title: Reorder items by dragging
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 ---
 
 ## Goal

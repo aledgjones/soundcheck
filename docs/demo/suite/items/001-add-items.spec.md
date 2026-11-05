@@ -1,7 +1,8 @@
 ---
 title: Add items to a list
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - sh scripts/seed.sh kitchen
 ---
 
 ## Goal
