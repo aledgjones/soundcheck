@@ -144,6 +144,15 @@ impl Service {
         url: &str,
         timeout: Duration,
     ) -> Result<Service> {
+        let client = reqwest::Client::new();
+        // Something else at `url` would answer for the service, which then can't take its port: the run would test
+        // whatever that is.
+        if client.get(url).send().await.is_ok() {
+            bail!(
+                "something already answers at {url}, so `{command}` can't serve there; stop it, or move the platform's `url` and `serve` to a free port"
+            );
+        }
+
         let child = tokio::process::Command::new("sh")
             .args(["-c", command])
             .current_dir(root)
@@ -154,7 +163,6 @@ impl Service {
             .spawn()
             .with_context(|| format!("couldn't start `{command}`"))?;
         let mut service = Service { child };
-        let client = reqwest::Client::new();
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             if client.get(url).send().await.is_ok() {
@@ -330,5 +338,35 @@ mod tests {
         let body = reqwest::get(&url).await.unwrap().text().await.unwrap();
         assert!(body.contains("<h1>rebuilt</h1>"));
         drop(second);
+    }
+
+    #[tokio::test]
+    async fn a_web_app_whose_url_already_answers_is_refused() {
+        let dir = std::env::temp_dir().join(format!("soundcheck-taken-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let url = format!("http://127.0.0.1:{port}/");
+        let command = format!("exec python3 -m http.server {port} --bind 127.0.0.1");
+        let other = Service::start(&dir, &command, &url, Duration::from_secs(20))
+            .await
+            .unwrap();
+
+        let ran = dir.join("ran");
+        let err = Service::start(
+            &dir,
+            &format!("touch {}", ran.display()),
+            &url,
+            Duration::from_secs(5),
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(err.to_string().contains("already answers"), "{err}");
+        assert!(!ran.exists(), "the hook never runs");
+        drop(other);
     }
 }

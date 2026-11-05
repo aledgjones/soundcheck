@@ -308,6 +308,22 @@ pub const START_STALL_MS: u64 = 10 * 60_000;
 /// `run --prepare-timeout`'s default: one step seeding an account or signing in.
 pub const PREPARE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// The PATH with this binary's folder first, so a prepare step's `soundcheck drive` is the version running the run.
+/// None when this binary isn't a `soundcheck` (a test).
+fn path_with_this_soundcheck() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    if exe.file_name()? != "soundcheck" {
+        return None;
+    }
+
+    let mut dirs = vec![exe.parent()?.to_path_buf()];
+    if let Some(path) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&path));
+    }
+
+    std::env::join_paths(dirs).ok()?.into_string().ok()
+}
+
 /// What a reset's prepare steps left: the context they printed for the tester, and the steps for the journal.
 #[derive(Debug, Default)]
 pub struct Prepared {
@@ -850,6 +866,11 @@ impl Hub {
         ]);
         if let Some(url) = self.url.get() {
             env.insert("SOUNDCHECK_SERVER".to_string(), url.clone());
+        }
+
+        // A step's `soundcheck` is this run's own, never an older one earlier on the PATH.
+        if let Some(path) = path_with_this_soundcheck() {
+            env.insert("PATH".to_string(), path);
         }
 
         let mut prepared = Prepared::default();
