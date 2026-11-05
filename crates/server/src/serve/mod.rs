@@ -29,7 +29,7 @@ use soundcheck_driver::Driver;
 use soundcheck_driver::android::Android;
 use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::ios::Ios;
-use soundcheck_driver::web::Web;
+use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, DriverError};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -90,8 +90,8 @@ pub async fn connect(
                 .viewport()
                 .ok_or_else(|| anyhow::anyhow!("suite.yaml gives {platform} no viewport"))?;
             let profile = config.profile_dir();
-            AnyDevice::Web(Box::new(
-                Web::launch_from(&url, width, height, headed, profile.as_deref()).await?,
+            AnyDevice::Chrome(Box::new(
+                Chrome::launch_from(&url, width, height, headed, profile.as_deref()).await?,
             ))
         }
         DriverKind::Android => AnyDevice::Android(

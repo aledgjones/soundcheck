@@ -94,34 +94,9 @@ impl<'de> Deserialize<'de> for Platform {
     }
 }
 
-/// How soundcheck drives a platform (section 4 of DESIGN.md). A new kind of device is a new driver here first.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum DriverKind {
-    Android,
-    Ios,
-    Chrome,
-}
-
-impl DriverKind {
-    pub fn driver(self) -> soundcheck_driver::Platform {
-        match self {
-            DriverKind::Android => soundcheck_driver::Platform::Android,
-            DriverKind::Ios => soundcheck_driver::Platform::Ios,
-            DriverKind::Chrome => soundcheck_driver::Platform::Web,
-        }
-    }
-}
-
-impl fmt::Display for DriverKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            DriverKind::Android => "android",
-            DriverKind::Ios => "ios",
-            DriverKind::Chrome => "chrome",
-        })
-    }
-}
+/// How soundcheck drives a platform (section 4 of DESIGN.md): the driver crate's own type, so suite.yaml's
+/// `driver:` and the tools' lists of drivers are one name.
+pub use soundcheck_driver::DriverKind;
 
 /// `suite.yaml`: everything a project tells soundcheck about itself.
 #[derive(Debug, Clone, Deserialize)]

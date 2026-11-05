@@ -1,6 +1,6 @@
 //! The Android driver: an emulator over adb, read through a long-lived reader on the device.
 
-use crate::Platform;
+use crate::DriverKind;
 use crate::device::{
     Device, DriverError, Health, Result, Stop, double_tap_script, swipe_script, touch_script,
 };
@@ -575,8 +575,8 @@ async fn run(program: &Path, args: &[&str], limit: Duration) -> Result<String> {
 }
 
 impl Device for Android {
-    fn platform(&self) -> Platform {
-        Platform::Android
+    fn driver(&self) -> DriverKind {
+        DriverKind::Android
     }
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {

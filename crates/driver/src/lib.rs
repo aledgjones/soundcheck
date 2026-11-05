@@ -21,20 +21,24 @@ pub use matcher::Matcher;
 pub use ops::Driver;
 pub use tools::{Kind, TOOLS, Tool, tool};
 
-/// The platforms a driver serves. The suite has its own type; this one keeps the driver free of suite concepts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Platform {
+/// How soundcheck drives a device: a suite's platform names one (`driver: chrome`). A new kind of device or browser
+/// is a new variant here, with its own implementation of each tool it supports.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum DriverKind {
     Android,
     Ios,
-    Web,
+    Chrome,
 }
 
-impl std::fmt::Display for Platform {
+impl std::fmt::Display for DriverKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Platform::Android => "android",
-            Platform::Ios => "ios",
-            Platform::Web => "web",
+            DriverKind::Android => "android",
+            DriverKind::Ios => "ios",
+            DriverKind::Chrome => "chrome",
         })
     }
 }

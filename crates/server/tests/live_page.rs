@@ -9,7 +9,7 @@ use soundcheck::run::{Plan, PlannedSpec, Run};
 use soundcheck::serve::{self, Hub};
 use soundcheck::suite;
 use soundcheck::suite::config::Platform;
-use soundcheck_driver::web::Web;
+use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,7 +76,7 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
     .unwrap();
     let url = format!("http://{}", server.addr);
 
-    let web = match Web::launch(&format!("{url}/run/"), 1200, 900, false).await {
+    let web = match Chrome::launch(&format!("{url}/run/"), 1200, 900, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");

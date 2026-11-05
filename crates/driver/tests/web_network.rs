@@ -2,7 +2,7 @@
 //! note) where Chrome isn't installed.
 
 use soundcheck_driver::proxy::{self, Network, Route, Upstream};
-use soundcheck_driver::web::Web;
+use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, Driver};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
@@ -103,7 +103,7 @@ async fn start(listen: u16, upstream: u16) -> Network {
 }
 
 /// The page's answer count, read from the page: 0 while it hasn't loaded.
-async fn fetched(driver: &Driver<Web>) -> u64 {
+async fn fetched(driver: &Driver<Chrome>) -> u64 {
     let seen = driver.see(None, false).await.unwrap_or_default();
     seen.iter()
         .find_map(|e| e.label.strip_prefix("Fetched ")?.parse().ok())
@@ -111,7 +111,7 @@ async fn fetched(driver: &Driver<Web>) -> u64 {
 }
 
 /// Whether the page gets answers again within `within` of now.
-async fn recovers(driver: &Driver<Web>, within: Duration) -> bool {
+async fn recovers(driver: &Driver<Chrome>, within: Duration) -> bool {
     let from = fetched(driver).await;
     let until = tokio::time::Instant::now() + within;
     while tokio::time::Instant::now() < until {
@@ -127,7 +127,7 @@ async fn recovers(driver: &Driver<Web>, within: Duration) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_through_the_proxy_gets_its_network_back_after_a_drop() {
     let network = start(19201, 19211).await;
-    let web = match Web::launch("http://127.0.0.1:19201/", 800, 600, false).await {
+    let web = match Chrome::launch("http://127.0.0.1:19201/", 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -160,7 +160,7 @@ async fn a_page_through_the_proxy_gets_its_network_back_after_a_drop() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_page_reloaded_mid_drop_gets_its_network_back() {
     let network = start(19202, 19212).await;
-    let web = match Web::launch("http://127.0.0.1:19202/", 800, 600, false).await {
+    let web = match Chrome::launch("http://127.0.0.1:19202/", 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");

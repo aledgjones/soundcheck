@@ -1637,6 +1637,7 @@ dependencies = [
  "image",
  "png",
  "regex",
+ "serde",
  "serde_json",
  "thiserror",
  "tokio",

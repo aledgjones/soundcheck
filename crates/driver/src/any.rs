@@ -1,17 +1,17 @@
 //! One type for whichever platform a spec is on, so the server can hold a driver per platform.
 
-use crate::Platform;
+use crate::DriverKind;
 use crate::android::Android;
 use crate::device::{Device, Health, Result, Stop};
 use crate::element::Element;
 use crate::ios::Ios;
-use crate::web::Web;
+use crate::web::Chrome;
 use std::path::Path;
 
 pub enum AnyDevice {
     Android(Android),
     Ios(Ios),
-    Web(Box<Web>),
+    Chrome(Box<Chrome>),
 }
 
 macro_rules! each {
@@ -19,14 +19,14 @@ macro_rules! each {
         match $self {
             AnyDevice::Android($d) => $e,
             AnyDevice::Ios($d) => $e,
-            AnyDevice::Web($d) => $e,
+            AnyDevice::Chrome($d) => $e,
         }
     };
 }
 
 impl Device for AnyDevice {
-    fn platform(&self) -> Platform {
-        each!(self, d => d.platform())
+    fn driver(&self) -> DriverKind {
+        each!(self, d => d.driver())
     }
     async fn read(&self, all: bool) -> Result<Vec<Element>> {
         each!(self, d => d.read(all).await)
@@ -59,7 +59,7 @@ impl Device for AnyDevice {
         match self {
             AnyDevice::Android(d) => Device::launch(d).await,
             AnyDevice::Ios(d) => Device::launch(d).await,
-            AnyDevice::Web(d) => Device::launch(d.as_ref()).await,
+            AnyDevice::Chrome(d) => Device::launch(d.as_ref()).await,
         }
     }
     async fn screenshot(&self, path: &Path) -> Result<()> {

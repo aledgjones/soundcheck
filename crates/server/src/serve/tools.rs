@@ -1440,7 +1440,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester (web): hover over an element. Returns the screen once it holds still."
+        description = "Tester (chrome): hover over an element. Returns the screen once it holds still."
     )]
     async fn hover(
         &self,
@@ -1456,7 +1456,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester (web): go `back` or `forward`, or `close` a tab the app opened, as the browser's buttons do. Returns the screen once it holds still."
+        description = "Tester (chrome): go `back` or `forward`, or `close` a tab the app opened, as the browser's buttons do. Returns the screen once it holds still."
     )]
     async fn goto(
         &self,
@@ -1469,7 +1469,7 @@ impl Tools {
         .await
     }
 
-    #[tool(description = "Tester (web): resize the browser viewport.")]
+    #[tool(description = "Tester (chrome): resize the browser viewport.")]
     async fn viewport(
         &self,
         Parameters(p): Parameters<ViewportParams>,

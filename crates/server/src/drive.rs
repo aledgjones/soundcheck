@@ -265,7 +265,7 @@ async fn parity(device: &AnyDevice) -> Result<String> {
             a.keyboard_region().await?,
         ),
         AnyDevice::Ios(_) => bail!("iOS has no second tool to compare: the reader is the only one"),
-        AnyDevice::Web(_) => bail!("web parity runs in a run, against Chrome's snapshot"),
+        AnyDevice::Chrome(_) => bail!("chrome parity runs in a run, against Chrome's snapshot"),
     };
     let mut full = compare(&full, &full_tool);
     let mut spoken = compare(&spoken, &spoken_tool);

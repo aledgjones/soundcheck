@@ -2,7 +2,7 @@
 //! `axe describe-ui` JSON) and input through its held HID session. There's no fallback: a reader gap is a bug to fix.
 //! Points everywhere but screenshots, which are in pixels.
 
-use crate::Platform;
+use crate::DriverKind;
 use crate::device::{
     Device, DriverError, Health, Result, Stop, double_tap_script, swipe_script, touch_script,
 };
@@ -789,8 +789,8 @@ fn type_script(text: &str) -> Option<String> {
 const STEP_MS: u64 = 30;
 
 impl Device for Ios {
-    fn platform(&self) -> Platform {
-        Platform::Ios
+    fn driver(&self) -> DriverKind {
+        DriverKind::Ios
     }
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {

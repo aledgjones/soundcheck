@@ -1,6 +1,6 @@
-use crate::Platform;
+use crate::DriverKind;
 
-const ALL: &[Platform] = &[Platform::Android, Platform::Ios, Platform::Web];
+const ALL: &[DriverKind] = &[DriverKind::Android, DriverKind::Ios, DriverKind::Chrome];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -14,28 +14,28 @@ pub enum Kind {
 pub struct Tool {
     pub name: &'static str,
     pub kind: Kind,
-    pub platforms: &'static [Platform],
+    pub drivers: &'static [DriverKind],
     pub summary: &'static str,
 }
 
-const fn basic(name: &'static str, platforms: &'static [Platform], summary: &'static str) -> Tool {
+const fn basic(name: &'static str, drivers: &'static [DriverKind], summary: &'static str) -> Tool {
     Tool {
         name,
         kind: Kind::Basic,
-        platforms,
+        drivers,
         summary,
     }
 }
 
 const fn mechanic(
     name: &'static str,
-    platforms: &'static [Platform],
+    drivers: &'static [DriverKind],
     summary: &'static str,
 ) -> Tool {
     Tool {
         name,
         kind: Kind::Mechanic,
-        platforms,
+        drivers,
         summary,
     }
 }
@@ -91,13 +91,17 @@ pub const TOOLS: &[Tool] = &[
         ALL,
         "run steps in order, stopping at the first failure",
     ),
-    basic("hover", &[Platform::Web], "hover over an element"),
+    basic("hover", &[DriverKind::Chrome], "hover over an element"),
     basic(
         "goto",
-        &[Platform::Web],
+        &[DriverKind::Chrome],
         "open a URL, or go back or forward",
     ),
-    basic("viewport", &[Platform::Web], "resize the browser viewport"),
+    basic(
+        "viewport",
+        &[DriverKind::Chrome],
+        "resize the browser viewport",
+    ),
     mechanic(
         "double-tap",
         ALL,

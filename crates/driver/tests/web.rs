@@ -1,6 +1,6 @@
 //! Drives a real headless Chrome against a small local page. Skips (with a note) where Chrome isn't installed.
 
-use soundcheck_driver::web::Web;
+use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, Driver, Matcher, Stop};
 use std::time::Duration;
 
@@ -40,7 +40,7 @@ async fn the_web_driver_reads_and_drives_a_real_page() {
     std::fs::write(&file, PAGE).unwrap();
     let url = format!("file://{}", file.display());
 
-    let web = match Web::launch(&url, 1024, 768, false).await {
+    let web = match Chrome::launch(&url, 1024, 768, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -128,7 +128,8 @@ async fn preview_compare_catches_a_save_that_moves() {
     for (offset, should_pass) in [(0, true), (10, false)] {
         let file = dir.join(format!("draw-{offset}.html"));
         std::fs::write(&file, drawing(offset)).unwrap();
-        let web = match Web::launch(&format!("file://{}", file.display()), 800, 600, false).await {
+        let web = match Chrome::launch(&format!("file://{}", file.display()), 800, 600, false).await
+        {
             Ok(web) => web,
             Err(e) => {
                 eprintln!("skipping: Chrome didn't start ({e})");
@@ -170,7 +171,7 @@ async fn preview_compare_catches_a_save_that_moves() {
 #[tokio::test]
 #[ignore]
 async fn headed_chrome_runs_without_headless() {
-    let web = Web::launch("about:blank", 800, 600, true).await.unwrap();
+    let web = Chrome::launch("about:blank", 800, 600, true).await.unwrap();
     let ps = std::process::Command::new("ps")
         .args(["-ax", "-o", "args"])
         .output()
@@ -212,7 +213,7 @@ async fn a_popup_takes_reads_and_taps_until_it_closes() {
 <script>addEventListener('message', (e) => { document.title = e.data; });</script></body>"#,
     )
     .unwrap();
-    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+    let web = match Chrome::launch(&format!("file://{}", main.display()), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -255,7 +256,7 @@ async fn a_popup_takes_reads_and_taps_until_it_closes() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn headless_reads_as_ordinary_chrome() {
     let page = "data:text/html,<button id=b></button><script>b.textContent = navigator.userAgent.includes('HeadlessChrome') ? 'headless' : 'chrome'</script>";
-    let web = match Web::launch(page, 800, 600, false).await {
+    let web = match Chrome::launch(page, 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -275,7 +276,7 @@ async fn browser_dialogs_are_seen_and_answered() {
 <button onclick=\"r.textContent = prompt('Name?') ?? 'none'\">Name</button>\
 <button onclick=\"alert('Saved'); r.textContent = 'alerted'\">Save</button>\
 <button onclick=\"setTimeout(() => r.textContent = confirm('Later?') ? 'yes' : 'no', 300)\">Later</button><p id=r>-</p>";
-    let web = match Web::launch(page, 800, 600, false).await {
+    let web = match Chrome::launch(page, 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -341,7 +342,7 @@ async fn a_swipe_scrolls_and_close_shuts_a_tab_the_page_opened() {
 <img src="data:image/gif;base64,R0lGODlhAQABAAAAACw=" width=400 height=400></body>"#,
     )
     .unwrap();
-    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+    let web = match Chrome::launch(&format!("file://{}", main.display()), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -405,7 +406,7 @@ async fn a_touch_drags_what_the_page_lets_you_drag_and_drops_it() {
 </body>"#,
     )
     .unwrap();
-    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+    let web = match Chrome::launch(&format!("file://{}", main.display()), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -466,7 +467,7 @@ async fn a_file_picker_offers_what_was_pushed_and_downloads_are_seen() {
     .unwrap();
     let pdf = dir.join("score.pdf");
     std::fs::write(&pdf, b"%PDF-1.7 a score").unwrap();
-    let web = match Web::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+    let web = match Chrome::launch(&format!("file://{}", main.display()), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");
@@ -560,8 +561,8 @@ async fn worker_app() -> (u16, tokio::task::JoinHandle<()>) {
 }
 
 /// Launches Chrome on the worker app and waits for the worker to control the page; `None` when Chrome won't start.
-async fn controlled(port: u16) -> Option<Driver<Web>> {
-    let web = match Web::launch(&format!("http://localhost:{port}/"), 800, 600, false).await {
+async fn controlled(port: u16) -> Option<Driver<Chrome>> {
+    let web = match Chrome::launch(&format!("http://localhost:{port}/"), 800, 600, false).await {
         Ok(web) => web,
         Err(e) => {
             eprintln!("skipping: Chrome didn't start ({e})");

@@ -1,6 +1,6 @@
 //! The web driver: its own headless Chrome over the DevTools protocol, reading Chrome's accessibility tree.
 
-use crate::Platform;
+use crate::DriverKind;
 use crate::device::{Device, DriverError, Result, SETTLE_MS, Stop, touch_path};
 use crate::element::{Element, Rect};
 use chromiumoxide::browser::{Browser, BrowserConfig};
@@ -47,7 +47,7 @@ const SKIPPED_ROLES: &[&str] = &[
     "LineBreak",
 ];
 
-pub struct Web {
+pub struct Chrome {
     browser: Browser,
     page: Page,
     base_url: String,
@@ -214,7 +214,7 @@ fn describe_download(d: &Download) -> String {
     format!("{kind}, {size}")
 }
 
-impl Web {
+impl Chrome {
     /// Sizes a headed window so it shows the whole viewport: Chrome counts its own toolbars in a window's size.
     async fn fit_window(&self, width: u32, height: u32) -> Result<()> {
         let Some((w, h)) = self.frame else {
@@ -256,11 +256,11 @@ impl Web {
     /// Starts Chrome with a fresh, temporary profile and opens `base_url`: headless, or in a window to watch with
     /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
     /// a test, so a watched window is for looking only.
-    pub async fn launch(base_url: &str, width: u32, height: u32, headed: bool) -> Result<Web> {
+    pub async fn launch(base_url: &str, width: u32, height: u32, headed: bool) -> Result<Chrome> {
         Self::launch_from(base_url, width, height, headed, None).await
     }
 
-    /// As [`Web::launch`], but the temporary profile starts as a copy of `profile` (one made with [`open_profile`]),
+    /// As [`Chrome::launch`], but the temporary profile starts as a copy of `profile` (one made with [`open_profile`]),
     /// so a Google session signed in there by hand is there too, and nothing the run does goes back into it.
     pub async fn launch_from(
         base_url: &str,
@@ -268,7 +268,7 @@ impl Web {
         height: u32,
         headed: bool,
         profile: Option<&Path>,
-    ) -> Result<Web> {
+    ) -> Result<Chrome> {
         let profile_dir = std::env::temp_dir().join(format!(
             "soundcheck-chrome-{}-{}",
             std::process::id(),
@@ -488,7 +488,7 @@ impl Web {
                 }
             }
         }));
-        let web = Web {
+        let web = Chrome {
             browser,
             page,
             base_url: base_url.to_string(),
@@ -834,9 +834,9 @@ impl Web {
     }
 }
 
-impl Device for Web {
-    fn platform(&self) -> Platform {
-        Platform::Web
+impl Device for Chrome {
+    fn driver(&self) -> DriverKind {
+        DriverKind::Chrome
     }
 
     async fn read(&self, all: bool) -> Result<Vec<Element>> {

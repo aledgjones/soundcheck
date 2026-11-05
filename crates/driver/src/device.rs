@@ -1,14 +1,14 @@
-use crate::Platform;
+use crate::DriverKind;
 use crate::element::Element;
 use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DriverError {
     /// Refused clearly, so a spec never silently skips a step.
-    #[error("{tool} isn't available on {platform}")]
+    #[error("{tool} isn't available on the {driver} driver")]
     Unsupported {
         tool: &'static str,
-        platform: Platform,
+        driver: DriverKind,
     },
     #[error("not found: {0}")]
     NotFound(String),
@@ -148,7 +148,7 @@ impl Health {
 /// Coordinates are in the platform's own units, as [`Element::frame`] reports them.
 #[allow(async_fn_in_trait)]
 pub trait Device {
-    fn platform(&self) -> Platform;
+    fn driver(&self) -> DriverKind;
 
     /// The screen as a screen reader gets it; `all` includes views marked not important for accessibility.
     async fn read(&self, all: bool) -> Result<Vec<Element>>;
@@ -242,7 +242,7 @@ pub trait Device {
     fn unsupported(&self, tool: &'static str) -> DriverError {
         DriverError::Unsupported {
             tool,
-            platform: self.platform(),
+            driver: self.driver(),
         }
     }
 }

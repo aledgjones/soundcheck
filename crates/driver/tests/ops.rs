@@ -1,11 +1,11 @@
 use soundcheck_driver::device::Result;
-use soundcheck_driver::{Device, Driver, DriverError, Element, Matcher, Platform, Rect, Stop};
+use soundcheck_driver::{Device, Driver, DriverError, DriverKind, Element, Matcher, Rect, Stop};
 use std::path::Path;
 use std::sync::Mutex;
 
 /// Serves screens in order (the last one stays) and records every input.
 struct Fake {
-    platform: Platform,
+    platform: DriverKind,
     screens: Mutex<Vec<Vec<Element>>>,
     actions: Mutex<Vec<String>>,
     /// What typing puts in the focused field; `None` drops it, like a lost keystroke.
@@ -18,7 +18,7 @@ struct Fake {
 impl Fake {
     fn new(screens: Vec<Vec<Element>>) -> Self {
         Fake {
-            platform: Platform::Android,
+            platform: DriverKind::Android,
             screens: Mutex::new(screens),
             actions: Mutex::new(Vec::new()),
             typed: Mutex::new(Vec::new()),
@@ -38,7 +38,7 @@ impl Fake {
 }
 
 impl Device for Fake {
-    fn platform(&self) -> Platform {
+    fn driver(&self) -> DriverKind {
         self.platform
     }
     async fn read(&self, _all: bool) -> Result<Vec<Element>> {
@@ -407,14 +407,14 @@ async fn a_touch_refuses_an_empty_path_and_long_rests() {
 async fn a_platform_without_a_tool_refuses_it_clearly() {
     let driver = Driver::new(Fake::new(vec![vec![]]));
     let err = driver.network_drop(30).await.unwrap_err().to_string();
-    assert_eq!(err, "network-drop isn't available on android");
+    assert_eq!(err, "network-drop isn't available on the android driver");
     let err = driver
         .device
         .goto("http://localhost")
         .await
         .unwrap_err()
         .to_string();
-    assert_eq!(err, "goto isn't available on android");
+    assert_eq!(err, "goto isn't available on the android driver");
 }
 
 #[tokio::test(start_paused = true)]

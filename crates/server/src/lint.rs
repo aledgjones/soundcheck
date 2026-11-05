@@ -195,7 +195,7 @@ pub fn lint(suite: &Suite, version: &str) -> Vec<Problem> {
                 Some(t) => {
                     for platform in &f.platforms {
                         if let Some(d) = driver(platform)
-                            && !t.platforms.contains(&d.driver())
+                            && !t.drivers.contains(&d)
                         {
                             push(format!("tools: {name} doesn't run on {platform} ({d})"));
                         }
