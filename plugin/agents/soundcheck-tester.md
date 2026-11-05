@@ -2,6 +2,8 @@
 name: soundcheck-tester
 description: Runs one soundcheck spec on one device and posts its result. Dispatched by the soundcheck run skill with a spec token when `dispatch` names this type, and fetches its brief from the server; never used for anything else.
 model: sonnet
+# A tester works only from its brief; the project's CLAUDE.md and memory are about 11k tokens it never uses.
+omitClaudeMd: true
 tools:
   - Read
   - mcp__plugin_soundcheck_soundcheck__brief
