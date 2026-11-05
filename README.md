@@ -40,6 +40,41 @@ Take the app offline, check off `Eggs` and `Oat milk`, then bring it back online
 
 Every spec starts on a fresh relaunch, then its `prepare` steps (the project's own scripts: seed the account, sign in, open a deep link) put the app where the tester begins, and `soundcheck lint` catches a vague outcome or a missing tool before anything runs. Optional sections pin exact steps (`## Pinned`) or ask the tester to probe around the goal (`## Probe around it`), which is where new bugs turn up beside old ones.
 
+## A suite
+
+A folder of specs, one subfolder per feature, and a `suite.yaml` that says how each platform gets the app running:
+
+```yaml
+soundcheck: "0.3"
+platforms:
+  android:
+    driver: android
+    device: Pixel_Tablet_API_35 # an AVD; booted headless if it isn't running
+    app: com.example.larder
+    hooks:
+      guard: node hooks/guard.mjs android # refuses anything but a local backend
+      build-identity: node hooks/build.mjs identity android
+      install: node hooks/build.mjs install android
+      check: node hooks/data.mjs check android
+      stack-up: node hooks/stack.mjs up android
+      stack-down: node hooks/stack.mjs down android
+    proxy:
+      - { name: api, listen: 33000, device: 23000, upstream: 42000 }
+  chrome:
+    driver: chrome
+    device: desktop
+    url: http://localhost:43173/app
+    viewport: 1440x900
+    hooks:
+      # …the same hooks for chrome, plus `serve` to serve its build
+specs: suite
+parallel: true # one spec at a time on each platform, the platforms side by side
+tickets:
+  url: https://example.atlassian.net/browse/{id}
+```
+
+Each platform block is the whole of how that platform runs: its device, its own hooks with the platform written into each command, and its own proxy routes, which `offline`, `network-drop` and `fault` act on. Nothing is shared from the top level. A spec's `platforms` name these blocks, and readying a spec (seeding, signing in) is its own `prepare`, never a hook. [DESIGN.md](DESIGN.md) (5.2, 5.3) has every key and hook; [plugin/MIGRATIONS.md](plugin/MIGRATIONS.md) moves a 0.2 suite across, which 0.3 refuses by name.
+
 ## Every failure comes with its evidence
 
 ![A failure on Android: the outcome, what was expected and what happened, two screenshots, and the note that it reproduced](docs/images/failure.png)
@@ -120,9 +155,86 @@ Bump the version in `Cargo.toml` and `plugin/.claude-plugin/plugin.json` togethe
 
 To look at runs without one going, `soundcheck serve <suite> --open latest` opens the newest run's page, and the list of every run is at its root; nothing needs exporting first. An export (`report.html`, screenshots embedded) is for sharing.
 
-Outside a run, `soundcheck drive <android|ios> <command>` runs one driver command (`see`, `tap`, `touch`, `wait`, `shot`…) from the suite folder, for exploring, reproducing a bug or setting up screenshots; the plugin's `drive` skill tells Claude how. `soundcheck drive <platform> network offline|online` and `network-drop <seconds>` take the app's network away through the suite's proxy (`network` in `suite.yaml`: each route's `upstream` is a local port or a remote URL such as `https://api.revenuecat.com`, which the proxy reaches over TLS), which runs detached once started; `soundcheck proxy status|stop` manage it.
+Outside a run, `soundcheck drive <android|ios> <command>` runs one driver command (`see`, `tap`, `touch`, `wait`, `shot`…) from the suite folder, for exploring, reproducing a bug or setting up screenshots; the plugin's `drive` skill tells Claude how. `soundcheck drive <platform> network offline|online` and `network-drop <seconds>` take the app's network away through that platform's proxy (its `proxy` routes in `suite.yaml`: each route's `upstream` is a local port or a remote URL such as `https://api.revenuecat.com`, which the proxy reaches over TLS), which runs detached once started; `soundcheck proxy status|stop` manage it.
 
 Runs are written beside the suite in `reports/<run>/`: the journal, a summary, evidence, and `report.html` once the run finishes. `/runs` on the server lists every run. A start that fails before testing anything (a check that doesn't pass, a build that won't install) shows why on the page, then leaves no run behind.
+
+## Reference
+
+What every key does. The reasons behind them are in [DESIGN.md](DESIGN.md) (5.2 to 5.6); `soundcheck lint` refuses a key that isn't here.
+
+### `suite.yaml`
+
+| Key          | Required | What it does                                                                                                 |
+| ------------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| `soundcheck` | yes      | The soundcheck version the suite is written for (`"0.3"`). A suite for another minor version is refused.     |
+| `platforms`  | yes      | One block per platform, named by the project (`ios`, `android`, `chrome`…). Specs use these names.           |
+| `specs`      |          | The folder holding the feature folders, relative to the suite. Default: the suite folder itself.             |
+| `fixtures`   |          | Files testers can `push` onto a device. Default: `fixtures/` in the suite folder.                            |
+| `reports`    |          | Where runs are written. Default: `reports/` beside the suite folder.                                         |
+| `models`     |          | `default`: the testers' model. Default: `sonnet`. A spec's `model` overrides it.                             |
+| `parallel`   |          | `true` runs one spec at a time on each platform, the platforms side by side. Default: one spec at a time.    |
+| `tickets`    |          | `url`: a link with `{id}` in place of a ticket ID, for triage. Leave it out to keep findings in the report.  |
+| `remote`     |          | `allow`: the Google accounts that may open the live page through `--remote`. Without it, `--remote` refuses. |
+
+### A platform
+
+| Key              | Drivers       | What it does                                                                                                                                        |
+| ---------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `driver`         | all, required | What drives it: `ios`, `android` or `chrome`. Two platforms can share a driver.                                                                     |
+| `device`         | all, required | What the app runs on: a simulator's name or UDID (`ios`), an AVD name or adb serial (`android`), `desktop` (`chrome`). Booted if it's down.         |
+| `app`            | ios, android  | The app ID the driver launches.                                                                                                                     |
+| `url`            | chrome        | Where a launch opens.                                                                                                                               |
+| `viewport`       | chrome        | The window's size at every reset, `WIDTHxHEIGHT`, unless a spec sets its own.                                                                       |
+| `chrome-profile` | chrome        | A Chrome profile signed in to Google by hand (`soundcheck chrome-profile`). Each run starts from a copy, since Google refuses an automated sign-in. |
+| `hooks`          | all, required | The project's commands for this platform (below).                                                                                                   |
+| `proxy`          | all           | Routes from the app to its services, which `offline`, `network-drop` and `fault` act on. Each route:                                                |
+| ↳ `name`         |               | The service's name (`api`), for the report and `fault`.                                                                                             |
+| ↳ `listen`       |               | The port the app's test build talks to on this machine. Unique across platforms.                                                                    |
+| ↳ `device`       | android       | The port the app uses on the device, forwarded to `listen`. Default: `listen`.                                                                      |
+| ↳ `upstream`     |               | What really serves it: a port on this machine, or a URL (`https://api.revenuecat.com`) the proxy reaches over TLS.                                  |
+
+### Hooks
+
+Shell commands, one set per platform, each naming its platform itself. Exit 0 for ok; JSON on stdout where data comes back. Every hook gets `SOUNDCHECK_UNCOMMITTED=1` in a `--uncommitted` trial.
+
+| Hook             | Required          | When soundcheck calls it                                                                                       | What it does and returns                                                                                                                    |
+| ---------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `guard`          | yes               | Run start, and before every spec's reset                                                                       | The safety check: refuses (non-zero, the reason on stderr) unless everything the run touches is a test environment.                         |
+| `build-identity` | yes               | Run start, and after every install                                                                             | Says which build is installed: `{ "commit", "fingerprint", "version" }`, from the app facts it gets on stdin. Results belong to that build. |
+| `install`        | yes               | Run start, when `build-identity` can't identify the build (always with `--install`); a mid-run `install_build` | Builds the app from the current tree and installs it. Skipped when the build is current.                                                    |
+| `check`          | yes               | A tester calls `check-data <name> [args]`                                                                      | Reads the project's own data (a row in the database) and returns it as JSON evidence. Read-only.                                            |
+| `act`            |                   | A tester calls `act <name> [args]`                                                                             | The other side acting while the tester watches: another user revokes access, a second device renames a score.                               |
+| `serve`          |                   | Run start, and again after every install                                                                       | Keeps something the platform needs running until the server stops, such as the web build at `url`. Ok once it serves.                       |
+| `stack-up`       | with `stack-down` | Run start, before the guard                                                                                    | Starts this platform's blank backend; returns once it answers.                                                                              |
+| `stack-down`     | with `stack-up`   | When the run's server stops, or on the next start after a crash                                                | Removes that backend and its data. Must succeed when it's already gone.                                                                     |
+
+### A spec
+
+Front matter:
+
+| Key                 | Required | What it does                                                                                                                                                                                                                       |
+| ------------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `title`             | yes      | What the user does, in plain words. The report's name for the spec.                                                                                                                                                                |
+| `platforms`         | yes      | The platforms it runs on: names from `suite.yaml`.                                                                                                                                                                                 |
+| `prepare`           |          | Commands run in order after the fresh relaunch: seed data, sign in, open a deep link. A step is one command for every platform, or a map of one per platform (`true` for none there). Earlier steps can hand values to later ones. |
+| `tools`             |          | Driver tools beyond the basics that the spec needs (`offline`, `double-tap`, `match`…). Lint checks they exist and that network tools have routes.                                                                                 |
+| `model`             |          | A tester model for this spec, in place of the suite's (a stronger one for visual judgement).                                                                                                                                       |
+| `viewport`          |          | Chrome only: this spec's window size, for a layout only a wide or a narrow window has.                                                                                                                                             |
+| `keyboard`          |          | `software` for a spec that needs the on-screen keyboard. Default: a hardware keyboard, so typing is fast.                                                                                                                          |
+| `past-bugs`         |          | Record only: the tickets this spec guards against.                                                                                                                                                                                 |
+| `proven-failing-on` |          | Record only: the builds the spec was seen failing on before the fix, proving it catches the bug.                                                                                                                                   |
+
+Sections:
+
+| Section              | Required | What it does                                                                          |
+| -------------------- | -------- | ------------------------------------------------------------------------------------- |
+| `## Goal`            | yes      | What the tester does, from where `prepare` leaves the app.                            |
+| `## Outcomes`        | yes      | `- ` bullets, each judged on its own: what should be true afterwards.                 |
+| `## Pinned`          |          | Exact steps, only where they guard a past bug or reach a control an agent can't find. |
+| `## Probe around it` |          | Where to look beyond the goal; the tester reports what it tried.                      |
+
+A line in any section that starts with a platform tag (`[chrome]`, `- [android, ios]`) reaches only those platforms' testers.
 
 ## Develop
 

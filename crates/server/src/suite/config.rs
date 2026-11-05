@@ -132,7 +132,7 @@ pub struct PlatformConfig {
     pub app: Option<String>,
     /// `chrome`: the window's size at every reset, `WIDTHxHEIGHT`, unless a spec sets its own.
     pub viewport: Option<String>,
-    /// `chrome`: where a launch opens, and the site a spec's `start` path is on.
+    /// `chrome`: where a launch opens.
     pub url: Option<String>,
     /// `chrome`: a Chrome profile signed in to Google by hand (`soundcheck chrome-profile`); each run starts from a
     /// copy. An absolute path, or `~/` for the home folder.
