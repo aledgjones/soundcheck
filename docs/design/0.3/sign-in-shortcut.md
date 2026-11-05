@@ -1,16 +1,25 @@
-# Signed in at every reset (approved 2026-11-04)
+# Solo Scores' sign-in script (revised 2026-11-05)
 
-Replaces `prepare`. Every spec starts from its own seed, and the seed now includes who is signed in, so no state is carried between specs. Sign-in itself gets specs of its own. Facts from solo-scores are cited by file.
+Solo's side of "signed in at every reset" (soundcheck DESIGN.md 3.11, 5.6). soundcheck has no sign-in concept: a spec's `prepare` runs `node scripts/sign-in.js`, which mints a session and hands it to the app through `soundcheck drive` tools. Sign-in itself gets specs of its own. Facts from solo-scores are cited by file. (The seed hook returning a `session` for soundcheck to apply, this draft's first version, was dropped as too Solo-shaped.)
 
-## Shape in soundcheck
+## `scripts/sign-in.js`
 
-Folded into DESIGN.md: 3.11 "Signed in at every reset" (the `session` shapes, why `prepare` went, the open `next` question), 5.3 (the seed hook's `session`) and 3.2 (where the reset applies it). `prepare`, its dispatch and its `done` checks go, and `soundcheck ready` keeps only its host-hold wait. What follows is Solo Scores' side, for SA-884 and its tickets.
+```js
+const token = await mint(account); // insert a refresh token in the stack's database (below)
+if (process.env.SOUNDCHECK_DRIVER === "chrome") {
+  sh(
+    `soundcheck drive ${platform} cookies set refresh_token=persistent.${token} --path /auth`,
+  );
+} else {
+  sh(`soundcheck drive ${platform} open "sync://e2e/session?token=${token}"`);
+}
+```
 
-Solo's session link: `{ "link": "sync://e2e/session?…" }`.
+The token stays inside the script: the journal records the step as written. A spec that then opens a deep link does it as its next step, so the session link needs no `next`.
 
-## Minting (solo-scores hooks, no backend change)
+## Minting (in the script, no backend change)
 
-- Refresh tokens are 32 random bytes stored as a SHA-256 hash in `auth_refresh_tokens` (sync-backend/src/services/auth.ts:270-295). The seed hook already has the stack's database, so it inserts a fresh token for the account and returns it. The app refreshes on launch to get its 15-minute sync token through the normal `/auth/refresh`.
+- Refresh tokens are 32 random bytes stored as a SHA-256 hash in `auth_refresh_tokens` (sync-backend/src/services/auth.ts:270-295). The script reaches the stack's database, as the seed script does, and inserts a fresh token for the account and returns it. The app refreshes on launch to get its 15-minute sync token through the normal `/auth/refresh`.
 - The stack's signing key isn't needed, and no route is added: the production backend gains nothing.
 - The account's user row already exists with a deterministic id (stack.mjs:171-195 `addAccount`).
 
@@ -40,7 +49,7 @@ Side find: layers 2 and 3 fix the same gap for `EXPO_PUBLIC_ALLOW_TEST_STORE_IN_
 
 ## Sign-in specs (from today's prepare.md)
 
-- `account/0xx-sign-in-google`: platforms ios, android, web. Seed with no session; sign in through Google's real screens (today's prepare steps), see the library, `Up to date`.
+- `account/0xx-sign-in-google`: platforms ios, android, chrome. Its prepare seeds but doesn't run `sign-in.js`; sign in through Google's real screens (today's prepare steps), see the library, `Up to date`.
 - `account/0xx-sign-in-apple`: the same through Apple. Needs an Apple ID signed in on the simulator, and Apple sign-in configured in the stack (to check); on Android and web it's Apple's web popup.
 - `account/007-plan-survives-sign-out` keeps its real sign-out and switching, and no longer risks the specs after it.
 - Specs never type into Google's or Apple's screens; anything beyond choosing the account fails the spec.

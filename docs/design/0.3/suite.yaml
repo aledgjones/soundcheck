@@ -9,37 +9,6 @@ tickets:
   url: https://soloapps.atlassian.net/browse/{id}
 remote:
   allow: [aledjones.viola@gmail.com]
-# hooks/data.mjs SCENARIOS, plus "empty", "+" combinations and a "plan-<name>" part.
-seeds:
-  [
-    empty,
-    longlist,
-    viewer,
-    annotationrender,
-    oddpdfs,
-    drawer,
-    suggestions,
-    library,
-    invites,
-    members,
-    shared,
-    storageunder,
-    storagenearly,
-    storageexact,
-    storagefull,
-    storageowner,
-    playlistonly,
-    weblist,
-    webreader,
-    credentials,
-    library+playlistonly,
-    library+plan-solo,
-    invites+library,
-    shared+library,
-    members+library,
-    library+members+plan-solo,
-  ]
-
 platforms:
   ios:
     driver: ios
@@ -47,7 +16,6 @@ platforms:
     app: com.aledjones.sync
     hooks:
       guard: node hooks/data.mjs guard --platform ios
-      seed: node hooks/data.mjs seed {scenario} --platform ios
       build-identity: node hooks/build.mjs identity ios
       install: node hooks/build.mjs install ios
       check: node hooks/data.mjs --platform ios check
@@ -67,7 +35,6 @@ platforms:
     app: com.aledjones.sync
     hooks:
       guard: node hooks/data.mjs guard --platform iphone
-      seed: node hooks/data.mjs seed {scenario} --platform iphone
       build-identity: node hooks/build.mjs identity iphone
       install: node hooks/build.mjs install iphone
       check: node hooks/data.mjs --platform iphone check
@@ -86,7 +53,6 @@ platforms:
     app: com.aledjones.sync
     hooks:
       guard: node hooks/data.mjs guard --platform android
-      seed: node hooks/data.mjs seed {scenario} --platform android
       build-identity: node hooks/build.mjs identity android
       install: node hooks/build.mjs install android
       check: node hooks/data.mjs --platform android check
@@ -105,22 +71,21 @@ platforms:
           upstream: https://api.revenuecat.com,
         }
 
-  web:
+  chrome:
     driver: chrome
     device: desktop
     viewport: 1440x900
     url: http://localhost:43173/app/sign-in
     chrome-profile: ~/.soundcheck/chrome/solo-scores
     hooks:
-      guard: node hooks/data.mjs guard --platform web
-      seed: node hooks/data.mjs seed {scenario} --platform web
-      build-identity: node hooks/build.mjs identity web
-      install: node hooks/build.mjs install web
-      serve: node hooks/build.mjs serve web
-      check: node hooks/data.mjs --platform web check
-      act: node hooks/data.mjs --platform web act
-      stack-up: node hooks/stack.mjs up web --account aledjones.viola@gmail.com
-      stack-down: node hooks/stack.mjs down web
+      guard: node hooks/data.mjs guard --platform chrome
+      build-identity: node hooks/build.mjs identity chrome
+      install: node hooks/build.mjs install chrome
+      serve: node hooks/build.mjs serve chrome
+      check: node hooks/data.mjs --platform chrome check
+      act: node hooks/data.mjs --platform chrome act
+      stack-up: node hooks/stack.mjs up chrome --account aledjones.viola@gmail.com
+      stack-down: node hooks/stack.mjs down chrome
     # The page is proxied too (served at 43174), so offline takes the site away as well.
     proxy:
       - { name: app, listen: 43173, upstream: 43174 }
