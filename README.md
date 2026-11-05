@@ -21,8 +21,10 @@ A spec is one Markdown file:
 ```markdown
 ---
 title: Check items off with no connection
-seed: kitchen
 platforms: [android, ios]
+prepare:
+  - node scripts/seed.js kitchen
+  - node scripts/sign-in.js
 tools: [offline]
 ---
 
@@ -36,7 +38,7 @@ Take the app offline, check off `Eggs` and `Oat milk`, then bring it back online
 - Back online, they stay checked, and a second device sees them checked.
 ```
 
-The seed hook puts the account in a known state, the app opens on its home screen or a `start` link before the tester begins, and `soundcheck lint` catches a vague outcome or a missing tool before anything runs. Optional sections pin exact steps (`## Pinned`) or ask the tester to probe around the goal (`## Probe around it`), which is where new bugs turn up beside old ones.
+Every spec starts on a fresh relaunch, then its `prepare` steps (the project's own scripts: seed the account, sign in, open a deep link) put the app where the tester begins, and `soundcheck lint` catches a vague outcome or a missing tool before anything runs. Optional sections pin exact steps (`## Pinned`) or ask the tester to probe around the goal (`## Probe around it`), which is where new bugs turn up beside old ones.
 
 ## Every failure comes with its evidence
 
@@ -54,7 +56,7 @@ At the end the coordinator goes through the problems with you, one at a time. It
 
 ```
  you ──▶ coordinator ──▶ soundcheck server ──▶ tester agent ──▶ device
-          (Claude)         journal · live page    (one per spec)    Android · iOS · web
+          (Claude)         journal · live page    (one per spec)    Android · iOS · Chrome
             ▲                      │
             └── reviews each claim ┘
 ```
@@ -65,7 +67,7 @@ At the end the coordinator goes through the problems with you, one at a time. It
 - **Drivers:**
   - **Android:** a persistent reader APK reads the screen and injects input in milliseconds.
   - **iOS:** a persistent simulator reader does the same.
-  - **Web:** its own Chrome, headless by default.
+  - **Chrome:** its own browser per platform, headless by default.
   - Devices run without windows. `soundcheck run --headed` is for watching: Chrome opens in a window, Simulator.app opens on the iOS device being driven, and the Android emulator shows its window when soundcheck restarts it (one already running stays as it is). Look only, since a click or resize can steer a test.
   - Evidence (screenshots, the screen tree, app errors) is captured on every failure.
 - **Watch from anywhere.** `soundcheck run --remote` (or `serve --remote`) opens the live page through an ngrok tunnel behind Google sign-in, read-only, for the accounts in suite.yaml's `remote.allow`. It prints the URL; add it to a home screen to open it full screen. Needs `ngrok` with its authtoken set.
@@ -83,7 +85,7 @@ soundcheck serve docs/demo/suite --open latest
 
 ## Install
 
-You need what each platform drives: Chrome for web, the Android SDK (adb, an emulator on Android 14, API 34, or newer) for Android, Xcode for iOS. Then, in Claude Code:
+You need what each platform drives: Chrome for chrome platforms, the Android SDK (adb, an emulator on Android 14, API 34, or newer) for Android, Xcode for iOS. Then, in Claude Code:
 
 ```
 /plugin marketplace add aledgjones/soundcheck
@@ -125,7 +127,7 @@ Runs are written beside the suite in `reports/<run>/`: the journal, a summary, e
 ## Develop
 
 ```sh
-cargo test                  # web tests skip where Chrome isn't there; emulator and simulator tests never run
+cargo test                  # chrome tests skip where Chrome isn't there; emulator and simulator tests never run
 SOUNDCHECK_DEVICE_TESTS=1 cargo test   # also drive the running emulator and booted simulator (never during a run)
 cargo clippy --all-targets -- -D warnings
 cargo fmt

@@ -14,7 +14,7 @@ allowed-tools:
 
 - **Run from the suite folder** (the one with `suite.yaml`), or pass `--suite <folder>`: it names the app.
 - **Never drive a device while a run is going.** A run's testers are using it, and your taps would steer their results. Check with the person, or look for a `soundcheck run` process.
-- **Starting data** comes from the project's seed hook (`hooks.seed` in `suite.yaml`). The project's regression skill says how to run it by hand, and which scenarios exist.
+- **Starting state** comes from a spec's `prepare` steps: run them from the suite folder in order, with `SOUNDCHECK_PLATFORM` set to the platform, to put a device where that spec starts. The project's regression skill says which scripts exist.
 
 ## The loop
 
@@ -36,5 +36,5 @@ allowed-tools:
 
 - **A person's pace.** Let the screen respond before the next action, the way a person would. A tap that lands mid-animation and is lost isn't a bug.
 - **Report what you saw**, with the `see` lines or a `shot`, not what you expected to see.
-- **Web isn't driven this way:** there's no browser to keep between calls. Use a browser tool, or a run.
+- **Chrome isn't driven this way outside a run:** there's no browser to keep between calls. Use a browser tool, or a run (a run's prepare steps drive chrome through its server).
 - **iOS reads only the suite's app**, never a system app such as Settings.
