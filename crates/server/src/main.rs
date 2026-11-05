@@ -661,6 +661,8 @@ fn run_command(args: RunArgs) -> Result<()> {
             }
             hub.start_step(format!("{platform}: building and installing the app"));
             hub.install(platform).await?;
+            // The device connected above, so Chrome's worker has already cached the build this one replaces.
+            hub.forget_old_build(platform).await?;
         }
         hub.start_step("identifying the builds");
         let problems = hub.read_builds(&platforms).await;
