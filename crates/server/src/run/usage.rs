@@ -33,7 +33,7 @@ pub fn attempts(entries: &[Entry]) -> Vec<AttemptUsage> {
     let mut by_token: BTreeMap<String, AttemptUsage> = BTreeMap::new();
     for entry in entries {
         match &entry.event {
-            Event::Dispatched { token, .. } | Event::PrepareDispatched { token, .. } => {
+            Event::Dispatched { token, .. } => {
                 order.push(token.clone());
             }
             Event::Usage {

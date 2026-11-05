@@ -106,25 +106,6 @@ pub enum Event {
     Interrupted {
         token: String,
     },
-    /// A tester started readying a platform (suite.yaml `prepare`) before any spec runs there.
-    PrepareDispatched {
-        platform: Platform,
-        attempt: u32,
-        token: String,
-        prompt: String,
-    },
-    /// The platform is ready: the tester finished and its `ready` labels showed.
-    Prepared {
-        platform: Platform,
-        token: String,
-    },
-    /// An attempt at readying the platform didn't work; on the `last`, its waiting rows are filed BLOCKED.
-    PrepareFailed {
-        platform: Platform,
-        token: String,
-        reason: String,
-        last: bool,
-    },
     /// The tester went quiet; the attempt counts and the spec goes back to the queue.
     Stalled {
         token: String,
@@ -202,6 +183,10 @@ pub enum Event {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         spent: Option<Spent>,
     },
+    /// An event this version no longer has: 0.2's platform preparation (`prepare-dispatched`, `prepared`,
+    /// `prepare-failed`), read past so an older run still opens.
+    #[serde(other)]
+    Retired,
 }
 
 /// A tester's usage summed over its turns.
@@ -237,4 +222,21 @@ impl ResultCounts {
 pub struct RowRef {
     pub spec: String,
     pub platform: Platform,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Event;
+
+    #[test]
+    fn a_retired_preparation_event_still_reads() {
+        for line in [
+            r#"{"event":"prepare-dispatched","platform":"ios","attempt":1,"token":"prepare#1@ios","prompt":"p"}"#,
+            r#"{"event":"prepared","platform":"ios","token":"prepare#1@ios"}"#,
+            r#"{"event":"prepare-failed","platform":"ios","token":"prepare#1@ios","reason":"r","last":true}"#,
+        ] {
+            let event: Event = serde_json::from_str(line).unwrap();
+            assert!(matches!(event, Event::Retired), "{line}");
+        }
+    }
 }

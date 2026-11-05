@@ -2,7 +2,6 @@
 
 pub mod view;
 
-use crate::run::event::Event;
 use crate::run::journal::Entry;
 use crate::run::model::{Answer, Call, Final, Posted, ProblemKind, ProblemSource, Status};
 use crate::run::usage;
@@ -345,47 +344,6 @@ fn image(page: &Page, name: &str) -> Option<String> {
     } else {
         Some(format!("files/{EVIDENCE_DIR}/{name}"))
     }
-}
-
-/// Each platform's latest preparation (suite.yaml `prepare`): how long it took, or why it couldn't be done.
-fn preparation(entries: &[Entry]) -> Vec<String> {
-    let mut started: BTreeMap<String, u64> = BTreeMap::new();
-    let mut latest: BTreeMap<Platform, String> = BTreeMap::new();
-    for e in entries {
-        match &e.event {
-            Event::PrepareDispatched {
-                platform,
-                attempt,
-                token,
-                ..
-            } => {
-                started.insert(token.clone(), e.at);
-                latest.insert(*platform, format!("preparing (attempt {attempt})"));
-            }
-            Event::Prepared { platform, token } => {
-                let took = started.get(token).map_or(0, |at| e.at.saturating_sub(*at)) / 1000;
-                latest.insert(*platform, format!("prepared in {took} s"));
-            }
-            Event::PrepareFailed {
-                platform,
-                reason,
-                last,
-                ..
-            } => {
-                let what = if *last {
-                    "couldn't be prepared"
-                } else {
-                    "not prepared, trying again"
-                };
-                latest.insert(*platform, format!("{what}: {reason}"));
-            }
-            _ => {}
-        }
-    }
-    latest
-        .into_iter()
-        .map(|(p, line)| format!("{}: {line}", platform_name(p)))
-        .collect()
 }
 
 /// What the runs index shows for a run, rewritten after every event.

@@ -9,7 +9,7 @@ pub mod tools;
 use crate::report;
 use crate::run::event::RowRef;
 use crate::run::journal::Entry;
-use crate::run::model::{Answer, Build, Posted};
+use crate::run::model::Build;
 use crate::run::{Run, saved};
 use crate::suite::Suite;
 use crate::suite::config::{DriverKind, Platform, PlatformConfig, SuiteConfig, parse_viewport};
@@ -30,7 +30,7 @@ use soundcheck_driver::android::Android;
 use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::ios::Ios;
 use soundcheck_driver::web::Web;
-use soundcheck_driver::{Device, DriverError, Matcher};
+use soundcheck_driver::{Device, DriverError};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
@@ -754,7 +754,7 @@ impl Hub {
         Ok(op(driver).await?)
     }
 
-    /// What every attempt, a spec's or a preparation's, starts from: online with no faults, whatever the last one
+    /// What every attempt starts from: online with no faults, whatever the last one
     /// left (first, since the seed may go through it), and the guard passed.
     async fn online_and_guarded(&self, platform: Platform) -> Result<()> {
         let suite = self.suite();
@@ -781,80 +781,10 @@ impl Hub {
         Ok(())
     }
 
-    /// Starts readying `platform` (suite.yaml `prepare`): online, guarded and the app launched, but not seeded, since
-    /// nobody has signed in to this server's stacks yet. A tester then follows the prepare file.
-    async fn start_prepare(self: &Arc<Self>, platform: Platform) -> Result<Dispatched> {
-        let suite = self.suite();
-        let config = suite.config.as_ref().context("no suite.yaml")?;
-        // SA-881/882: removed in step 4. 0.3 has no prepare brief, so no run plans one (`plan.prepare` is false).
-        let steps = String::new();
-        let account: Option<String> = None;
-        self.online_and_guarded(platform).await?;
-        if !self.without_devices.contains(&platform) {
-            self.on_device(platform, async |d| Device::launch(&d.device).await)
-                .await?;
-        }
-        self.with_run(|run, now| {
-            let token = run.dispatch_prepare(now, platform, |token| {
-                prompt::prepare(&steps, platform, account.as_deref(), token)
-            })?;
-            Ok(Dispatched {
-                model: Some(config.models.default.clone()),
-                agent: prompt::TESTER.to_string(),
-                prompt: prompt::handoff(&token),
-                token,
-            })
-        })
-    }
-
-    /// A preparation's tester posted: done when it says so and the platform's `ready` labels show, else another
-    /// attempt (the last files the platform's waiting specs BLOCKED). Returns what to tell the tester.
-    pub async fn finish_prepare(
-        &self,
-        token: &str,
-        platform: Platform,
-        posted: &Posted,
-    ) -> Result<String> {
-        let said = posted.judgments.first();
-        let failure = match said {
-            Some(j) if j.answer == Answer::Held => {
-                // SA-881/882: removed in step 4. 0.3 has no ready labels.
-                let labels: Vec<String> = Vec::new();
-                let shown = if self.without_devices.contains(&platform) {
-                    Ok(())
-                } else {
-                    self.on_device(platform, async |d| {
-                        for label in &labels {
-                            let m = Matcher::parse(label)
-                                .map_err(|e| DriverError::Invalid(e.to_string()))?;
-                            d.wait(&m, 30_000).await.map_err(|_| {
-                                DriverError::NotFound(format!("ready label {label:?} didn't show"))
-                            })?;
-                        }
-                        Ok(())
-                    })
-                    .await
-                };
-                shown.err().map(|e| format!("{e:#}"))
-            }
-            Some(j) => Some(j.observed.clone()),
-            None => Some("the tester posted no judgment".into()),
-        };
-        self.with_run(|run, now| match &failure {
-            None => {
-                run.prepared(now, token)?;
-                Ok(format!("{platform} is prepared"))
-            }
-            Some(reason) => {
-                run.prepare_failed(now, token, reason)?;
-                Ok(format!("{platform} isn't prepared: {reason}"))
-            }
-        })
-    }
-
-    /// Resets a platform for a spec: guard, seed, relaunch, then its start: the home screen's ready labels, or its link. Tried three times; the
-    /// error after the last says why, and the caller files the spec BLOCKED as a reset failure.
-    pub async fn prepare(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
+    /// Resets a platform for a spec: guard, seed, relaunch, then its `start` link if it has one for this platform.
+    /// Tried three times; the error after the last says why, and the caller files the spec BLOCKED as a reset failure.
+    /// Whether the start screen is right is the tester's to judge: a wrong one is "couldn't check".
+    pub async fn reset(&self, spec: &Spec, platform: Platform) -> Result<Option<String>> {
         let suite = self.suite();
         let config = suite
             .config
@@ -869,9 +799,8 @@ impl Hub {
                 let seed = hooks::fill(&platform_config.hooks.seed, &spec.front.seed);
                 let out = hooks::run(root, &seed, hooks::SEED_TIMEOUT).await?;
                 if !self.without_devices.contains(&platform) {
-                    // SA-881/882: removed in step 4. 0.3 has no ready labels.
-                    let ready: Vec<String> = Vec::new();
-                    let link = match spec.front.start.get(&platform) {
+                    let start = spec.front.start.get(&platform);
+                    let link = match start {
                         Some(link) => Some(link_on(
                             platform_config.url.as_deref(),
                             &hooks::link_with_ids(link, &hooks::ids(&out))
@@ -899,15 +828,7 @@ impl Hub {
                         if let Some(link) = &link {
                             return d.device.goto(link).await;
                         }
-                        for label in &ready {
-                            let m = Matcher::parse(label)
-                                .map_err(|e| DriverError::Invalid(e.to_string()))?;
-                            d.wait(&m, 10_000).await.map_err(|_| {
-                                DriverError::NotFound(format!(
-                                    "the home screen's {label:?} wasn't on screen"
-                                ))
-                            })?;
-                        }
+
                         Ok(())
                     })
                     .await?;
@@ -1058,28 +979,6 @@ impl Hub {
             anyhow::bail!("another dispatch is starting its attempt; one spec at a time");
         }
 
-        // A platform with specs waiting is prepared before any of them; a named spec is refused until then.
-        if spec.is_none() {
-            let platforms = self.with_run(|run, _| Ok(run.platforms()))?;
-            for p in platforms
-                .into_iter()
-                .filter(|p| platform.is_none_or(|w| w == *p))
-            {
-                if self.with_run(|run, _| Ok(run.next_prepare(Some(p))))? != Some(p) {
-                    continue;
-                }
-
-                let Some(_claim) = self.claim(p) else {
-                    continue;
-                };
-                if let Some(reason) = self.hold(p).await {
-                    anyhow::bail!("{}", self.held(&[(p, reason)]));
-                }
-
-                return self.start_prepare(p).await;
-            }
-        }
-
         let (spec, platform) = match (spec, platform) {
             (Some(spec), Some(platform)) => {
                 // Check first, so a refused dispatch never resets a device.
@@ -1163,7 +1062,7 @@ impl Hub {
         };
         self.end_wait(spec_id, platform);
         let reset_started = std::time::Instant::now();
-        let seeded = match self.prepare(spec, platform).await {
+        let seeded = match self.reset(spec, platform).await {
             Ok(context) => context,
             Err(e) => {
                 let reason = format!("{e:#}");
@@ -2081,15 +1980,6 @@ async fn summary(State(hub): State<Arc<Hub>>, Query(q): Query<SummaryQuery>) -> 
 
 /// The row a dispatch would start now, without starting it, else 409 with why none can.
 async fn next(State(hub): State<Arc<Hub>>) -> Response {
-    // A waiting preparation goes first, as `dispatch` takes it; the hook's "prepare on <platform>" dispatches it.
-    if let Ok(Some(platform)) = hub.with_run(|run, _| Ok(run.next_prepare(None)))
-        && hub.hold(platform).await.is_none()
-    {
-        return axum::Json(
-            serde_json::json!({ "spec": crate::run::PREPARE, "platform": platform }),
-        )
-        .into_response();
-    }
     match hub.pick(None, None).await {
         Ok((spec, platform)) => {
             axum::Json(serde_json::json!({ "spec": spec, "platform": platform })).into_response()

@@ -295,16 +295,10 @@ pub struct Served {
 const MOVED_TOP: &[(&str, &str)] = &[
     ("hooks", "each platform has its own `hooks`"),
     ("network", "each platform has its own `proxy` routes"),
-    (
-        "prepare",
-        "gone; the seed hook signs the app in with a `session`",
-    ),
+    ("prepare", "gone; every spec starts from its own seed"),
 ];
 const MOVED_PLATFORM: &[(&str, &str)] = &[
-    (
-        "prepare",
-        "gone; the seed hook signs the app in with a `session`",
-    ),
+    ("prepare", "gone; every spec starts from its own seed"),
     ("ready", "gone; each spec names its `start`"),
     ("account", "gone; the platform's hooks name their account"),
     ("app-id", "now `app`"),

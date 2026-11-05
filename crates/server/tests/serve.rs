@@ -60,7 +60,6 @@ async fn server_hub(
             })
             .collect(),
         parallel: false,
-        prepare: false,
     };
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -782,7 +781,6 @@ async fn the_build_identity_hook_records_each_platforms_build() {
             })
             .collect(),
         parallel: false,
-        prepare: false,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -863,7 +861,6 @@ async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything()
             })
             .collect(),
         parallel: true,
-        prepare: false,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();

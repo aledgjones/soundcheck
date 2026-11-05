@@ -596,7 +596,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             hub.start_web_app().await?;
         }
         // Every device answers before anything is built, so a missing emulator or one too old shows in seconds, not
-        // after a build. What needs the app (its ready labels) waits for the install.
+        // after a build. Launching the app waits for the install.
         for &platform in &platforms {
             hub.start_step(format!("{platform}: connecting to the device"));
             hub.on_device(platform, async |_| Ok(()))
@@ -649,35 +649,13 @@ fn run_command(args: RunArgs) -> Result<()> {
                 pass(format!("{platform} has build {}", build.label()));
             }
         }
-        // Devices and the app: connected, launched, and showing what proves it's ready (signed in, say). With a prepare
-        // spec the app signs in there, on this run's stacks, so a ready label seen now would prove nothing.
+        // Devices and the app: connected and launched. Whether a spec's start screen is right is its tester's to check.
         for &platform in &platforms {
             hub.start_step(format!("{platform}: launching the app"));
-            // SA-881/882: removed in step 4. 0.3 has no ready labels.
-            let labels: Vec<String> = Vec::new();
-            hub.on_device(platform, async |d| {
-                soundcheck_driver::Device::launch(&d.device).await?;
-                for label in &labels {
-                    let m = soundcheck_driver::Matcher::parse(label)
-                        .map_err(|e| soundcheck_driver::DriverError::Invalid(e.to_string()))?;
-                    d.wait(&m, 30_000).await.map_err(|_| {
-                        soundcheck_driver::DriverError::NotFound(format!(
-                            "{label:?} didn't show after launching; run `soundcheck drive {platform} see` from the suite folder to see what the screen shows"
-                        ))
-                    })?;
-                }
-                Ok(())
-            })
-            .await
-            .with_context(|| format!("{platform} isn't ready to test"))?;
-            pass(if labels.is_empty() {
-                format!("{platform}: the device answers and the app launched")
-            } else {
-                format!(
-                    "{platform}: the device answers, the app launched and shows {}",
-                    labels.join(", ")
-                )
-            });
+            hub.on_device(platform, async |d| soundcheck_driver::Device::launch(&d.device).await)
+                .await
+                .with_context(|| format!("{platform} isn't ready to test"))?;
+            pass(format!("{platform}: the device answers and the app launched"));
         }
         hub.with_run(|run, now| run.preflight(now, hub.start_checks()))?;
         anyhow::Ok(())

@@ -42,6 +42,14 @@ pub fn render(
             spec.front.seed
         );
     }
+    let start = match spec.front.start.get(&platform) {
+        Some(link) => format!("on the screen its start link opens (`{link}`)"),
+        None => "with a fresh launch of the app".to_string(),
+    };
+    let _ = writeln!(
+        out,
+        "The app is ready for you {start}. If it isn't there, judge the outcomes couldn't check and say what showed.\n"
+    );
     if let Some(viewport) = spec.front.viewport.as_deref() {
         let _ = writeln!(
             out,
@@ -96,18 +104,6 @@ pub fn agent(spec: &Spec) -> &'static str {
 pub const TESTER: &str = "soundcheck-tester";
 pub const MECHANICS_TESTER: &str = "soundcheck-tester-mechanics";
 
-/// The brief for readying a platform (suite.yaml `prepare`). It isn't a spec: there's one thing to say, whether it
-/// worked, and soundcheck checks the platform's `ready` labels itself afterwards.
-pub fn prepare(steps: &str, platform: Platform, account: Option<&str>, token: &str) -> String {
-    let account = account
-        .map(|a| format!("This platform's account: `{a}`.\n\n"))
-        .unwrap_or_default();
-    format!(
-        "# Prepare {platform} for the run\n\nYou are a soundcheck tester, readying {platform} before any spec runs there. Drive the app only through soundcheck's tools and follow the steps below. This isn't a test: don't look for problems or post side finds.\n\nYour token: `{token}`. Pass it on every soundcheck call.\n\n{account}## Steps\n\n{}\n\n## When you're done\n\nCall `post_result` once, with one judgment for outcome 0: `held` when the steps are done and the app is ready, saying what shows; `failed` saying what stopped you. Soundcheck then checks the app is ready itself.\n",
-        steps.trim()
-    )
-}
-
 /// What the coordinator passes to the tester agent: the brief itself travels by `brief`, outside the coordinator.
 pub fn handoff(token: &str) -> String {
     format!(
@@ -154,3 +150,23 @@ Every call re-reads this whole conversation, so fewer calls make a faster, cheap
 - **Keep the checks you judge an outcome on as their own calls,** after the batch, so what you saw is plain.
 - `tap` waits up to 5 s for its target, so a tap needs no `see` or `wait` before it when you know the label.
 ";
+
+#[cfg(test)]
+mod tests {
+    use crate::suite::config::Platform;
+    use crate::suite::spec::parse;
+
+    const SPEC: &str = "---\ntitle: Open a collection\nseed: library\nplatforms: [android, ios]\nstart:\n  ios: sync://collection/1\n---\n\n## Goal\n\nOpen it.\n\n## Outcomes\n\n- Its scores are listed.\n";
+
+    #[test]
+    fn the_brief_says_where_the_spec_starts() {
+        let spec = parse("lists/001-open", "lists", SPEC).unwrap();
+        let on = |name: &'static str| {
+            super::render(&spec, None, Platform::literal(name), "t", None, None, None)
+        };
+        assert!(on("ios").contains(
+            "The app is ready for you on the screen its start link opens (`sync://collection/1`). If it isn't there, judge the outcomes couldn't check"
+        ));
+        assert!(on("android").contains("The app is ready for you with a fresh launch of the app."));
+    }
+}

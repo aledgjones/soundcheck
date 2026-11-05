@@ -207,9 +207,7 @@ fn the_old_shape_is_refused_with_where_it_went() {
         report,
         [
             format!("suite.yaml: hooks: each platform has its own `hooks` {migrate}"),
-            format!(
-                "suite.yaml: prepare: gone; the seed hook signs the app in with a `session` {migrate}"
-            ),
+            format!("suite.yaml: prepare: gone; every spec starts from its own seed {migrate}"),
             format!(
                 "suite.yaml: platforms.android.ready: gone; each spec names its `start` {migrate}"
             ),

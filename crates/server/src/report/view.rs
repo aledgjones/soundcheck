@@ -1183,14 +1183,6 @@ fn notes(page: &Page) -> Option<Notes> {
         });
     }
 
-    let prepared = preparation(page.run.entries_after(0));
-    if !prepared.is_empty() {
-        rows.push(NoteRow {
-            title: "Preparation",
-            lines: vec![prepared.join(". ")],
-        });
-    }
-
     let mut reruns = Vec::new();
     let mut harness = Vec::new();
     for n in &state.notes {
@@ -1245,9 +1237,7 @@ fn notes(page: &Page) -> Option<Notes> {
     }
 
     Some(Notes {
-        count: state.notes.len()
-            + usize::from(!state.builds.is_empty())
-            + usize::from(!prepared.is_empty()),
+        count: state.notes.len() + usize::from(!state.builds.is_empty()),
         rows,
     })
 }
