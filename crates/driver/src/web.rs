@@ -13,7 +13,7 @@ use chromiumoxide::cdp::browser_protocol::browser::{
     SetWindowBoundsParams,
 };
 use chromiumoxide::cdp::browser_protocol::dom::{
-    BackendNodeId, GetBoxModelParams, SetFileInputFilesParams,
+    BackendNodeId, DescribeNodeParams, GetBoxModelParams, Node, SetFileInputFilesParams,
 };
 use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::input::{
@@ -31,7 +31,9 @@ use chromiumoxide::cdp::browser_protocol::storage::ClearDataForOriginParams;
 use chromiumoxide::cdp::browser_protocol::target::{
     FilterEntry, SetAutoAttachParams, TargetFilter,
 };
-use chromiumoxide::cdp::js_protocol::runtime::{EventConsoleApiCalled, EventExceptionThrown};
+use chromiumoxide::cdp::js_protocol::runtime::{
+    EvaluateParams, EventConsoleApiCalled, EventExceptionThrown,
+};
 use chromiumoxide::page::{Page, ScreenshotParams};
 use futures::StreamExt;
 use std::path::{Path, PathBuf};
@@ -49,6 +51,61 @@ const SKIPPED_ROLES: &[&str] = &[
     "generic",
     "LineBreak",
 ];
+
+/// Chrome draws a date, time, datetime-local, month or week input as segments that take only real key presses, as a
+/// person types them. Given the text to type and the focused field's segments in the order it shows them (`day`,
+/// `month`, `year`, `hour`, `minute`, `second`, `ampm`, `week`…), it answers the keys to press. Text in the field's
+/// own value shape (`2026-12-25`, `14:30`, `2026-W05`) becomes each segment's keys, with `ArrowRight` after a segment
+/// that doesn't move on by itself (a year, which takes up to six digits, and a month or AM/PM picked by name, in the
+/// field's language); `whole` then says to start from the first segment. Other text is typed where the cursor is.
+const SEGMENT_KEYS: &str = r#"(text, segments) => {
+  const field = document.activeElement;
+  const shapes = {
+    date: /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/,
+    month: /^(?<year>\d{4})-(?<month>\d{2})$/,
+    week: /^(?<year>\d{4})-W(?<week>\d{2})$/,
+    time: /^(?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2}))?$/,
+    'datetime-local':
+      /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})T(?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2}))?$/,
+  };
+  const value = text.match(shapes[field.type])?.groups;
+  if (!value) {
+    return { keys: [...text], whole: false };
+  }
+
+  const locale = field.closest('[lang]')?.lang || navigator.language;
+  const hour = Number(value.hour ?? 0);
+  const twelve = segments.includes('ampm');
+  const keys = [];
+  for (const segment of segments) {
+    if (segment === 'year') {
+      keys.push(...value.year, 'ArrowRight');
+    } else if (segment === 'month' && field.type === 'month') {
+      const name = new Intl.DateTimeFormat(locale, { month: 'long', timeZone: 'UTC' })
+        .format(Date.UTC(2000, Number(value.month) - 1, 1));
+      keys.push(...name, 'ArrowRight');
+    } else if (segment === 'hour' && twelve) {
+      keys.push(...String(hour % 12 || 12).padStart(2, '0'));
+    } else if (segment === 'ampm') {
+      const period = new Intl.DateTimeFormat(locale, { hour: 'numeric', hour12: true, timeZone: 'UTC' })
+        .formatToParts(Date.UTC(2000, 0, 1, hour))
+        .find((part) => part.type === 'dayPeriod');
+      keys.push(...(period ? period.value.slice(0, 1) : ''), 'ArrowRight');
+    } else if (segment === 'millisecond') {
+      keys.push(...'000');
+    } else {
+      keys.push(...(value[segment] ?? '00'));
+    }
+  }
+
+  return { keys, whole: true };
+}"#;
+
+#[derive(serde::Deserialize)]
+struct SegmentKeys {
+    keys: Vec<String>,
+    whole: bool,
+}
 
 pub struct Chrome {
     browser: Browser,
@@ -835,6 +892,78 @@ impl Chrome {
         }
         Ok(())
     }
+
+    /// The focused input's segments in the order it shows them (`day`, `month`, `year`…), from the parts of the
+    /// shadow tree Chrome draws it with: their names don't change with the language, as the labels do. Empty for any
+    /// other field.
+    async fn focused_segments(&self, page: &Page) -> Result<Vec<String>> {
+        // Only such an input comes back, so an ordinary field (or the page, when nothing has focus) isn't described.
+        let focused = page
+            .execute(EvaluateParams::new(
+                "(f => f && f.tagName === 'INPUT' && \
+                 ['date', 'time', 'datetime-local', 'month', 'week'].includes(f.type) ? f : null)\
+                 (document.activeElement)",
+            ))
+            .await
+            .map_err(device)?;
+        let Some(object) = focused.result.result.object_id.clone() else {
+            return Ok(Vec::new());
+        };
+        let params = DescribeNodeParams::builder()
+            .object_id(object)
+            .depth(-1)
+            .pierce(true)
+            .build();
+        let node = page.execute(params).await.map_err(device)?.result.node;
+
+        fn walk(node: &Node, segments: &mut Vec<String>) {
+            let attributes = node.attributes.as_deref().unwrap_or_default();
+            for pair in attributes.chunks(2) {
+                if let [name, value] = pair
+                    && name == "pseudo"
+                    && let Some(segment) = value
+                        .strip_prefix("-webkit-datetime-edit-")
+                        .and_then(|v| v.strip_suffix("-field"))
+                {
+                    segments.push(segment.to_string());
+                }
+            }
+
+            for child in node.shadow_roots.iter().chain(&node.children).flatten() {
+                walk(child, segments);
+            }
+        }
+
+        let mut segments = Vec::new();
+        walk(&node, &mut segments);
+        Ok(segments)
+    }
+
+    /// One character as a real key press, for fields that ignore inserted text.
+    async fn type_char(&self, c: char) -> Result<()> {
+        let page = self.current().await;
+        let (code, virtual_key) = if c.is_ascii_digit() {
+            (format!("Digit{c}"), Some(i64::from(c as u8)))
+        } else if c.is_ascii_alphabetic() {
+            let upper = c.to_ascii_uppercase();
+            (format!("Key{upper}"), Some(i64::from(upper as u8)))
+        } else {
+            (String::new(), None)
+        };
+        for kind in [DispatchKeyEventType::KeyDown, DispatchKeyEventType::KeyUp] {
+            let mut params = DispatchKeyEventParams::new(kind.clone());
+            params.key = Some(c.to_string());
+            params.code = Some(code.clone());
+            params.windows_virtual_key_code = virtual_key;
+            if kind == DispatchKeyEventType::KeyDown {
+                params.text = Some(c.to_string());
+            }
+
+            self.until_dialog(page.execute(params)).await?;
+        }
+
+        Ok(())
+    }
 }
 
 impl Device for Chrome {
@@ -1054,9 +1183,39 @@ impl Device for Chrome {
             return Ok(());
         }
         let page = self.current().await;
-        page.execute(InsertTextParams::new(text))
+        let segments = self.focused_segments(&page).await?;
+        if segments.is_empty() {
+            page.execute(InsertTextParams::new(text))
+                .await
+                .map_err(device)?;
+            return Ok(());
+        }
+
+        let typed: SegmentKeys = page
+            .evaluate(format!(
+                "({SEGMENT_KEYS})({}, {})",
+                serde_json::Value::from(text),
+                serde_json::Value::from(segments.clone())
+            ))
             .await
+            .map_err(device)?
+            .into_value()
             .map_err(device)?;
+        // A whole value starts at the first segment, as a person clicks there first.
+        if typed.whole {
+            for _ in 0..segments.len() {
+                self.key("ArrowLeft", 37).await?;
+            }
+        }
+
+        for key in &typed.keys {
+            let mut chars = key.chars();
+            match (chars.next(), chars.next()) {
+                (Some(c), None) => self.type_char(c).await?,
+                _ => self.key(key, 39).await?,
+            }
+        }
+
         Ok(())
     }
 

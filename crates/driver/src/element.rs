@@ -37,6 +37,15 @@ impl Element {
         self.frame.centre()
     }
 
+    /// A field drawn as segments with a picker button at its right end: Chrome's date, time, datetime-local, month
+    /// and week inputs, by the roles Chrome's tree gives them.
+    pub fn segmented(&self) -> bool {
+        matches!(
+            self.role.as_deref(),
+            Some("Date" | "DateTime" | "InputTime")
+        )
+    }
+
     /// How `see` prints it: `label = value` when the value differs, then its states.
     pub fn line(&self) -> String {
         let mut line = self.label.clone();

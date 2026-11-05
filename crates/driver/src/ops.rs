@@ -318,9 +318,14 @@ impl<D: Device> Driver<D> {
     pub async fn fill(&self, target: &Matcher, text: &str) -> Result<()> {
         for _ in 0..FILL_TRIES {
             let field = self.wait_for(target, TAP_WAIT_MS, false).await?;
-            // At the right end, so the cursor lands after the text: an on-screen keyboard only deletes backwards.
+            // At the right end, so the cursor lands after the text: an on-screen keyboard only deletes backwards. A
+            // segmented date or time field has its picker button there, so that's tapped at its first segment.
             let f = field.frame;
-            let x = (f.x + f.width - 8.0).max(field.tap_point().0);
+            let x = if field.segmented() {
+                f.x + 8.0
+            } else {
+                (f.x + f.width - 8.0).max(field.tap_point().0)
+            };
             self.device.tap_at(x, f.y + f.height / 2.0).await?;
             let held = field.value.as_deref().map_or(0, |v| v.chars().count());
             self.device

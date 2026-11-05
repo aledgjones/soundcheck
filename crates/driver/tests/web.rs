@@ -195,6 +195,57 @@ async fn headed_chrome_runs_without_headless() {
     drop(web);
 }
 
+/// Chrome's date and time inputs are segments that ignore inserted text: `fill` takes the field's own ISO value and
+/// types each segment, and the app's save on blur gets the whole date, as Solo Scores' Playlist Settings does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fill_types_a_date_into_a_native_date_field() {
+    let page = "data:text/html,<input type=date aria-label=\"Performance date\" value=2026-01-02 \
+onblur=\"saved.textContent = 'Saved ' + this.value\"><input type=time aria-label=Start>\
+<input type=datetime-local aria-label=Doors><input type=month aria-label=Season><input type=week aria-label=Rota>\
+<button>Done</button><p id=saved>-</p>";
+    let web = match Chrome::launch(page, 1200, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+
+    driver
+        .fill(&m("Performance date"), "2026-12-25")
+        .await
+        .unwrap();
+    driver.tap(&m("Done"), false).await.unwrap();
+    driver.wait(&m("Saved 2026-12-25"), 3000).await.unwrap();
+
+    for (field, value) in [
+        ("Start", "21:07"),
+        ("Doors", "2027-11-30T09:59"),
+        ("Season", "2027-10"),
+        ("Rota", "2027-W51"),
+    ] {
+        driver.fill(&m(field), value).await.unwrap();
+        assert_eq!(
+            driver.expect(&m(field)).await.unwrap().value.as_deref(),
+            Some(value)
+        );
+    }
+
+    // Digits that aren't a whole value are typed into the segment that has the cursor, as real key presses.
+    driver.tap(&m("Performance date"), false).await.unwrap();
+    driver.device.press("ArrowLeft").await.unwrap();
+    driver.device.press("ArrowLeft").await.unwrap();
+    driver.device.press("ArrowLeft").await.unwrap();
+    driver.device.type_text("07").await.unwrap();
+    let date = driver.expect(&m("Performance date")).await.unwrap().value;
+    assert!(
+        date.as_deref().is_some_and(|d| d.contains("-07")),
+        "{date:?}"
+    );
+    driver.device.close().await;
+}
+
 /// Google's sign-in opens a popup: the driver reads and taps there while it's open, then the app's page again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_popup_takes_reads_and_taps_until_it_closes() {
