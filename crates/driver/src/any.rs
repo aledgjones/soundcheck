@@ -89,6 +89,9 @@ impl Device for AnyDevice {
     async fn goto(&self, url: &str) -> Result<()> {
         each!(self, d => d.goto(url).await)
     }
+    async fn stop_app(&self) -> Result<()> {
+        each!(self, d => d.stop_app().await)
+    }
     async fn clear_data(&self) -> Result<()> {
         each!(self, d => d.clear_data().await)
     }

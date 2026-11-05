@@ -210,6 +210,11 @@ pub trait Device {
     async fn goto(&self, _url: &str) -> Result<()> {
         Err(self.unsupported("goto"))
     }
+    /// The app stopped, so the next `goto` starts it from the link: an app reads its launch link for sure, where one
+    /// that arrives while it's still starting can be dropped.
+    async fn stop_app(&self) -> Result<()> {
+        Err(self.unsupported("open --relaunch"))
+    }
     /// The app's data is gone, as on a fresh install: a relaunch afterwards starts it from nothing.
     async fn clear_data(&self) -> Result<()> {
         Err(self.unsupported("clear-data"))

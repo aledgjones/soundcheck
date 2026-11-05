@@ -127,7 +127,7 @@ Hooks answer "how does the app get running?"; a spec's `prepare` answers "how is
 
 - **A step gets** `SOUNDCHECK_PLATFORM`, `SOUNDCHECK_DRIVER`, `SOUNDCHECK_DEVICE`, `SOUNDCHECK_SERVER` (so `soundcheck drive` acts on the run's device) and every value earlier steps printed.
 - **A step may print** `{"values": {"NAME": "…"}, "context": {...}}`: each value becomes an environment variable for the steps after it, and `context` goes into the tester's brief. The journal records the commands as written, so a token passed as a value never reaches a report.
-- **Steps reach the device through `soundcheck drive <platform> <tool>`**: `open <link>`, `relaunch`, `clear-data`, and on chrome `cookies set` and `storage set`. Each has the same effect on every driver; a browser-only tool fails elsewhere, saying why.
+- **Steps reach the device through `soundcheck drive <platform> <tool>`**: `open <link>` (with `--relaunch`, the app starts from the link, so it can't miss it while starting), `relaunch`, `clear-data`, and on chrome `cookies set` and `storage set`. Each has the same effect on every driver; a browser-only tool fails elsewhere, saying why.
 - **A step that fails or passes `--prepare-timeout`** (60 s by default) fails the reset, which is retried twice and then filed BLOCKED. A seed that's slower raises the flag for the run, not per step.
 - **Keep scripts readable from the spec.** A pattern that repeats becomes a script, not an alias: every step a spec takes stays visible in its frontmatter.
 

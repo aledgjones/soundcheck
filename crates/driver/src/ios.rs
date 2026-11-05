@@ -1083,6 +1083,18 @@ impl Device for Ios {
             .map_err(|e| crate::device::without(e, url))
     }
 
+    /// A terminate that finds the app already stopped is fine. The app's next start is a launch, so crash reports
+    /// count from here.
+    async fn stop_app(&self) -> Result<()> {
+        let _ = run(
+            "xcrun",
+            &["simctl", "terminate", &self.udid, &self.bundle_id],
+        )
+        .await;
+        *self.launched.lock().unwrap_or_else(|e| e.into_inner()) = SystemTime::now();
+        Ok(())
+    }
+
     /// The app's data container emptied and the simulator's keychain reset (where a stored session lives), with the
     /// app stopped: a fresh install's state in seconds, without reinstalling. The keychain is the whole simulator's.
     async fn clear_data(&self) -> Result<()> {

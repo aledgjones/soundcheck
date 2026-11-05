@@ -78,7 +78,14 @@ pub enum Action {
     /// A fresh start: the app stopped and launched again (on chrome, the site's url loaded again).
     Relaunch,
     /// Show a link: a deep link on ios and android, a URL or a path on the site under test on chrome.
-    Open { link: String },
+    Open {
+        link: String,
+        /// Stop the app first, so it starts from the link: a link that arrives while the app is still starting can
+        /// be dropped, and a launch link never is. On chrome a page load starts afresh anyway.
+        #[arg(long)]
+        #[serde(default)]
+        relaunch: bool,
+    },
     /// The app's data gone, as on a fresh install: android clears the package, ios empties its data container and
     /// the simulator's keychain, chrome drops cookies and the site's storage. Relaunch after it.
     ClearData,
@@ -284,7 +291,11 @@ pub async fn act(
             d.device.launch().await?;
             "relaunched".into()
         }
-        Action::Open { link } => {
+        Action::Open { link, relaunch } => {
+            if relaunch {
+                d.device.stop_app().await?;
+            }
+
             d.device.goto(&link).await?;
             format!("opened {link}")
         }
@@ -441,10 +452,12 @@ mod tests {
     fn an_action_crosses_to_the_server_whole() {
         let sent = serde_json::to_string(&Request {
             platform: "ios".into(),
-            action: parse(&["open", "myapp://viewer/s-1"]),
+            action: parse(&["open", "--relaunch", "myapp://viewer/s-1"]),
         })
         .unwrap();
         let got: Request = serde_json::from_str(&sent).unwrap();
-        assert!(matches!(got.action, Action::Open { link } if link == "myapp://viewer/s-1"));
+        assert!(
+            matches!(got.action, Action::Open { link, relaunch: true } if link == "myapp://viewer/s-1")
+        );
     }
 }

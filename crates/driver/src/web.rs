@@ -1267,6 +1267,11 @@ impl Device for Chrome {
         Ok(())
     }
 
+    /// Nothing to stop: loading a page is already the site starting afresh.
+    async fn stop_app(&self) -> Result<()> {
+        Ok(())
+    }
+
     async fn goto(&self, url: &str) -> Result<()> {
         self.blocked()?;
         // Back, forward and close act on the tab in front, as the browser's own buttons do.

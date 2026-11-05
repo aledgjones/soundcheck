@@ -865,6 +865,12 @@ impl Device for Android {
         .map_err(|e| crate::device::without(e, &quoted))
     }
 
+    async fn stop_app(&self) -> Result<()> {
+        self.shell(&format!("am force-stop {}", self.package))
+            .await
+            .map(|_| ())
+    }
+
     async fn clear_data(&self) -> Result<()> {
         let out = self.shell(&format!("pm clear {}", self.package)).await?;
         if !out.contains("Success") {
