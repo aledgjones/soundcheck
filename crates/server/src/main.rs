@@ -565,6 +565,17 @@ fn run_command(args: RunArgs) -> Result<()> {
         let server = serve::start(hub.clone(), port).await?;
         let url = format!("http://{}", server.addr);
         let key = soundcheck::run::saved::page_key(&run_dir);
+        // Written as soon as the server listens, so `soundcheck remote`, `events` and `ready` reach it while the run
+        // starts; dispatch and `ready` say the run is still starting until it has.
+        let info = serde_json::json!({
+            "url": url,
+            "mcp": format!("{url}/mcp"),
+            "run": run_dir,
+        });
+        std::fs::write(
+            run_dir.join("server.json"),
+            serde_json::to_string_pretty(&info)?,
+        )?;
         println!("the live page is at {url}/{key}/ while the run starts");
         // However the run ends, the web app and the remote tunnel stop with it.
         let _services = StopsServices(hub.clone());
@@ -750,15 +761,6 @@ fn run_command(args: RunArgs) -> Result<()> {
         };
         let _ = hub.url.set(url.to_string());
         hub.started();
-        let info = serde_json::json!({
-            "url": url,
-            "mcp": format!("{url}/mcp"),
-            "run": run_dir,
-        });
-        std::fs::write(
-            run_dir.join("server.json"),
-            serde_json::to_string_pretty(&info)?,
-        )?;
         let id = soundcheck::run::saved::read_info(&run_dir)
             .map(|info| info.id)
             .unwrap_or_default();

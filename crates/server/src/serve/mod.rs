@@ -1118,6 +1118,20 @@ impl Hub {
         }
     }
 
+    /// Why nothing can be dispatched yet: the run is still starting, at the step it's on, or it couldn't start.
+    fn still_starting(&self) -> Option<String> {
+        let starting = self.start_state()?;
+
+        if let Some(failed) = starting.failed {
+            return Some(format!("the run couldn't start: {failed}"));
+        }
+
+        let step = starting
+            .doing
+            .map_or_else(|| "its checks".to_string(), |(step, _)| step);
+        Some(format!("the run is still starting ({step})"))
+    }
+
     /// Starts a row's next attempt: the row named, or with either half left out, the first [`Run::next_rows`] offers
     /// on a platform that can take a spec now.
     pub async fn dispatch(
@@ -1125,13 +1139,8 @@ impl Hub {
         spec: Option<&str>,
         platform: Option<Platform>,
     ) -> Result<Dispatched> {
-        if let Some(starting) = self.start_state() {
-            let step = starting
-                .doing
-                .map_or_else(|| "its checks".to_string(), |(step, _)| step);
-            anyhow::bail!(
-                "the run is still starting ({step}); dispatch once soundcheck prints `MCP at`"
-            );
+        if let Some(starting) = self.still_starting() {
+            anyhow::bail!("{starting}; dispatch once soundcheck prints `MCP at`");
         }
 
         if let Some(spec) = spec
@@ -2526,6 +2535,11 @@ async fn ready(State(hub): State<Arc<Hub>>, Path(name): Path<String>) -> Respons
         Ok(platform) => platform,
         Err(e) => return (StatusCode::NOT_FOUND, format!("{e:#}\n")).into_response(),
     };
+
+    if let Some(starting) = hub.still_starting() {
+        return (StatusCode::CONFLICT, format!("{starting}\n")).into_response();
+    }
+
     match hub.hold(platform).await {
         None => (StatusCode::OK, format!("{platform} ready\n")).into_response(),
         Some(why) => (StatusCode::CONFLICT, format!("{why}\n")).into_response(),

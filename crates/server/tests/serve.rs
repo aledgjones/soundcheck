@@ -2205,6 +2205,10 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
             .is_some_and(|r| r.contains("still starting (android: building")),
         "{refused}"
     );
+    // `soundcheck ready --wait` keeps waiting rather than send the coordinator to a dispatch that's refused.
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+    assert!(ready.text().await.unwrap().contains("still starting"));
     let view = format!("{url}/{}/view", hub.page_key());
     let bar = view_at(&view).await["bar"].clone();
     assert_eq!(bar["kind"], "starting");
@@ -2217,6 +2221,15 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
     let bar = view_at(&view).await["bar"].clone();
     assert_eq!(bar["failed"], "the install hook failed on android");
     assert!(bar.get("step").is_none());
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+    assert!(
+        ready
+            .text()
+            .await
+            .unwrap()
+            .contains("couldn't start: the install hook failed")
+    );
     // A run that couldn't start makes way at once for the next.
     let stepped = reqwest::Client::new()
         .post(format!("{url}/step-down"))
