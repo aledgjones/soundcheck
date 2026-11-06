@@ -775,6 +775,24 @@ impl Run {
         )
     }
 
+    /// Records that the server couldn't restart a degraded device.
+    pub fn restart_failed(
+        &mut self,
+        now: u64,
+        platform: Platform,
+        spec: &str,
+        error: &str,
+    ) -> Result<()> {
+        self.commit(
+            now,
+            Event::RestartFailed {
+                platform,
+                spec: spec.into(),
+                error: error.into(),
+            },
+        )
+    }
+
     /// Records the evidence the server saved for an attempt's non-pass.
     pub fn evidence_captured(
         &mut self,
@@ -1930,7 +1948,10 @@ impl State {
                 ),
             }),
             // A record for the timeline; nothing about the rows changes.
-            Event::Preflight { .. } | Event::Usage { .. } | Event::Tokens { .. } => {}
+            Event::Preflight { .. }
+            | Event::Usage { .. }
+            | Event::Tokens { .. }
+            | Event::RestartFailed { .. } => {}
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,
             Event::Relabelled { label, .. } => self.label = Some(label.clone()),

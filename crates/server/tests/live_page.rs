@@ -9,6 +9,7 @@ use soundcheck::run::{Plan, PlannedSpec, Run};
 use soundcheck::serve::{self, Hub};
 use soundcheck::suite;
 use soundcheck::suite::config::Platform;
+use soundcheck_driver::any::AnyDevice;
 use soundcheck_driver::web::Chrome;
 use soundcheck_driver::{Device, Driver, Matcher};
 use std::path::Path;
@@ -16,6 +17,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const ANDROID: Platform = Platform::literal("android");
 const IOS: Platform = Platform::literal("ios");
+const WEB: Platform = Platform::literal("web");
 
 async fn call(
     client: &RunningService<RoleClient, ClientConfig>,
@@ -571,6 +573,135 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
         .await
         .unwrap_err();
     assert!(held.to_string().contains("leaves android"), "{held}");
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+/// The browser process of the platform's connected Chrome.
+async fn chrome_pid(hub: &Hub, platform: Platform) -> Option<u32> {
+    let slot = hub.devices.lock().unwrap().get(&platform).cloned()?;
+    let device = slot.lock().await;
+
+    match device.as_ref().map(|d| &d.device) {
+        Some(AnyDevice::Chrome(chrome)) => chrome.pid(),
+        _ => None,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_killed_chrome_is_reaped_and_relaunched_before_the_next_spec() {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let base = std::env::temp_dir().join(format!("soundcheck-chrome-restart-{nanos}"));
+    let suite_dir = base.join("suite");
+    let good = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    std::fs::create_dir_all(suite_dir.join("annotations")).unwrap();
+    for f in ["annotations/_feature.md", "annotations/001-draw.spec.md"] {
+        std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
+    }
+    let page = base.join("app.html");
+    std::fs::write(
+        &page,
+        "<!doctype html><title>App</title><button>Save</button>",
+    )
+    .unwrap();
+    let config = std::fs::read_to_string(good.join("suite.yaml"))
+        .unwrap()
+        .replace(
+            "http://localhost:5173",
+            &format!("file://{}", page.display()),
+        );
+    let config = config.split("\nnetwork:").next().unwrap().to_string();
+    std::fs::write(suite_dir.join("suite.yaml"), config).unwrap();
+    let suite = suite::load(&suite_dir);
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s.front.platforms.clone(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
+            })
+            .collect(),
+        parallel: true,
+    };
+    let run_dir = base.join("reports/run");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "chrome-restart".into(),
+        run_dir.clone(),
+        120_000,
+        vec![ANDROID, IOS],
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let transport = StreamableHttpClientTransport::from_config(
+        StreamableHttpClientTransportConfig::with_uri(format!("http://{}/mcp", server.addr)),
+    );
+    let client = ClientConfig::default().serve(transport).await.unwrap();
+
+    if let Err(e) = hub
+        .on_device(WEB, async |d| d.device.read(false).await)
+        .await
+    {
+        eprintln!("skipping: {e:#}");
+        server.shutdown.cancel();
+        return;
+    }
+
+    let old = chrome_pid(&hub, WEB).await.expect("Chrome's process");
+    // Killed outside soundcheck, as a crash would.
+    assert!(
+        std::process::Command::new("kill")
+            .args(["-9", &old.to_string()])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // The reset fails on the dead browser, which restarts it; the dispatch then goes ahead on the new one.
+    let draw = json!({ "spec": "annotations/001-draw", "platform": "web" });
+    let mut held = Vec::new();
+    let mut dispatched = None;
+    for _ in 0..200 {
+        let mut params = CallToolRequestParams::new("dispatch");
+        params = params.with_arguments(draw.as_object().unwrap().clone());
+        let result = client.call_tool(params).await.unwrap();
+        let text = result.content[0].as_text().unwrap().text.clone();
+
+        if result.is_error != Some(true) {
+            dispatched = Some(text);
+            break;
+        }
+
+        assert!(text.contains("held: restarting"), "{text}");
+        held.push(text);
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(!held.is_empty(), "the dead browser's reset fails first");
+    assert!(dispatched.is_some(), "{held:?}");
+
+    let new = chrome_pid(&hub, WEB).await.expect("a relaunched Chrome");
+    assert_ne!(new, old);
+    // Reaped: no zombie left behind.
+    let ps = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &old.to_string()])
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&ps.stdout).trim(),
+        "",
+        "old Chrome left as a process"
+    );
+    let journal = std::fs::read_to_string(run_dir.join("journal.jsonl")).unwrap();
+    assert!(journal.contains("\"device-restarted\""), "{journal}");
+    assert!(!journal.contains("\"restart-failed\""), "{journal}");
+
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }

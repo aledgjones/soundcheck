@@ -107,6 +107,9 @@ pub fn summary(entry: &Entry) -> String {
         Event::DeviceRestarted {
             platform, reason, ..
         } => format!("{platform} restarted: {reason}"),
+        Event::RestartFailed {
+            platform, error, ..
+        } => format!("{platform} restart failed: {error} (held; tried again within a minute)"),
         Event::HostBusy {
             platform,
             spec,

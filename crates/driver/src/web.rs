@@ -109,6 +109,8 @@ struct SegmentKeys {
 
 pub struct Chrome {
     browser: Browser,
+    /// The browser process's ID, as it was launched.
+    pid: Option<u32>,
     page: Page,
     base_url: String,
     errors: Arc<Mutex<Vec<String>>>,
@@ -352,7 +354,8 @@ impl Chrome {
             builder = builder.with_head();
         }
         let config = builder.build().map_err(device)?;
-        let (browser, mut handler) = Browser::launch(config).await.map_err(device)?;
+        let (mut browser, mut handler) = Browser::launch(config).await.map_err(device)?;
+        let pid = browser.get_mut_child().and_then(|c| c.as_mut_inner().id());
         let mut tasks = vec![tokio::spawn(async move {
             while handler.next().await.is_some() {}
         })];
@@ -550,6 +553,7 @@ impl Chrome {
         }));
         let web = Chrome {
             browser,
+            pid,
             page,
             base_url: base_url.to_string(),
             errors,
@@ -570,9 +574,16 @@ impl Chrome {
         Ok(web)
     }
 
+    /// The browser process's ID.
+    pub fn pid(&self) -> Option<u32> {
+        self.pid
+    }
+
+    /// Closes Chrome and reaps its process, a crashed or killed one too: asked to close, then killed if it's still
+    /// there, so nothing it leaves is a zombie.
     pub async fn close(mut self) {
-        let _ = self.browser.close().await;
-        let _ = self.browser.wait().await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), self.browser.close()).await;
+        let _ = self.browser.kill().await;
         let _ = std::fs::remove_dir_all(&self.profile);
         for t in self.tasks.drain(..) {
             t.abort();

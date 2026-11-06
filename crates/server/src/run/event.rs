@@ -100,6 +100,13 @@ pub enum Event {
         spec: String,
         reason: String,
     },
+    /// The server's restart of a degraded device failed; the platform stays held and it's tried again in a minute.
+    RestartFailed {
+        platform: Platform,
+        /// The spec whose attempt found the device degraded.
+        spec: String,
+        error: String,
+    },
     /// The server held a spec while the machine running the devices was busy; a restart doesn't fix that.
     HostBusy {
         platform: Platform,

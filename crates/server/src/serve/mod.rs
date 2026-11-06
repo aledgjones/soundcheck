@@ -1036,10 +1036,13 @@ impl Hub {
                     }
                     // Held until the retry: a device that couldn't restart can't take a spec either.
                     Err(e) => {
+                        let error = format!("{e:#}");
+                        let _ = hub
+                            .with_run(|run, now| run.restart_failed(now, platform, &after, &error));
                         hub.restart_failed
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .insert(platform, (now_ms(), format!("{e:#}"), after, reason));
+                            .insert(platform, (now_ms(), error, after, reason));
                     }
                 }
 
@@ -1181,8 +1184,38 @@ impl Hub {
             return Ok(());
         }
 
-        self.on_device(platform, async |d| d.device.restart().await)
-            .await
+        let suite = self.suite();
+        let chrome = suite
+            .config
+            .as_ref()
+            .is_some_and(|c| c.of(&platform).driver == DriverKind::Chrome);
+
+        if !chrome {
+            return self
+                .on_device(platform, async |d| d.device.restart().await)
+                .await;
+        }
+
+        // Chrome restarts as a fresh launch: the old browser closed and reaped, dead or not, and a new one connected.
+        let slot = self
+            .devices
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(platform)
+            .or_default()
+            .clone();
+        let mut device = slot.lock().await;
+
+        if let Some(Driver {
+            device: AnyDevice::Chrome(old),
+            ..
+        }) = device.take()
+        {
+            old.close().await;
+        }
+
+        *device = Some(driver(platform, &suite, self.headed).await?);
+        Ok(())
     }
 
     fn installing(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
