@@ -274,6 +274,12 @@ pub struct Hub {
     last_restart: Mutex<std::collections::HashMap<Platform, u64>>,
     /// Platforms whose device is restarting, so their dispatches wait: platform → why.
     restarting: Mutex<std::collections::HashMap<Platform, String>>,
+    /// Restarts that failed, tried again once [`RESTART_RETRY_MS`] has passed: platform → (when, why, and the
+    /// restart's own spec and reason). The platform is held meanwhile.
+    restart_failed: Mutex<std::collections::HashMap<Platform, (u64, String, String, String)>>,
+    /// Platforms restarted because a reset failed: the next failed reset there files its row BLOCKED rather than
+    /// restarting again. A reset that works clears it (SA-925).
+    reset_restarted: Mutex<std::collections::HashSet<Platform>>,
     /// Platforms a dispatch is resetting for its attempt, before the run marks anything running there: another
     /// dispatch meanwhile takes another platform, or, with platforms taking turns, none.
     starting: Mutex<std::collections::HashSet<Platform>>,
@@ -310,6 +316,8 @@ const INSTALLING: &str = "installing a build";
 
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
+/// How long a platform whose restart failed waits before the restart is tried again.
+const RESTART_RETRY_MS: u64 = 60_000;
 /// How long dispatches wait for a busy host before going ahead; a simulator's boot settled in about four minutes.
 const HOST_WAIT_MAX_MS: u64 = 10 * 60_000;
 /// How often `soundcheck ready --wait` asks whether a held platform is free.
@@ -378,6 +386,8 @@ impl Hub {
             restart_due: Mutex::new(std::collections::HashMap::new()),
             last_restart: Mutex::new(std::collections::HashMap::new()),
             restarting: Mutex::new(std::collections::HashMap::new()),
+            restart_failed: Mutex::new(std::collections::HashMap::new()),
+            reset_restarted: Mutex::new(std::collections::HashSet::new()),
             starting: Mutex::new(std::collections::HashSet::new()),
             installing: Mutex::new(std::collections::HashSet::new()),
             waits: Mutex::new(std::collections::HashMap::new()),
@@ -957,9 +967,6 @@ impl Hub {
             return Some(held);
         }
 
-        if self.without_devices.contains(&platform) {
-            return None;
-        }
         if let Some(reason) = self
             .restarting
             .lock()
@@ -968,37 +975,74 @@ impl Hub {
         {
             return Some(reason.clone());
         }
+
+        let failed = self
+            .restart_failed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&platform);
+
+        if let Some((at, why, after, reason)) = failed {
+            if now_ms().saturating_sub(at) < RESTART_RETRY_MS {
+                let held = format!(
+                    "the {platform} device's restart failed ({why}); it's tried again within a minute"
+                );
+                self.restart_failed
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(platform, (at, why, after, reason));
+                return Some(held);
+            }
+
+            self.restart_due
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(platform, (after, reason));
+        }
+
         let due = self
             .restart_due
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&platform);
         if let Some((after, reason)) = due {
-            let held =
-                format!("restarting the {platform} device, degraded after {after} ({reason})");
+            let held = format!("restarting the {platform} device after {after}: {reason}");
             self.restarting
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(platform, held.clone());
             let hub = self.clone();
             tokio::spawn(async move {
-                let restarted = hub
-                    .on_device(platform, async |d| d.device.restart().await)
-                    .await;
+                let restarted = hub.restart_device(platform).await;
                 hub.last_restart
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(platform, now_ms());
-                if restarted.is_ok() {
-                    let _ = hub
-                        .with_run(|run, now| run.device_restarted(now, platform, &after, &reason));
+                match restarted {
+                    Ok(()) => {
+                        let _ = hub.with_run(|run, now| {
+                            run.device_restarted(now, platform, &after, &reason)
+                        });
+                    }
+                    // Held until the retry: a device that couldn't restart can't take a spec either.
+                    Err(e) => {
+                        hub.restart_failed
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(platform, (now_ms(), format!("{e:#}"), after, reason));
+                    }
                 }
+
                 hub.restarting
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&platform);
             });
             return Some(held);
+        }
+
+        if self.without_devices.contains(&platform) {
+            return None;
         }
         let gave_up_lately = self
             .gave_up
@@ -1113,6 +1157,23 @@ impl Hub {
         self.starting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    fn reset_restarted(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
+        self.reset_restarted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Restarts `platform`'s device: relaunches Chrome, or restarts the simulator or emulator. A platform whose
+    /// device this server leaves alone (its own tests) has nothing to restart.
+    async fn restart_device(&self, platform: Platform) -> Result<()> {
+        if self.without_devices.contains(&platform) {
+            return Ok(());
+        }
+
+        self.on_device(platform, async |d| d.device.restart().await)
+            .await
+    }
+
     fn installing(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
         self.installing.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1186,12 +1247,35 @@ impl Hub {
         self.end_wait(spec_id, platform);
         let reset_started = std::time::Instant::now();
         let prepared = match self.reset(spec, platform).await {
-            Ok(prepared) => prepared,
+            Ok(prepared) => {
+                self.reset_restarted().remove(&platform);
+                prepared
+            }
+            // A wedged device fails every reset: restart it first, and file the row only if a restarted device still
+            // can't reset. The restart runs on the server's own task, as a degraded device's does, since it can
+            // outlast the tool call (SA-925).
             Err(e) => {
                 let reason = format!("{e:#}");
+
+                if self.reset_restarted().insert(platform) {
+                    self.restart_due
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(
+                            platform,
+                            (spec_id.to_string(), format!("its reset failed ({reason})")),
+                        );
+                    let held = self.hold(platform).await.unwrap_or_default();
+                    anyhow::bail!(
+                        "{}; {spec_id} is still queued",
+                        self.held(&[(platform, held)])
+                    );
+                }
+
+                self.reset_restarted().remove(&platform);
                 let _ = self.with_run(|run, now| run.reset_failed(now, spec_id, platform, &reason));
                 anyhow::bail!(
-                    "the reset failed three times, so {spec_id} is filed BLOCKED on {platform}: {reason}"
+                    "the reset failed on a restarted device too, so {spec_id} is filed BLOCKED on {platform}: {reason}"
                 );
             }
         };
@@ -1373,7 +1457,13 @@ impl Hub {
             self.restart_due
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .insert(platform, (spec.to_string(), health.degraded.join("; ")));
+                .insert(
+                    platform,
+                    (
+                        spec.to_string(),
+                        format!("degraded ({})", health.degraded.join("; ")),
+                    ),
+                );
         }
         let _ = self.with_run(|run, now| run.device_health(now, spec, platform, attempt, health));
     }

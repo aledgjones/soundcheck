@@ -769,6 +769,15 @@ async fn evidence_is_served_from_the_run_folder_only() {
 /// A hub on a copy of the good fixture's annotation specs, its `build-identity` and `install` hooks replaced by
 /// `identity` and `install` with `{p}` standing for the platform, and its run folder.
 fn hooked_hub(identity: &str, install: &str) -> (std::sync::Arc<Hub>, std::path::PathBuf) {
+    hooked_hub_with(identity, install, None)
+}
+
+/// [`hooked_hub`], with annotations/002-back's prepare step replaced by `prepare` when given.
+fn hooked_hub_with(
+    identity: &str,
+    install: &str,
+    prepare: Option<&str>,
+) -> (std::sync::Arc<Hub>, std::path::PathBuf) {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -784,6 +793,15 @@ fn hooked_hub(identity: &str, install: &str) -> (std::sync::Arc<Hub>, std::path:
     ] {
         std::fs::copy(good.join(f), suite_dir.join(f)).unwrap();
     }
+    if let Some(prepare) = prepare {
+        let spec = suite_dir.join("annotations/002-back.spec.md");
+        let text = std::fs::read_to_string(&spec).unwrap().replace(
+            r#"  - echo '{"context":"seeded"}'"#,
+            &format!("  - {prepare}"),
+        );
+        std::fs::write(&spec, text).unwrap();
+    }
+
     // The platform whose block a line is in, so each block's hooks name their own.
     let mut platform = String::new();
     let config: String = std::fs::read_to_string(good.join("suite.yaml"))
@@ -1060,6 +1078,104 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
         hub.with_run(|run, _| Ok(run.state().installs.is_empty()))
             .unwrap()
     );
+    server.shutdown.cancel();
+}
+
+/// A hub whose 002-back resets only once `prepared` exists in the suite folder, and that folder.
+fn wedged_hub() -> (std::sync::Arc<Hub>, std::path::PathBuf) {
+    let (hub, run_dir) = hooked_hub_with(
+        r#"echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
+        "true",
+        Some("test -f prepared"),
+    );
+    let suite_dir = run_dir.parent().unwrap().parent().unwrap().join("suite");
+    (hub, suite_dir)
+}
+
+/// Dispatches 002-back on android, returning the reply.
+async fn dispatch_back(client: &RunningService<RoleClient, ClientConfig>) -> Value {
+    call(
+        client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn a_failed_reset_restarts_the_device_and_files_nothing() {
+    let (hub, suite_dir) = wedged_hub();
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let url = format!("http://{}", server.addr);
+    let client = client(&url).await;
+
+    let refused = dispatch_back(&client).await;
+    assert!(
+        refused.as_str().is_some_and(|t| t.contains(
+            "held: restarting the android device after annotations/002-back: its reset failed"
+        ) && t.contains("still queued")),
+        "{refused}"
+    );
+    events_until(&hub, |events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::DeviceRestarted { .. }))
+    })
+    .await;
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 200);
+
+    // The restart is what it needed: the next dispatch starts, and nothing was filed.
+    std::fs::write(suite_dir.join("prepared"), "").unwrap();
+    let dispatched = dispatch_back(&client).await;
+    assert!(dispatched["token"].is_string(), "{dispatched}");
+    let events = events_until(&hub, |_| true).await;
+    assert!(
+        !events
+            .iter()
+            .any(|e| matches!(e, Event::ResetFailed { .. }))
+    );
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_reset_that_fails_on_a_restarted_device_is_filed_blocked() {
+    let (hub, _) = wedged_hub();
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let url = format!("http://{}", server.addr);
+    let client = client(&url).await;
+
+    dispatch_back(&client).await;
+    events_until(&hub, |events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::DeviceRestarted { .. }))
+    })
+    .await;
+    // Wait for the restart's hold to clear before dispatching again.
+    while reqwest::get(format!("{url}/ready/android"))
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+        != 200
+    {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let filed = dispatch_back(&client).await;
+    assert!(
+        filed
+            .as_str()
+            .is_some_and(|t| t.contains("failed on a restarted device too")),
+        "{filed}"
+    );
+    let events = events_until(&hub, |_| true).await;
+    let resets = events
+        .iter()
+        .filter(|e| matches!(e, Event::ResetFailed { .. }))
+        .count();
+    assert_eq!(resets, 1);
     server.shutdown.cancel();
 }
 

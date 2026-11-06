@@ -32,6 +32,21 @@ async fn call(
     serde_json::from_str(&text).unwrap()
 }
 
+/// A call the server refuses: its text.
+async fn refused(
+    client: &RunningService<RoleClient, ClientConfig>,
+    tool: &'static str,
+    args: Value,
+) -> String {
+    let mut params = CallToolRequestParams::new(tool);
+    if let Value::Object(map) = args {
+        params = params.with_arguments(map);
+    }
+    let result = client.call_tool(params).await.unwrap();
+    assert_eq!(result.is_error, Some(true), "{tool} should be refused");
+    result.content[0].as_text().unwrap().text.clone()
+}
+
 fn m(target: &str) -> Matcher {
     Matcher::parse(target).unwrap()
 }
@@ -483,27 +498,37 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
     );
     let client = ClientConfig::default().serve(transport).await.unwrap();
 
-    let result = client
-        .call_tool(
-            CallToolRequestParams::new("dispatch").with_arguments(
-                json!({ "spec": "annotations/002-back", "platform": "android" })
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            ),
-        )
-        .await
-        .unwrap();
-    assert_eq!(result.is_error, Some(true));
-    let text = result.content[0].as_text().unwrap().text.clone();
+    let back = json!({ "spec": "annotations/002-back", "platform": "android" });
+    // Three failed resets restart the device and file nothing (SA-925).
+    let restarting = refused(&client, "dispatch", back.clone()).await;
+    assert!(
+        restarting.contains("held: restarting") && restarting.contains("database is down"),
+        "{restarting}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&tries).unwrap().lines().count(),
+        3,
+        "tried three times"
+    );
+
+    // Once restarted, three more fail, and only then is it filed. A held dispatch tries no reset.
+    let mut text = String::new();
+    for _ in 0..100 {
+        text = refused(&client, "dispatch", back.clone()).await;
+        if !text.contains("held: restarting") {
+            break;
+        }
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     assert!(
         text.contains("filed BLOCKED") && text.contains("database is down"),
         "{text}"
     );
     assert_eq!(
         std::fs::read_to_string(&tries).unwrap().lines().count(),
-        3,
-        "tried three times"
+        6,
+        "tried three times more on the restarted device"
     );
 
     let status = call(&client, "status", json!({})).await;
