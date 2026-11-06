@@ -191,7 +191,7 @@ pub async fn wait_for_calm_host() -> bool {
 pub const ENDED_WITHOUT_POSTING: &str = "the tester ended without posting";
 
 /// A started attempt: what its tester agent is started with.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dispatched {
     pub token: String,
     pub model: Option<String>,
@@ -283,6 +283,9 @@ pub struct Hub {
     /// Platforms a dispatch is resetting for its attempt, before the run marks anything running there: another
     /// dispatch meanwhile takes another platform, or, with platforms taking turns, none.
     starting: Mutex<std::collections::HashSet<Platform>>,
+    /// Attempts the `dispatch` tool started whose tester the coordinator hasn't started yet: token → what it starts
+    /// with. The plugin's hook takes one when the coordinator's Agent call is for it (SA-926).
+    handed_out: Mutex<std::collections::HashMap<String, Dispatched>>,
     /// Platforms whose install hook is running on the server's own task, started by `install_build`.
     installing: Mutex<std::collections::HashSet<Platform>>,
     /// Each platform's current or just-ended wait for a busy host, until a dispatch journals it.
@@ -389,6 +392,7 @@ impl Hub {
             restart_failed: Mutex::new(std::collections::HashMap::new()),
             reset_restarted: Mutex::new(std::collections::HashSet::new()),
             starting: Mutex::new(std::collections::HashSet::new()),
+            handed_out: Mutex::new(std::collections::HashMap::new()),
             installing: Mutex::new(std::collections::HashSet::new()),
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
@@ -1335,6 +1339,45 @@ impl Hub {
     }
 
     /// The row a tester agent's prompt names, if any: the longest spec ID in it, and a platform named as a word.
+    /// The `dispatch` tool started an attempt: kept until the coordinator's Agent call for it comes through the hook.
+    pub fn hand_out(&self, dispatched: &Dispatched) {
+        self.handed_out
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(dispatched.token.clone(), dispatched.clone());
+    }
+
+    /// The attempt the `dispatch` tool started that an Agent call's prompt is for, by its token or else its spec and
+    /// platform, while its tester hasn't started: the hook starts that tester rather than dispatching the row again,
+    /// which a running row refuses (SA-926). Taken once, so one attempt never gets two testers.
+    pub fn take_handed_out(&self, prompt: &str) -> Option<Dispatched> {
+        let (spec, platform) = self.named_row(prompt);
+        let mut handed_out = self.handed_out.lock().unwrap_or_else(|e| e.into_inner());
+        let token = self
+            .with_run(|run, _| {
+                handed_out.retain(|token, _| run.waiting_for_tester(token));
+                let by_token = handed_out
+                    .keys()
+                    .filter(|token| prompt.contains(token.as_str()))
+                    .max_by_key(|token| token.len())
+                    .cloned();
+                let by_row = || {
+                    handed_out
+                        .keys()
+                        .find(|token| {
+                            run.row_of(token).is_some_and(|(s, p)| {
+                                Some(s) == spec.as_deref() && Some(p) == platform
+                            })
+                        })
+                        .cloned()
+                };
+                Ok(by_token.or_else(by_row))
+            })
+            .ok()
+            .flatten()?;
+        handed_out.remove(&token)
+    }
+
     pub fn named_row(&self, prompt: &str) -> (Option<String>, Option<Platform>) {
         let suite = self.suite();
         let spec = suite
@@ -2244,6 +2287,10 @@ async fn dispatch_route(
 ) -> Response {
     if let Some(session) = &d.session {
         hub.add_coordinator(session);
+    }
+
+    if let Some(dispatched) = hub.take_handed_out(&d.prompt) {
+        return axum::Json(dispatched).into_response();
     }
 
     let (spec, platform) = hub.named_row(&d.prompt);

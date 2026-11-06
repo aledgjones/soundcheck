@@ -997,6 +997,19 @@ impl Run {
         self.activity.get(token).is_some_and(|a| a.started)
     }
 
+    /// The row whose running attempt `token` is.
+    pub fn row_of(&self, token: &str) -> Option<(&str, Platform)> {
+        self.state.rows.iter().find_map(|((spec, platform), r)| {
+            matches!(&r.row, Row::Running { token: t, .. } if t == token)
+                .then_some((spec.as_str(), *platform))
+        })
+    }
+
+    /// Whether `token`'s attempt is running and its tester hasn't made a call yet.
+    pub fn waiting_for_tester(&self, token: &str) -> bool {
+        self.row_of(token).is_some() && !self.started(token)
+    }
+
     pub fn stall(&mut self, now: u64, token: &str, reason: &str) -> Result<()> {
         self.open_for_commands()?;
         self.running(token)?;

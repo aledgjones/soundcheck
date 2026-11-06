@@ -892,6 +892,10 @@ impl Tools {
         };
 
         let dispatched = self.hub.dispatch(p.spec.as_deref(), platform).await;
+        if let Ok(d) = &dispatched {
+            self.hub.hand_out(d);
+        }
+
         reply(dispatched.map(|d| json!(d)))
     }
 

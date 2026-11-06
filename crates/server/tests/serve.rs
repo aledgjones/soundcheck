@@ -1767,6 +1767,57 @@ async fn dispatch_with_no_spec_starts_the_next_row() {
 }
 
 #[tokio::test]
+async fn an_agent_call_after_dispatch_starts_that_attempts_tester() {
+    // The coordinator dispatches, then starts an Agent for it (run 9decb1a9's Chrome): with the prompt it was given,
+    // or naming the row.
+    for by_prompt in [true, false] {
+        let (server, url, dir) = server_in().await;
+        let port = server.addr.port();
+        let client = client(&url).await;
+        let decide = async |prompt: &str| -> Value {
+            let input = json!({
+                "session_id": "coordinator-1",
+                "tool_name": "Agent",
+                "tool_input": { "subagent_type": "soundcheck:soundcheck-tester", "prompt": prompt, "description": "tester" },
+            })
+            .to_string();
+            let reply = soundcheck::plugin_hooks::pre_tool_use(&input, port)
+                .await
+                .unwrap()
+                .unwrap();
+            serde_json::from_str::<Value>(&reply).unwrap()["hookSpecificOutput"].clone()
+        };
+
+        let dispatched = call(
+            &client,
+            "dispatch",
+            json!({ "spec": "annotations/002-back", "platform": "android" }),
+        )
+        .await;
+        let token = dispatched["token"].as_str().expect("dispatched");
+        let prompt = if by_prompt {
+            dispatched["prompt"].as_str().unwrap()
+        } else {
+            "annotations/002-back on android"
+        };
+        let out = decide(prompt).await;
+        assert_eq!(out["permissionDecision"], "allow", "{out}");
+        assert_eq!(out["updatedInput"]["description"], token);
+        // Only once: a second Agent for the same attempt would be a second tester on it.
+        let again = decide(prompt).await;
+        assert_eq!(again["permissionDecision"], "deny", "{again}");
+
+        let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
+        let dispatches = journal
+            .lines()
+            .filter(|l| l.contains(r#""event":"dispatched""#))
+            .count();
+        assert_eq!(dispatches, 1, "one attempt");
+        server.shutdown.cancel();
+    }
+}
+
+#[tokio::test]
 async fn the_tester_hook_turns_an_agent_call_into_a_dispatch() {
     let (server, _) = server().await;
     let port = server.addr.port();
