@@ -55,7 +55,8 @@ async fn summary(port: u16, session: Option<&str>) -> Result<Option<Summary>> {
         .timeout(Duration::from_secs(3));
     match request.send().await {
         Ok(response) => Ok(Some(response.error_for_status()?.json().await?)),
-        Err(e) if e.is_connect() => Ok(None),
+        // A server that's gone, or stopping mid-request (the connection reset), is no run to report on.
+        Err(e) if e.is_connect() || e.is_request() => Ok(None),
         Err(e) => Err(e.into()),
     }
 }
