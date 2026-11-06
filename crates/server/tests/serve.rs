@@ -1336,6 +1336,59 @@ async fn each_dispatch_logs_a_build_installed_since_without_rerunning_anything()
     );
 }
 
+#[tokio::test]
+async fn simultaneous_next_dispatches_each_take_a_free_platform() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    let suite = suite::load(&root);
+    let platforms = [ANDROID, IOS];
+    let plan = Plan {
+        specs: suite
+            .specs
+            .iter()
+            .map(|s| PlannedSpec {
+                id: s.id.clone(),
+                platforms: s
+                    .front
+                    .platforms
+                    .iter()
+                    .filter(|p| platforms.contains(p))
+                    .copied()
+                    .collect(),
+                outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
+            })
+            .collect(),
+        parallel: true,
+    };
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("soundcheck-parallel-{nanos}/run"));
+    std::fs::create_dir_all(&dir).unwrap();
+    let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "parallel".into(),
+        dir,
+        120_000,
+        platforms.to_vec(),
+    );
+
+    // As the run skill sends them: one `next` per free platform, all at once.
+    let (a, b) = tokio::join!(hub.dispatch(None, None), hub.dispatch(None, None));
+    let mut started: Vec<String> = [a, b]
+        .into_iter()
+        .map(|d| d.unwrap().token.rsplit('@').next().unwrap().to_string())
+        .collect();
+    started.sort();
+    assert_eq!(started, ["android", "ios"]);
+
+    // With every platform busy, the next is refused for that reason alone.
+    let third = hub.dispatch(None, None).await.unwrap_err().to_string();
+    assert!(!third.contains("starting another attempt"), "{third}");
+}
+
 #[test]
 fn a_run_is_found_again_by_its_id() {
     let id = saved::new_id();

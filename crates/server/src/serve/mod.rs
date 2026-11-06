@@ -1133,11 +1133,7 @@ impl Hub {
 
         // Two dispatches at once (platforms in parallel) mustn't reset the same platform: each claims one first.
         let parallel = self.with_run(|run, _| Ok(run.plan().parallel))?;
-        if !parallel && !self.starting().is_empty() {
-            anyhow::bail!("another dispatch is starting its attempt; one spec at a time");
-        }
-
-        let (spec, platform) = match (spec, platform) {
+        let (spec, platform, _claim) = match (spec, platform) {
             (Some(spec), Some(platform)) => {
                 // Check first, so a refused dispatch never resets a device.
                 self.with_run(|run, _| run.check_dispatch(spec, platform))?;
@@ -1146,11 +1142,16 @@ impl Hub {
                     anyhow::bail!("{}", self.held(&[(platform, reason)]));
                 }
 
-                (spec.to_string(), platform)
+                (spec.to_string(), platform, self.claim(platform, parallel)?)
             }
-            _ => self.pick(spec, platform).await?,
+            _ => {
+                let (spec, platform, claim) = self.pick_row(spec, platform, Some(parallel)).await?;
+                let Some(claim) = claim else {
+                    unreachable!("a pick that claims returns its claim");
+                };
+                (spec, platform, claim)
+            }
         };
-        let _claim = self.claim(platform)?;
 
         self.probe_build(platform).await?;
 
@@ -1185,8 +1186,12 @@ impl Hub {
     /// Claims `platform` for a dispatch's reset, released when dropped; refused while another dispatch has it or it's
     /// installing. An install takes the same lock to start ([`Self::install_build`]), so a dispatch that passed its
     /// hold before an install began can't start on the half-replaced app.
-    fn claim(self: &Arc<Self>, platform: Platform) -> Result<Starting> {
+    fn claim(self: &Arc<Self>, platform: Platform, parallel: bool) -> Result<Starting> {
         let mut starting = self.starting();
+        if !parallel && !starting.is_empty() {
+            anyhow::bail!("another dispatch is starting its attempt; one spec at a time");
+        }
+
         if self.installing().contains(&platform) {
             anyhow::bail!("{}", self.held(&[(platform, INSTALLING.to_string())]));
         }
@@ -1209,21 +1214,57 @@ impl Hub {
         spec: Option<&str>,
         platform: Option<Platform>,
     ) -> Result<(String, Platform)> {
+        let (spec, platform, _) = self.pick_row(spec, platform, None).await?;
+        Ok((spec, platform))
+    }
+
+    /// [`Self::pick`], and with `claim` (whether platforms run in parallel) the row's platform claimed for its reset.
+    /// Concurrent `next` dispatches each take a different free platform (SA-927): a platform claimed by another
+    /// dispatch since the rows were read, or a row it started, is passed over for the next, so a call is refused only
+    /// when no platform is free.
+    async fn pick_row(
+        self: &Arc<Self>,
+        spec: Option<&str>,
+        platform: Option<Platform>,
+        claim: Option<bool>,
+    ) -> Result<(String, Platform, Option<Starting>)> {
         let rows = self.with_run(|run, _| run.next_rows(spec, platform))?;
-        let starting = self.starting().clone();
         let mut held: Vec<(Platform, String)> = Vec::new();
+        let mut lost = None;
         for (spec, platform) in rows {
-            if held.iter().any(|(p, _)| *p == platform) || starting.contains(&platform) {
+            if held.iter().any(|(p, _)| *p == platform) || self.starting().contains(&platform) {
                 continue;
             }
 
-            match self.hold(platform).await {
-                None => return Ok((spec, platform)),
-                Some(reason) => held.push((platform, reason)),
+            if let Some(reason) = self.hold(platform).await {
+                held.push((platform, reason));
+                continue;
             }
+
+            let Some(parallel) = claim else {
+                return Ok((spec, platform, None));
+            };
+            let claimed = match self.claim(platform, parallel) {
+                Ok(claimed) => claimed,
+                Err(e) => {
+                    lost = Some(e);
+                    continue;
+                }
+            };
+
+            // Another dispatch may have started this row, or started one on this platform, since the rows were read.
+            if let Err(e) = self.with_run(|run, _| run.check_dispatch(&spec, platform)) {
+                lost = Some(e);
+                continue;
+            }
+
+            return Ok((spec, platform, Some(claimed)));
         }
 
-        anyhow::bail!("{}", self.held(&held))
+        match lost {
+            Some(e) if held.is_empty() => Err(e),
+            _ => anyhow::bail!("{}", self.held(&held)),
+        }
     }
 
     fn held(&self, held: &[(Platform, String)]) -> String {
