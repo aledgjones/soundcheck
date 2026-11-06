@@ -164,6 +164,18 @@ pub enum Install {
     Failed(String),
 }
 
+impl Install {
+    /// The install's state in a few words, with no closing full stop: "installing a build", or "install failed — why".
+    pub fn describe(&self) -> String {
+        match self {
+            Install::Started => "installing a build".to_string(),
+            Install::Failed(reason) => {
+                format!("install failed — {}", reason.trim().trim_end_matches('.'))
+            }
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     pub rows: BTreeMap<(String, Platform), RowRecord>,

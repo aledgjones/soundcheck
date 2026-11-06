@@ -1059,7 +1059,7 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
     // Every install fails, and a platform's build reads only once `installed-<platform>` exists.
     let (hub, run_dir) = hooked_hub(
         r#"test -f installed-{p} || exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
-        "echo 'no emulator' >&2; exit 3",
+        "echo 'no emulator.' >&2; exit 3",
     );
     let suite_dir = run_dir.parent().unwrap().parent().unwrap().join("suite");
     let server = serve::start(hub.clone(), 0).await.unwrap();
@@ -1099,6 +1099,17 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
     assert!(
         view.to_string().contains("android: install failed"),
         "the page says why: {view}"
+    );
+    assert!(
+        view.to_string().contains("no emulator. Nothing runs there"),
+        "one full stop: {view}"
+    );
+    let status = call(&client, "status", json!({})).await;
+    assert!(
+        status["installs"]["android"]
+            .as_str()
+            .is_some_and(|s| s.starts_with("install failed — ") && s.ends_with("no emulator")),
+        "{status}"
     );
 
     // The old build is still there after all: the hold lifts and it's logged.

@@ -1204,10 +1204,11 @@ fn notes(page: &Page) -> Option<Notes> {
             .installs
             .iter()
             .map(|(p, install)| match install {
-                Install::Started => format!("{}: installing a build", platform_name(*p)),
-                Install::Failed(reason) => format!(
-                    "{}: install failed — {reason}. Nothing runs there until a build installs.",
-                    platform_name(*p)
+                Install::Started => format!("{}: {}", platform_name(*p), install.describe()),
+                Install::Failed(_) => format!(
+                    "{}: {}. Nothing runs there until a build installs.",
+                    platform_name(*p),
+                    install.describe()
                 ),
             })
             .collect();

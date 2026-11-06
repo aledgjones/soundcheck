@@ -868,6 +868,7 @@ impl Tools {
                 "side_finds_waiting": finds,
                 "evidence_dir": evidence_dir,
                 "notes": state.notes.iter().map(|n| format!("{} on {}: {}", n.spec, n.platform, n.text)).collect::<Vec<_>>(),
+                "installs": state.installs.iter().map(|(p, i)| (p.to_string(), i.describe())).collect::<std::collections::BTreeMap<_, _>>(),
                 "unclear_specs": state.unclear_specs,
                 "finish_blockers": run.finish_blockers(),
             }))

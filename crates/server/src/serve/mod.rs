@@ -954,7 +954,7 @@ impl Hub {
             .flatten()?;
         let Ok(build) = self.read_build(platform).await else {
             let why = match install {
-                Install::Failed(reason) => format!("install failed — {reason}"),
+                Install::Failed(_) => install.describe(),
                 Install::Started => "its install was cut off when the server stopped".to_string(),
             };
             return Some(format!("{why}; install_build installs it again"));
