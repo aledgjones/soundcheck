@@ -305,6 +305,9 @@ pub struct Hub {
 /// How long a finished run must go without a tool call before a new run may take its port.
 const STEP_DOWN_IDLE_MS: u64 = 5 * 60_000;
 
+/// Why a platform whose build `install_build` is installing takes no spec (SA-923).
+const INSTALLING: &str = "installing a build";
+
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
 /// How long dispatches wait for a busy host before going ahead; a simulator's boot settled in about four minutes.
@@ -925,6 +928,10 @@ impl Hub {
     /// checked on demand, by a dispatch and by `soundcheck ready`, so nothing has to watch for the hold to end. A
     /// dispatch refuses rather than blocking, since a tool call times out long before a boot settles.
     pub async fn hold(self: &Arc<Self>, platform: Platform) -> Option<String> {
+        if self.installing().contains(&platform) {
+            return Some(INSTALLING.to_string());
+        }
+
         if self.without_devices.contains(&platform) {
             return None;
         }
@@ -1070,11 +1077,7 @@ impl Hub {
             }
             _ => self.pick(spec, platform).await?,
         };
-        let Some(_claim) = self.claim(platform) else {
-            anyhow::bail!(
-                "{platform} is starting another attempt; dispatch again for the next one"
-            );
-        };
+        let _claim = self.claim(platform)?;
 
         self.probe_build(platform).await?;
 
@@ -1085,9 +1088,26 @@ impl Hub {
         self.starting.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Claims `platform` for a dispatch's reset, or None when another dispatch has it; released when dropped.
-    fn claim(self: &Arc<Self>, platform: Platform) -> Option<Starting> {
-        self.starting().insert(platform).then(|| Starting {
+    fn installing(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
+        self.installing.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Claims `platform` for a dispatch's reset, released when dropped; refused while another dispatch has it or it's
+    /// installing. An install takes the same lock to start ([`Self::install_build`]), so a dispatch that passed its
+    /// hold before an install began can't start on the half-replaced app.
+    fn claim(self: &Arc<Self>, platform: Platform) -> Result<Starting> {
+        let mut starting = self.starting();
+        if self.installing().contains(&platform) {
+            anyhow::bail!("{}", self.held(&[(platform, INSTALLING.to_string())]));
+        }
+
+        if !starting.insert(platform) {
+            anyhow::bail!(
+                "{platform} is starting another attempt; dispatch again for the next one"
+            );
+        }
+
+        Ok(Starting {
             hub: self.clone(),
             platform,
         })
@@ -1450,22 +1470,23 @@ impl Hub {
         platform: Platform,
         reruns: Vec<Rerun>,
     ) -> Result<serde_json::Value> {
-        self.with_run(|run, _| run.between_specs(platform))?;
-
-        if !self
-            .installing
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(platform)
         {
-            anyhow::bail!("{platform} is already installing a build");
+            // Under the dispatch claim's lock: a dispatch resetting its attempt here has no running row yet.
+            let starting = self.starting();
+            if starting.contains(&platform) {
+                anyhow::bail!(
+                    "install between specs: {platform} is starting an attempt; install once it's running and filed"
+                );
+            }
+
+            self.with_run(|run, _| run.between_specs(platform))?;
+            if !self.installing().insert(platform) {
+                anyhow::bail!("{platform} is already installing a build");
+            }
         }
 
         if let Err(e) = self.with_run(|run, now| run.install_started(now, platform)) {
-            self.installing
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&platform);
+            self.installing().remove(&platform);
             return Err(e);
         }
 
@@ -1475,10 +1496,7 @@ impl Hub {
                 Ok(()) => hub.record_build(platform, reruns).await,
                 Err(e) => Err(e),
             };
-            hub.installing
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&platform);
+            hub.installing().remove(&platform);
 
             if let Err(e) = installed {
                 let reason = format!("{e:#}");

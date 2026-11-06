@@ -959,6 +959,53 @@ async fn an_install_outlives_the_call_that_started_it_and_ends_in_an_event() {
 }
 
 #[tokio::test]
+async fn a_platform_takes_no_spec_while_its_build_installs() {
+    let (hub, _) = hooked_hub(
+        r#"test -f installed-{p} || exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
+        "sleep 2; touch installed-{p}",
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let url = format!("http://{}", server.addr);
+    let client = client(&url).await;
+
+    call(&client, "install_build", json!({ "platform": "android" })).await;
+
+    let named = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    assert!(
+        named
+            .as_str()
+            .is_some_and(|t| t.contains("held: installing a build")),
+        "{named}"
+    );
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+    assert!(ready.text().await.unwrap().contains("installing a build"));
+    // `next` (and the plugin's hook, which asks it) passes android over.
+    let next: Value = reqwest::get(format!("{url}/next"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(next["platform"], "android", "{next}");
+
+    events_until(&hub, |events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildInstalled { .. }))
+    })
+    .await;
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 200);
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
 async fn only_an_uncommitted_run_tells_the_build_identity_hook_so() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
