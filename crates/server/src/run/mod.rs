@@ -155,6 +155,15 @@ pub struct Note {
     pub text: String,
 }
 
+/// An install that hasn't ended in a build yet.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Install {
+    /// Started and not ended: running, or cut off when the server stopped.
+    Started,
+    /// Failed, with why.
+    Failed(String),
+}
+
 #[derive(Debug, Default)]
 pub struct State {
     pub rows: BTreeMap<(String, Platform), RowRecord>,
@@ -166,6 +175,8 @@ pub struct State {
     pub unclear_specs: BTreeSet<String>,
     /// The build installed on each platform now.
     pub builds: BTreeMap<Platform, Build>,
+    /// Installs `install_build` started that haven't ended in a build: each holds its platform (SA-924).
+    pub installs: BTreeMap<Platform, Install>,
     pub paused: bool,
     /// The label given mid-run, which replaces the one it started with.
     pub label: Option<String>,
@@ -1423,7 +1434,14 @@ impl State {
     /// Applies one journalled event. Commands validated it before it was written, so this never fails.
     fn apply(&mut self, plan: &Plan, entry: &Entry) {
         match &entry.event {
-            Event::Retired | Event::InstallStarted { .. } | Event::InstallFailed { .. } => {}
+            Event::Retired => {}
+            Event::InstallStarted { platform } => {
+                self.installs.insert(*platform, Install::Started);
+            }
+            Event::InstallFailed { platform, reason } => {
+                self.installs
+                    .insert(*platform, Install::Failed(reason.clone()));
+            }
             Event::Dispatched {
                 spec,
                 platform,
@@ -1822,6 +1840,7 @@ impl State {
                 reruns,
             } => {
                 self.builds.insert(*platform, build.clone());
+                self.installs.remove(platform);
                 if !reruns.is_empty() {
                     self.finished = false;
                 }

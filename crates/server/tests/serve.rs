@@ -1006,6 +1006,74 @@ async fn a_platform_takes_no_spec_while_its_build_installs() {
 }
 
 #[tokio::test]
+async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
+    // Every install fails, and a platform's build reads only once `installed-<platform>` exists.
+    let (hub, run_dir) = hooked_hub(
+        r#"test -f installed-{p} || exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
+        "echo 'no emulator' >&2; exit 3",
+    );
+    let suite_dir = run_dir.parent().unwrap().parent().unwrap().join("suite");
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let url = format!("http://{}", server.addr);
+    let client = client(&url).await;
+
+    call(&client, "install_build", json!({ "platform": "android" })).await;
+    events_until(&hub, |events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::InstallFailed { .. }))
+    })
+    .await;
+
+    let named = call(
+        &client,
+        "dispatch",
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    assert!(
+        named.as_str().is_some_and(
+            |t| t.contains("held: install failed — the install hook failed on android")
+        ),
+        "{named}"
+    );
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+    let next: Value = reqwest::get(format!("{url}/next"))
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_ne!(next["platform"], "android", "{next}");
+    let view = view_at(&format!("{url}/{}/view", hub.page_key())).await;
+    assert!(
+        view.to_string().contains("android: install failed"),
+        "the page says why: {view}"
+    );
+
+    // The old build is still there after all: the hold lifts and it's logged.
+    std::fs::write(suite_dir.join("installed-android"), "").unwrap();
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 200);
+    assert!(
+        hub.with_run(|run, _| Ok(run.state().installs.is_empty()))
+            .unwrap()
+    );
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn an_install_cut_off_by_a_server_stop_holds_its_platform() {
+    let (hub, _) = hooked_hub("exit 1", "true");
+    // As a journal reads after the server stopped mid-install: started, never ended.
+    hub.with_run(|run, now| run.install_started(now, ANDROID))
+        .unwrap();
+    let held = hub.hold(ANDROID).await.unwrap();
+    assert!(held.starts_with("its install was cut off"), "{held}");
+}
+
+#[tokio::test]
 async fn only_an_uncommitted_run_tells_the_build_identity_hook_so() {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)

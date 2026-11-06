@@ -10,7 +10,7 @@ use crate::report;
 use crate::run::event::{PreparedStep, RowRef};
 use crate::run::journal::Entry;
 use crate::run::model::{Build, Rerun};
-use crate::run::{Run, saved};
+use crate::run::{Install, Run, saved};
 use crate::suite::Suite;
 use crate::suite::config::{DriverKind, Platform, PlatformConfig, SuiteConfig, parse_viewport};
 use crate::suite::spec::Spec;
@@ -924,12 +924,37 @@ impl Hub {
         Ok(prepared)
     }
 
+    /// Why `platform` is held by an install that failed, or was cut off when the server stopped: the app may be half
+    /// replaced or gone (SA-924). The hold lifts once a later install succeeds, or the build-identity hook can read
+    /// the build on it again, which is logged as its build.
+    async fn install_unfinished(&self, platform: Platform) -> Option<String> {
+        let install = self
+            .with_run(|run, _| Ok(run.state().installs.get(&platform).cloned()))
+            .ok()
+            .flatten()?;
+        let Ok(build) = self.read_build(platform).await else {
+            let why = match install {
+                Install::Failed(reason) => format!("install failed — {reason}"),
+                Install::Started => "its install was cut off when the server stopped".to_string(),
+            };
+            return Some(format!("{why}; install_build installs it again"));
+        };
+
+        self.with_run(|run, now| run.install_build(now, platform, build, vec![]))
+            .err()
+            .map(|e| format!("{e:#}"))
+    }
+
     /// Why `platform` can't take a spec yet, after starting what it waits for: a due restart, or a busy host. It's
     /// checked on demand, by a dispatch and by `soundcheck ready`, so nothing has to watch for the hold to end. A
     /// dispatch refuses rather than blocking, since a tool call times out long before a boot settles.
     pub async fn hold(self: &Arc<Self>, platform: Platform) -> Option<String> {
         if self.installing().contains(&platform) {
             return Some(INSTALLING.to_string());
+        }
+
+        if let Some(held) = self.install_unfinished(platform).await {
+            return Some(held);
         }
 
         if self.without_devices.contains(&platform) {
@@ -1496,12 +1521,13 @@ impl Hub {
                 Ok(()) => hub.record_build(platform, reruns).await,
                 Err(e) => Err(e),
             };
-            hub.installing().remove(&platform);
-
+            // The end is journalled before the platform leaves `installing`, so no hold reads it as cut off.
             if let Err(e) = installed {
                 let reason = format!("{e:#}");
                 let _ = hub.with_run(|run, now| run.install_failed(now, platform, &reason));
             }
+
+            hub.installing().remove(&platform);
         });
 
         Ok(serde_json::json!({
