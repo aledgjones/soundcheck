@@ -152,6 +152,7 @@ mod tests {
             "/ended",
             "/step-down",
             "/events",
+            "/remote",
         ] {
             assert!(
                 !policy.contains(&format!("'{control}'")),
@@ -181,6 +182,7 @@ mod tests {
             "/next",
             "/summary",
             "/ready/ios",
+            "/remote",
             "/ec3b217c/files/evidence/../x",
             "/ec3b217c/reportxhtml",
             "/ec3b217c/fragment",

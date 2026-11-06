@@ -250,6 +250,37 @@ async fn a_reports_server_makes_way_for_a_run() {
 }
 
 #[tokio::test]
+async fn a_running_run_opens_and_closes_its_remote_link() {
+    let (_server, url) = server().await;
+    let remote = |on: bool| {
+        let url = url.clone();
+        async move {
+            reqwest::Client::new()
+                .post(format!("{url}/remote"))
+                .json(&json!({ "on": on }))
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+
+    let closed = remote(false).await;
+    assert_eq!(closed.status().as_u16(), 200);
+    assert_eq!(
+        closed.json::<Value>().await.unwrap(),
+        json!({ "url": null })
+    );
+
+    // Opening asks suite.yaml who may sign in; this fixture names nobody.
+    let refused = remote(true).await;
+    assert_eq!(refused.status().as_u16(), 422);
+    assert!(
+        refused.text().await.unwrap().contains("remote: { allow:"),
+        "says what suite.yaml needs"
+    );
+}
+
+#[tokio::test]
 async fn ready_answers_whether_a_platform_can_take_a_spec() {
     let (_server, url) = server().await;
     let response = reqwest::get(format!("{url}/ready/ios")).await.unwrap();

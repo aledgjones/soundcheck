@@ -309,6 +309,10 @@ pub struct Hub {
     nudges: broadcast::Sender<()>,
     /// The web app the suite's start hook serves for the run, started again whenever web is installed.
     web_app: tokio::sync::Mutex<Option<hooks::Service>>,
+    /// The ngrok tunnel to this run's page while one is open: from `--remote`, or `soundcheck remote on` mid-run.
+    remote: tokio::sync::Mutex<Option<crate::remote::Tunnel>>,
+    /// Where the server listens, from the moment it binds.
+    pub addr: std::sync::OnceLock<SocketAddr>,
 }
 
 /// How long a finished run must go without a tool call before a new run may take its port.
@@ -401,6 +405,8 @@ impl Hub {
             start_up: Mutex::new(None),
             nudges: broadcast::channel(16).0,
             web_app: tokio::sync::Mutex::new(None),
+            remote: tokio::sync::Mutex::new(None),
+            addr: std::sync::OnceLock::new(),
             last_call: std::sync::atomic::AtomicU64::new(now_ms()),
             heartbeat_ms: std::sync::atomic::AtomicU64::new(UPDATE_HEARTBEAT.as_millis() as u64),
             stop: CancellationToken::new(),
@@ -1772,6 +1778,46 @@ impl Hub {
         }
     }
 
+    /// Opens the remote tunnel to this run's page, or closes it, on a run already going (SA-928): the same Google
+    /// sign-in and suite.yaml `remote.allow` list as `--remote`. Returns the page's remote address while it's open.
+    /// Opening one that's open returns its address.
+    pub async fn remote(&self, on: bool) -> Result<Option<String>> {
+        let mut tunnel = self.remote.lock().await;
+        if !on {
+            tunnel.take();
+            return Ok(None);
+        }
+
+        if tunnel.is_none() {
+            let suite = self.suite();
+            let allow = suite
+                .config
+                .as_ref()
+                .and_then(|c| c.remote.as_ref())
+                .map(|r| r.allow.clone())
+                .context(
+                    "a remote link needs `remote: { allow: [<Google email>] }` in suite.yaml",
+                )?;
+            let port = self
+                .addr
+                .get()
+                .context("the run's server isn't listening yet")?
+                .port();
+            *tunnel = Some(crate::remote::start(port, &allow, &self.run_dir).await?);
+        }
+
+        Ok(tunnel
+            .as_ref()
+            .map(|t| format!("{}/{}/", t.url, self.page_key())))
+    }
+
+    /// For a way out that can't wait: dropping the tunnel stops ngrok, so it never outlives the run.
+    pub fn stop_remote(&self) {
+        if let Ok(mut tunnel) = self.remote.try_lock() {
+            tunnel.take();
+        }
+    }
+
     /// Logs the platform's build when it isn't the last one logged, whoever installed it, so every attempt belongs to
     /// the build logged last before it. A build the hook can't identify produces no evidence: the dispatch is refused.
     async fn probe_build(&self, platform: Platform) -> Result<()> {
@@ -1995,6 +2041,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
     );
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
     let addr = listener.local_addr()?;
+    let _ = hub.addr.set(addr);
     // This run's own page; any other run's `/{key}/` is the reports router's. The bare endpoints are the old
     // addresses, kept for the CLI and older links.
     let key = hub.page_key();
@@ -2002,6 +2049,7 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .nest_service("/mcp", mcp)
         .route("/events", get(events_stream))
         .route("/ready/{platform}", get(ready))
+        .route("/remote", post(remote_route))
         .route("/tokens", post(tokens))
         .route("/ended", post(ended))
         .route("/dispatch", post(dispatch_route))
@@ -2338,6 +2386,23 @@ async fn dispatch_route(
     match hub.dispatch(spec.as_deref(), platform).await {
         Ok(dispatched) => axum::Json(dispatched).into_response(),
         Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RemoteRequest {
+    on: bool,
+}
+
+/// `soundcheck remote <run> on|off`: `{"url": ...}` while the tunnel is open, `{"url": null}` once it's closed. Only
+/// this machine reaches it, like every endpoint; the tunnel's policy lets no POST through.
+async fn remote_route(
+    State(hub): State<Arc<Hub>>,
+    axum::Json(r): axum::Json<RemoteRequest>,
+) -> Response {
+    match hub.remote(r.on).await {
+        Ok(url) => axum::Json(serde_json::json!({ "url": url })).into_response(),
+        Err(e) => (StatusCode::UNPROCESSABLE_ENTITY, format!("{e:#}")).into_response(),
     }
 }
 

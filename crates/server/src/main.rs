@@ -106,6 +106,13 @@ enum Command {
         #[arg(long)]
         wait: bool,
     },
+    /// Open or close the remote link to a run already going: an ngrok tunnel behind Google sign-in for suite.yaml's
+    /// `remote.allow`, as `--remote` opens at start. Prints the run's remote address.
+    Remote {
+        /// The run's folder (holding server.json).
+        run: PathBuf,
+        state: OnOff,
+    },
     /// The plugin's MCP server over stdio: forwards each tool call to the run serving on the port.
     Mcp {
         #[arg(long, default_value_t = 7357)]
@@ -202,6 +209,7 @@ fn main() -> ExitCode {
             platform,
             wait,
         } => ready_command(&run, &platform, wait),
+        Command::Remote { run, state } => remote_command(&run, state == OnOff::On),
         Command::Proxy {
             action,
             suite,
@@ -558,9 +566,18 @@ fn run_command(args: RunArgs) -> Result<()> {
         let url = format!("http://{}", server.addr);
         let key = soundcheck::run::saved::page_key(&run_dir);
         println!("the live page is at {url}/{key}/ while the run starts");
-        let _tunnel = open_remote(remote.as_deref(), server.addr.port(), &run_dir).await;
-        if let Some(tunnel) = &_tunnel {
-            println!("remote: this run is at {}/{key}/", tunnel.url);
+        // However the run ends, the web app and the remote tunnel stop with it.
+        let _services = StopsServices(hub.clone());
+        // The hub holds the tunnel, so `soundcheck remote` can close it or open one later.
+        if let Some(allow) = &remote {
+            match hub.remote(true).await {
+                Ok(Some(at)) => println!(
+                    "remote: this run is at {at} (Google sign-in for {}; read-only)",
+                    allow.join(", ")
+                ),
+                Ok(None) => {}
+                Err(error) => eprintln!("remote: no tunnel: {error:#}"),
+            }
         }
         if open_page {
             let _ = std::process::Command::new("open")
@@ -571,8 +588,6 @@ fn run_command(args: RunArgs) -> Result<()> {
             println!("✓ {check}");
             hub.start_passed(check);
         };
-        // However the run ends, the web app stops with it.
-        let _web_app = StopsWebApp(hub.clone());
         let preflight = async {
         let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
         let starting = soundcheck::stack::Live::Wait(platforms.clone());
@@ -714,7 +729,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                 eprintln!("soundcheck: {why:#}");
                 hub.start_failed(format!("{why:#}"));
                 drop(_stacks);
-                if _tunnel.is_some() || open_page {
+                if remote.is_some() || open_page {
                     println!("the page shows why for {} min", FAILED_START_SHOWN_MS / 60_000);
                 }
                 tokio::select! {
@@ -766,11 +781,13 @@ fn run_command(args: RunArgs) -> Result<()> {
     })
 }
 
-struct StopsWebApp(std::sync::Arc<serve::Hub>);
+/// Stops what the run started outside its own process on any way out: the web app and the remote tunnel.
+struct StopsServices(std::sync::Arc<serve::Hub>);
 
-impl Drop for StopsWebApp {
+impl Drop for StopsServices {
     fn drop(&mut self) {
         self.0.stop_web_app();
+        self.0.stop_remote();
     }
 }
 
@@ -1305,6 +1322,37 @@ fn server_url(run_dir: &Path) -> Result<String> {
         .as_str()
         .context("server.json: url")?
         .to_string())
+}
+
+#[derive(Clone, Copy, PartialEq, clap::ValueEnum)]
+enum OnOff {
+    On,
+    Off,
+}
+
+fn remote_command(run_dir: &Path, on: bool) -> Result<()> {
+    let url = format!("{}/remote", server_url(run_dir)?);
+    tokio::runtime::Runtime::new()?.block_on(async {
+        // ngrok gets 30 s to open the tunnel.
+        let response = reqwest::Client::new()
+            .post(&url)
+            .timeout(std::time::Duration::from_secs(60))
+            .json(&serde_json::json!({ "on": on }))
+            .send()
+            .await?;
+        let status = response.status();
+
+        if !status.is_success() {
+            bail!("remote: {}", response.text().await?.trim());
+        }
+
+        let reply: serde_json::Value = response.json().await?;
+        match reply["url"].as_str() {
+            Some(remote) => println!("remote: this run is at {remote} (Google sign-in; read-only)"),
+            None => println!("remote: closed"),
+        }
+        Ok(())
+    })
 }
 
 fn ready_command(run_dir: &Path, platform: &str, wait: bool) -> Result<()> {
