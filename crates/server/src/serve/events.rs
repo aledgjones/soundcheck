@@ -150,6 +150,12 @@ pub fn summary(entry: &Entry) -> String {
             file,
             reason,
         } => format!("problem {problem} shows {file} ({reason})"),
+        Event::InstallStarted { platform } => {
+            format!("installing a build on {platform} with the install hook")
+        }
+        Event::InstallFailed { platform, reason } => {
+            format!("install failed on {platform}: {reason}")
+        }
         Event::BuildInstalled {
             platform,
             build,

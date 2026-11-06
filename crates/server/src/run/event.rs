@@ -136,6 +136,15 @@ pub enum Event {
         decision: Decision,
         reason: String,
     },
+    /// `install_build` started the platform's install hook on the server; `build-installed` or `install-failed` ends it.
+    InstallStarted {
+        platform: Platform,
+    },
+    /// The install hook, or reading the build it made, failed.
+    InstallFailed {
+        platform: Platform,
+        reason: String,
+    },
     /// A new build on a platform, with the reruns it triggered, as computed when it was installed.
     BuildInstalled {
         platform: Platform,

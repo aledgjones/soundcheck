@@ -813,6 +813,44 @@ impl Run {
         )
     }
 
+    /// Refuses an install on `platform` while a spec there is running or waiting for review.
+    pub fn between_specs(&self, platform: Platform) -> Result<()> {
+        let busy: Vec<&str> = self
+            .state
+            .rows
+            .iter()
+            .filter(|((_, p), r)| {
+                *p == platform && matches!(r.row, Row::Running { .. } | Row::NeedsReview { .. })
+            })
+            .map(|((spec, _), _)| spec.as_str())
+            .collect();
+
+        if !busy.is_empty() {
+            bail!(
+                "install between specs: on {platform}, {} still running or waiting for review",
+                busy.join(", ")
+            );
+        }
+
+        Ok(())
+    }
+
+    /// `install_build` started the install hook on `platform`.
+    pub fn install_started(&mut self, now: u64, platform: Platform) -> Result<()> {
+        self.commit(now, Event::InstallStarted { platform })
+    }
+
+    /// The install `install_build` started on `platform` failed.
+    pub fn install_failed(&mut self, now: u64, platform: Platform, reason: &str) -> Result<()> {
+        self.commit(
+            now,
+            Event::InstallFailed {
+                platform,
+                reason: reason.into(),
+            },
+        )
+    }
+
     /// A new build is on a platform. Reruns only the rows listed, each with a reason: the person approves the set
     /// from the coordinator's proposal, native change or not (SA-784). Everything else keeps its result, and the log
     /// says which build it ran on.
@@ -827,24 +865,8 @@ impl Run {
         if build.commit.trim().is_empty() {
             bail!("a build needs its commit");
         }
-        let busy: Vec<&String> = self
-            .state
-            .rows
-            .iter()
-            .filter(|((_, p), r)| {
-                *p == platform && matches!(r.row, Row::Running { .. } | Row::NeedsReview { .. })
-            })
-            .map(|((spec, _), _)| spec)
-            .collect();
-        if !busy.is_empty() {
-            bail!(
-                "install between specs: on {platform}, {} still running or waiting for review",
-                busy.iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            );
-        }
+
+        self.between_specs(platform)?;
         let mut reruns: Vec<Rerun> = Vec::new();
         for rerun in listed {
             if rerun.reason.trim().is_empty() {
@@ -1401,7 +1423,7 @@ impl State {
     /// Applies one journalled event. Commands validated it before it was written, so this never fails.
     fn apply(&mut self, plan: &Plan, entry: &Entry) {
         match &entry.event {
-            Event::Retired => {}
+            Event::Retired | Event::InstallStarted { .. } | Event::InstallFailed { .. } => {}
             Event::Dispatched {
                 spec,
                 platform,

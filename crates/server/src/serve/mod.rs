@@ -9,7 +9,7 @@ pub mod tools;
 use crate::report;
 use crate::run::event::{PreparedStep, RowRef};
 use crate::run::journal::Entry;
-use crate::run::model::Build;
+use crate::run::model::{Build, Rerun};
 use crate::run::{Run, saved};
 use crate::suite::Suite;
 use crate::suite::config::{DriverKind, Platform, PlatformConfig, SuiteConfig, parse_viewport};
@@ -277,6 +277,8 @@ pub struct Hub {
     /// Platforms a dispatch is resetting for its attempt, before the run marks anything running there: another
     /// dispatch meanwhile takes another platform, or, with platforms taking turns, none.
     starting: Mutex<std::collections::HashSet<Platform>>,
+    /// Platforms whose install hook is running on the server's own task, started by `install_build`.
+    installing: Mutex<std::collections::HashSet<Platform>>,
     /// Each platform's current or just-ended wait for a busy host, until a dispatch journals it.
     waits: Mutex<std::collections::HashMap<Platform, Wait>>,
     /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
@@ -374,6 +376,7 @@ impl Hub {
             last_restart: Mutex::new(std::collections::HashMap::new()),
             restarting: Mutex::new(std::collections::HashMap::new()),
             starting: Mutex::new(std::collections::HashSet::new()),
+            installing: Mutex::new(std::collections::HashSet::new()),
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
@@ -1436,6 +1439,67 @@ impl Hub {
         }
 
         Ok(())
+    }
+
+    /// `install_build`: the project's install hook builds and installs the current tree on `platform`, on a task of
+    /// the server's own, then the build is logged and the listed rows queued. A native build takes minutes, and a hook
+    /// run inside the tool call died with the call when the client's session dropped (SA-922). The call returns as
+    /// soon as the install starts, and the journal says how it ended: `build-installed` or `install-failed`.
+    pub async fn install_build(
+        self: &Arc<Self>,
+        platform: Platform,
+        reruns: Vec<Rerun>,
+    ) -> Result<serde_json::Value> {
+        self.with_run(|run, _| run.between_specs(platform))?;
+
+        if !self
+            .installing
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(platform)
+        {
+            anyhow::bail!("{platform} is already installing a build");
+        }
+
+        if let Err(e) = self.with_run(|run, now| run.install_started(now, platform)) {
+            self.installing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&platform);
+            return Err(e);
+        }
+
+        let hub = self.clone();
+        tokio::spawn(async move {
+            let installed = match hub.install(platform).await {
+                Ok(()) => hub.record_build(platform, reruns).await,
+                Err(e) => Err(e),
+            };
+            hub.installing
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&platform);
+
+            if let Err(e) = installed {
+                let reason = format!("{e:#}");
+                let _ = hub.with_run(|run, now| run.install_failed(now, platform, &reason));
+            }
+        });
+
+        Ok(serde_json::json!({
+            "installing": platform,
+            "result": format!(
+                "the install runs on the server and its end comes as an event: `build ... installed on {platform}` or `install failed on {platform}`"
+            ),
+        }))
+    }
+
+    /// Logs the build the build-identity hook reads on `platform` with the listed reruns.
+    async fn record_build(&self, platform: Platform, reruns: Vec<Rerun>) -> Result<()> {
+        let build = self.read_build(platform).await?;
+        self.forget_old_build(platform).await?;
+        self.with_run(|run, now| run.install_build(now, platform, build, reruns))
+            .map(|_| ())
     }
 
     /// A new build is on the platform: a device already connected forgets what it kept of the old one.

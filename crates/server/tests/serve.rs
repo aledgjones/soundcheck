@@ -766,8 +766,9 @@ async fn evidence_is_served_from_the_run_folder_only() {
     server.shutdown.cancel();
 }
 
-#[tokio::test]
-async fn the_build_identity_hook_records_each_platforms_build() {
+/// A hub on a copy of the good fixture's annotation specs, its `build-identity` and `install` hooks replaced by
+/// `identity` and `install` with `{p}` standing for the platform, and its run folder.
+fn hooked_hub(identity: &str, install: &str) -> (std::sync::Arc<Hub>, std::path::PathBuf) {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -797,15 +798,14 @@ async fn the_build_identity_hook_records_each_platforms_build() {
                 platform = name.to_string();
             }
 
-            let p = &platform;
             let hook = line.trim_start();
             if hook.starts_with("build-identity:") {
-                // iOS has no build installed until the install hook runs: its identity hook fails.
                 format!(
-                    r#"      build-identity: "test {p} = 'ios' && ! test -f installed-ios && exit 1; echo '{{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\", \"version\": \"2.16.2\"}}'""#
+                    r#"      build-identity: "{}""#,
+                    identity.replace("{p}", &platform)
                 )
             } else if hook.starts_with("install:") {
-                format!(r#"      install: "touch installed-{p}""#)
+                format!(r#"      install: "{}""#, install.replace("{p}", &platform))
             } else {
                 line.to_string()
             }
@@ -834,9 +834,19 @@ async fn the_build_identity_hook_records_each_platforms_build() {
         suite,
         run,
         "builds".into(),
-        run_dir,
+        run_dir.clone(),
         120_000,
         vec![ANDROID, IOS],
+    );
+    (hub, run_dir)
+}
+
+#[tokio::test]
+async fn the_build_identity_hook_records_each_platforms_build() {
+    // iOS has no build installed until the install hook runs: its identity hook fails.
+    let (hub, _) = hooked_hub(
+        r#"test {p} = 'ios' && ! test -f installed-ios && exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\", \"version\": \"2.16.2\"}'"#,
+        "touch installed-{p}",
     );
 
     let problems = hub.read_builds(&[ANDROID, IOS]).await;
@@ -858,6 +868,94 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     // The install hook builds and installs it; then it can be identified.
     hub.install(IOS).await.unwrap();
     assert!(hub.read_builds(&[IOS]).await.is_empty());
+}
+
+/// The run's events, once `done` holds for them (at most 10 s).
+async fn events_until(hub: &Hub, done: impl Fn(&[Event]) -> bool) -> Vec<Event> {
+    for _ in 0..100 {
+        let events: Vec<Event> = hub
+            .with_run(|run, _| {
+                Ok(run
+                    .entries_after(0)
+                    .iter()
+                    .map(|e| e.event.clone())
+                    .collect())
+            })
+            .unwrap();
+        if done(&events) {
+            return events;
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the events never got there");
+}
+
+#[tokio::test]
+async fn an_install_outlives_the_call_that_started_it_and_ends_in_an_event() {
+    // Android's install takes a second and works; iOS's fails.
+    let (hub, _) = hooked_hub(
+        r#"test -f installed-{p} || exit 1; echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
+        "test {p} = ios && echo 'no simulator' >&2 && exit 3; sleep 1; touch installed-{p}",
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let client = client(&format!("http://{}", server.addr)).await;
+
+    let started = call(&client, "install_build", json!({ "platform": "android" })).await;
+    assert_eq!(started["installing"], "android", "{started}");
+    let again = call(&client, "install_build", json!({ "platform": "android" })).await;
+    assert!(
+        again
+            .as_str()
+            .is_some_and(|t| t.contains("already installing")),
+        "{again}"
+    );
+    // The old shape, which recorded an install made outside soundcheck, is refused by name.
+    let old = call(
+        &client,
+        "install_build",
+        json!({ "platform": "ios", "install": false }),
+    )
+    .await;
+    assert!(
+        old.as_str()
+            .is_some_and(|t| t.contains("unknown field `install`")),
+        "{old}"
+    );
+    call(&client, "install_build", json!({ "platform": "ios" })).await;
+    // The session ends mid-install, as Claude Code's did in run 9decb1a9.
+    client.cancel().await.unwrap();
+
+    let events = events_until(&hub, |events| {
+        events
+            .iter()
+            .any(|e| matches!(e, Event::BuildInstalled { .. }))
+            && events
+                .iter()
+                .any(|e| matches!(e, Event::InstallFailed { .. }))
+    })
+    .await;
+    let installs: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::InstallStarted { platform } => Some(format!("started {platform}")),
+            Event::InstallFailed { platform, reason } => {
+                Some(format!("failed {platform}: {reason}"))
+            }
+            Event::BuildInstalled {
+                platform, build, ..
+            } => Some(format!("installed {platform} {}", build.commit)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(installs[0], "started android");
+    assert_eq!(installs[1], "started ios");
+    assert!(
+        installs[2].starts_with("failed ios: the install hook failed on ios"),
+        "{installs:?}"
+    );
+    assert_eq!(installs[3], "installed android abc1234def");
+    server.shutdown.cancel();
 }
 
 #[tokio::test]

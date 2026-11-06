@@ -1,6 +1,6 @@
 use super::Hub;
 use crate::report;
-use crate::run::model::{Answer, Build, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
+use crate::run::model::{Answer, Call, Claim, Decision, Judgment, Posted, Rerun, SideFind};
 use crate::run::{Row, verdict};
 use crate::suite::config::Platform;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -100,16 +100,11 @@ pub struct TriageParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct InstallBuildParams {
     pub platform: String,
-    /// The build installed; leave it out to have the project's build-identity hook read it.
-    pub build: Option<Build>,
-    /// Build and install the current tree with the project's install hook first (takes minutes), when the person
-    /// asks you to install their fix rather than having installed it themselves.
-    #[serde(default)]
-    pub install: bool,
-    /// Rows you judge the change may affect, each with a reason, and a `note` for the rerun's brief when the tester
-    /// should know something. Native changes and open problems rerun anyway.
+    /// Rows the person agreed the change may affect, each with a reason, and a `note` for the rerun's brief when the
+    /// tester should know something.
     #[serde(default)]
     pub reruns: Vec<Rerun>,
 }
@@ -1024,7 +1019,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: a fix build is installed on a platform. Reruns every row on a native change, rows with open problems always, and the rows you list (agreed with the person); the rest keep their results. Only between specs."
+        description = "Coordinator: build and install the current tree on a platform with the suite's install hook, between specs. The server runs it and returns at once; the result comes as an event, `build ... installed on <platform>` or `install failed on <platform>`. Then the rows you list (agreed with the person) rerun; the rest keep their results."
     )]
     async fn install_build(
         &self,
@@ -1035,25 +1030,7 @@ impl Tools {
             Err(e) => return reply(Err(e)),
         };
 
-        if p.install
-            && let Err(e) = self.hub.install(platform).await
-        {
-            return reply(Err(e));
-        }
-        let build = match p.build {
-            Some(build) => build,
-            None => match self.hub.read_build(platform).await {
-                Ok(build) => build,
-                Err(e) => return reply(Err(e)),
-            },
-        };
-        if let Err(e) = self.hub.forget_old_build(platform).await {
-            return reply(Err(e));
-        }
-        reply(self.hub.with_run(|run, now| {
-            let reruns = run.install_build(now, platform, build.clone(), p.reruns)?;
-            Ok(json!({ "build": build, "reruns": reruns }))
-        }))
+        reply(self.hub.install_build(platform, p.reruns).await)
     }
 
     #[tool(
