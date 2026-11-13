@@ -44,6 +44,9 @@ use tokio::task::JoinHandle;
 use tokio::time::sleep;
 
 /// Roles that only wrap or repeat what their parent already says.
+/// How often a resting drag is updated, as a desktop's drag session does.
+const DRAG_UPDATE_MS: u64 = 50;
+
 const SKIPPED_ROLES: &[&str] = &[
     "InlineTextBox",
     "RootWebArea",
@@ -314,6 +317,22 @@ impl Chrome {
     async fn touch_up(&self, x: f64, y: f64) -> Result<()> {
         self.mouse(DispatchMouseEventType::MouseReleased, x, y, false)
             .await
+    }
+
+    /// Rests a moved touch at `at` for `ms`. A desktop's drag session keeps updating a resting drag, and Chrome only
+    /// asks the element under the pointer whether it takes the drop (`dragover`) on the update after the one that
+    /// entered it (SA-1009). Synthetic input sends no updates of its own, so a drag lifted right after crossing into
+    /// a row's label was dropped as refused: the same point is sent again as those updates would be.
+    async fn rest(&self, at: (f64, f64), ms: u64) -> Result<()> {
+        let mut left = ms;
+        while left > 0 {
+            let wait = left.min(DRAG_UPDATE_MS);
+            sleep(Duration::from_millis(wait)).await;
+            self.touch_move(at.0, at.1).await?;
+            left -= wait;
+        }
+
+        Ok(())
     }
     /// Starts Chrome with a fresh, temporary profile and opens `base_url`: headless, or in a window to watch with
     /// `headed`. Input goes through the DevTools protocol either way, but a click or resize in the window can steer
@@ -1131,7 +1150,7 @@ impl Device for Chrome {
                 self.touch_move(x, y).await?;
                 sleep(Duration::from_millis(16)).await;
             }
-            sleep(Duration::from_millis(stop.pause_ms)).await;
+            self.rest(to, stop.pause_ms).await?;
             at = to;
         }
         if keep {
@@ -1139,7 +1158,7 @@ impl Device for Chrome {
             return Ok(());
         }
         if stops.len() > 1 {
-            sleep(Duration::from_millis(SETTLE_MS)).await;
+            self.rest(at, SETTLE_MS).await?;
         }
         self.touch_up(at.0, at.1).await
     }
@@ -1150,6 +1169,8 @@ impl Device for Chrome {
             return Err(DriverError::Invalid("no touch held".into()));
         };
         if !back {
+            // The page may have changed under the held touch since it stopped.
+            self.rest(at, DRAG_UPDATE_MS).await?;
             return self.touch_up(at.0, at.1).await;
         }
         for (x, y) in touch_path(at, origin) {

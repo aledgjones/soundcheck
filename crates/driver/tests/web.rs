@@ -498,6 +498,47 @@ async fn a_touch_drags_what_the_page_lets_you_drag_and_drops_it() {
     driver.device.close().await;
 }
 
+/// The import's rows (SA-1009): the drag's last step crosses into a row's label, and the row takes the drop only
+/// from `dragover`, which Chrome sends on the update after the one that entered the label.
+#[tokio::test]
+async fn a_drag_ending_as_it_enters_a_rows_label_still_drops() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-drag-label-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let main = dir.join("drag.html");
+    // The path to 400,350 steps from 390,340 straight into the label.
+    std::fs::write(
+        &main,
+        r#"<body>
+<div draggable="true" ondragstart="event.dataTransfer.setData('text/x-part', 'Viola')"
+  style="position:absolute;left:20px;top:20px;width:120px;height:40px">Viola</div>
+<div ondragover="event.preventDefault()"
+  ondrop="event.preventDefault(); document.getElementById('said').textContent = 'dropped ' + event.dataTransfer.getData('text/x-part')"
+  style="position:absolute;left:300px;top:300px;width:200px;height:100px">
+  <span style="position:absolute;left:95px;top:45px;width:20px;height:10px">Q</span>
+</div>
+<p id="said" style="position:absolute;top:500px">nothing dropped</p>
+</body>"#,
+    )
+    .unwrap();
+    let web = match Chrome::launch(&format!("file://{}", main.display()), 800, 600, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let stop = |x, y, pause_ms| Stop { x, y, pause_ms };
+
+    driver
+        .device
+        .touch(&[stop(80.0, 40.0, 700), stop(400.0, 350.0, 0)], false)
+        .await
+        .unwrap();
+    driver.wait(&m("dropped Viola"), 5_000).await.unwrap();
+    driver.device.close().await;
+}
+
 #[tokio::test]
 async fn a_file_picker_offers_what_was_pushed_and_downloads_are_seen() {
     let dir = std::env::temp_dir().join(format!("soundcheck-files-{}", std::process::id()));
