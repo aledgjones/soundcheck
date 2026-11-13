@@ -23,7 +23,7 @@ pub struct Reports {
 pub fn router(reports: Reports) -> axum::Router {
     axum::Router::new()
         .route("/{name}", get(to_folder))
-        .route("/{name}/", get(run_page))
+        .route("/{name}/", get(run_page).delete(delete_run))
         .route("/{name}/files/evidence/{file}", get(evidence))
         .route("/{name}/report.html", get(exported))
         .route("/{name}/download", get(download))
@@ -142,6 +142,29 @@ async fn run_page(State(reports): State<Arc<Reports>>, Path(name): Path<String>)
         Ok(Ok(html)) => Html(html).into_response(),
         Ok(Err(e)) => (StatusCode::NOT_FOUND, format!("{e:#}")).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Deletes a past run's whole folder, screenshots included (SA-984). The run this server is running stays.
+async fn delete_run(State(reports): State<Arc<Reports>>, Path(name): Path<String>) -> Response {
+    let Some(dir) = folder(&reports, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let key = saved::page_key(&dir);
+    // Only a run's full key, and only a folder directly in the reports folder: never an id prefix's best guess.
+    let exact = key == name || dir.file_name().is_some_and(|n| n == name.as_str());
+
+    if !exact || dir.parent() != Some(reports.dir.as_path()) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+
+    if reports.current.as_deref() == Some(key.as_str()) {
+        return (StatusCode::CONFLICT, "this run is live on the server\n").into_response();
+    }
+
+    match tokio::fs::remove_dir_all(&dir).await {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")).into_response(),
     }
 }
 
@@ -271,5 +294,36 @@ mod tests {
 
         let names: Vec<&str> = runs.iter().map(|r| r.0.as_str()).collect();
         assert_eq!(names, ["starting", "tested"]);
+    }
+
+    #[tokio::test]
+    async fn deletes_a_past_run_by_its_full_key_but_never_the_live_one() {
+        let dir = std::env::temp_dir().join(format!("soundcheck-delete-{}", now_ms()));
+        for (folder, id) in [("20261101-past", "aaaa1111"), ("20261102-live", "bbbb2222")] {
+            std::fs::create_dir_all(dir.join(folder).join(report::EVIDENCE_DIR)).unwrap();
+            std::fs::write(
+                dir.join(folder).join(saved::INFO_FILE),
+                serde_json::json!({ "id": id, "suite": "/s", "label": "x", "platforms": [], "scope": [] })
+                    .to_string(),
+            )
+            .unwrap();
+        }
+        let reports = Arc::new(Reports {
+            dir: dir.clone(),
+            current: Some("bbbb2222".into()),
+        });
+        let delete = |name: &str| delete_run(State(reports.clone()), Path(name.to_string()));
+
+        let prefix = delete("aaaa").await.status();
+        let live = delete("bbbb2222").await.status();
+        let past = delete("aaaa1111").await.status();
+        let past_gone = !dir.join("20261101-past").exists();
+        let live_kept = dir.join("20261102-live").exists();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert_eq!(prefix, StatusCode::NOT_FOUND);
+        assert_eq!(live, StatusCode::CONFLICT);
+        assert_eq!(past, StatusCode::NO_CONTENT);
+        assert!(past_gone && live_kept);
     }
 }
