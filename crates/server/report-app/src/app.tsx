@@ -168,32 +168,7 @@ function NowBar({ bar, connected }: { bar: V.Bar; connected: boolean }) {
   );
 }
 
-/** A remote viewer comes through the tunnel's own host and is read-only. */
-function onThisMachine(): boolean {
-  return typeof location !== "undefined" && (location.hostname === "127.0.0.1" || location.hostname === "localhost");
-}
-
-/** Deletes the run this page shows once the viewer confirms, then goes to the runs list (SA-984). */
-async function deleteRun(): Promise<void> {
-  if (!confirm("Delete this run and its screenshots? This can’t be undone.")) {
-    return;
-  }
-
-  try {
-    // Relative, so it names this page's own run.
-    const response = await fetch(".", { method: "DELETE" });
-
-    if (!response.ok) {
-      throw new Error((await response.text()).trim() || `the server answered ${response.status}`);
-    }
-
-    location.assign("/");
-  } catch (e) {
-    alert(`Couldn’t delete the run: ${e instanceof Error ? e.message : String(e)}`);
-  }
-}
-
-function Header({ view, onRuns, canDelete }: { view: V.View; onRuns: () => void; canDelete: boolean }) {
+function Header({ view, onRuns }: { view: V.View; onRuns: () => void }) {
   return (
     <header class="head">
       <div class="head-text">
@@ -224,16 +199,9 @@ function Header({ view, onRuns, canDelete }: { view: V.View; onRuns: () => void;
         </div>
         {/* Relative, so it works on the live page and on a past run's. */}
         {view.export ? null : (
-          <div class="head-actions">
-            <a class="download" href="download" download="">
-              Download report
-            </a>
-            {canDelete ? (
-              <button class="delete-run" type="button" onClick={() => void deleteRun()}>
-                Delete run…
-              </button>
-            ) : null}
-          </div>
+          <a class="download" href="download" download="">
+            Download report
+          </a>
         )}
       </div>
     </header>
@@ -864,7 +832,7 @@ export function App({ initial, live }: { initial: V.View; live: boolean }) {
     <ShowShot.Provider value={showShot}>
       {view.bar === undefined ? null : <NowBar bar={view.bar} connected={connected} />}
       <main style={`--platforms:${Math.max(1, view.platforms.length)}`}>
-        <Header view={view} onRuns={() => setRuns(true)} canDelete={!live && !view.export && onThisMachine()} />
+        <Header view={view} onRuns={() => setRuns(true)} />
         <Summary summary={view.summary} platforms={view.platforms} />
         <Sections view={view} attnOnly={attnOnly} onFilter={filter} />
         <Problems view={view} />

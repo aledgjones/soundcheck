@@ -13,11 +13,8 @@ a:hover{text-decoration:underline}
 .muted{color:var(--label2)}
 .card{background:var(--card);border-radius:22px}
 .head-text{display:flex;flex-direction:column;gap:8px}
-.head-actions{display:flex;flex-wrap:wrap;gap:8px;align-self:flex-start;margin-top:10px}
-.download{background:var(--fill);color:var(--ink);border-radius:8px;padding:6px 14px;font-size:14px;font-weight:500}
+.download{align-self:flex-start;margin-top:10px;background:var(--fill);color:var(--ink);border-radius:8px;padding:6px 14px;font-size:14px;font-weight:500}
 .download:hover{text-decoration:none;background:var(--sep)}
-.delete-run{background:none;border:0;border-radius:8px;padding:6px 14px;font:inherit;font-size:14px;font-weight:500;color:var(--fail);cursor:pointer}
-.delete-run:hover{background:color-mix(in srgb,var(--fail) 12%,transparent)}
 footer .theme-choice{padding:5px 12px;font-size:13px}
 footer p{margin:14px 0 0}
 .eyebrow{font-size:14px;font-weight:600;letter-spacing:0;color:var(--label2)}
