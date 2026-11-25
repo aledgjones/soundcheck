@@ -38,6 +38,9 @@ enum Bar {
     Now {
         paused: bool,
         doing: Vec<Doing>,
+        /// Every row is filed and no side find waits: the run is waiting for the person's triage, not stuck.
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        filed: bool,
         #[serde(skip_serializing_if = "Option::is_none")]
         idle: Option<Overdue>,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -401,14 +404,26 @@ fn now_bar(page: &Page) -> Bar {
             _ => None,
         })
         .collect();
+    // The server runs the suite itself, so a long quiet is only an alarm while it has work it could be doing: rows
+    // not yet filed, or side finds not yet reviewed. With everything filed the run is waiting for the person, and
+    // a paused run is waiting on purpose (Aled, 2026-11-25; before 0.4 a quiet run meant a stalled coordinator).
+    let work_left = state
+        .rows
+        .values()
+        .any(|r| !matches!(r.row, Row::Filed { .. }))
+        || !state.pending_finds.is_empty();
     Bar::Now {
         paused: state.paused,
         doing,
-        idle: entries.last().map(|last| Overdue {
-            since: last.at,
-            warn_ms: IDLE_WARN_MS,
-            label: "idle {t}: coordinator not responding",
-        }),
+        filed: !work_left && !state.finished,
+        idle: entries
+            .last()
+            .filter(|_| work_left && !state.paused)
+            .map(|last| Overdue {
+                since: last.at,
+                warn_ms: IDLE_WARN_MS,
+                label: "idle {t}: nothing has started",
+            }),
         timer: entries.last().map(|last| Timer {
             active_ms: active_ms(entries),
             since: (!state.finished && !state.paused).then_some(last.at),

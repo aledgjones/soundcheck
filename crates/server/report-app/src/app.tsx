@@ -132,7 +132,11 @@ function NowBar({ bar, connected }: { bar: V.Bar; connected: boolean }) {
     live = bar.paused ? <span class="nowbar-live warn">Paused</span> : <LiveDot word="Live" />;
     doing = (
       <>
-        {bar.doing.length === 0 ? <span class="muted">Nothing running</span> : null}
+        {bar.doing.length === 0 ? (
+          <span class="muted">
+            {bar.filed === true ? "Every row filed · waiting for triage" : "Nothing running"}
+          </span>
+        ) : null}
         {bar.doing.map((d) =>
           d.checking === undefined ? (
             <span key={`${d.platform} ${d.spec}`}>

@@ -573,3 +573,67 @@ fn the_tokens_fact_adds_reviewers_to_testers() {
     .unwrap();
     assert_eq!(tokens(&run, &suite).as_deref(), Some("Tokens 60k"));
 }
+
+#[test]
+fn a_quiet_run_is_an_alarm_only_while_the_server_has_work_left() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/good");
+    let suite = suite::load(&root);
+    let back = suite
+        .specs
+        .iter()
+        .find(|s| s.id == "annotations/002-back")
+        .unwrap();
+    let plan = Plan {
+        specs: vec![PlannedSpec {
+            id: back.id.clone(),
+            platforms: vec![ANDROID],
+            outcomes: soundcheck::run::outcomes_by_platform(back, &[ANDROID]),
+        }],
+        parallel: false,
+    };
+    let dir = std::env::temp_dir().join(format!(
+        "soundcheck-report-bar-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut run = Run::open(plan, &dir.join("journal.jsonl"), 0).unwrap();
+    let bar =
+        |run: &Run| embedded(&report::document(&page(&suite, run, "v0.0.0", true)))["bar"].clone();
+
+    let token = run
+        .dispatch(1, "annotations/002-back", ANDROID, |_, _| "brief".into())
+        .unwrap();
+    let running = bar(&run);
+    assert_eq!(
+        running["idle"]["label"], "idle {t}: nothing has started",
+        "a row is left, so a long quiet is worth an alarm"
+    );
+    assert!(running.get("filed").is_none());
+
+    run.pause(2, "a fix first").unwrap();
+    assert!(
+        bar(&run).get("idle").is_none(),
+        "a paused run is quiet on purpose"
+    );
+    run.resume(3).unwrap();
+
+    run.post(
+        4,
+        &token,
+        judged(&[(Answer::Held, "The collection showed every time.")]),
+    )
+    .unwrap();
+    let filed = bar(&run);
+    assert_eq!(
+        filed["filed"], true,
+        "every row is filed: the run waits for triage"
+    );
+    assert!(
+        filed.get("idle").is_none(),
+        "waiting for the person is no alarm"
+    );
+}

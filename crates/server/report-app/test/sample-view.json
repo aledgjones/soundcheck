@@ -12,7 +12,7 @@
       }
     ],
     "idle": {
-      "label": "idle {t}: coordinator not responding",
+      "label": "idle {t}: nothing has started",
       "since": 1792540260000,
       "warn_ms": 900000
     },

@@ -21,7 +21,7 @@ export interface View {
 }
 
 export type Bar =
-  | { kind: "now"; paused: boolean; doing: Doing[]; idle?: Overdue; timer?: Timer }
+  | { kind: "now"; paused: boolean; doing: Doing[]; filed?: boolean; idle?: Overdue; timer?: Timer }
   | { kind: "starting"; step?: Step; failed?: string };
 
 export interface Doing {

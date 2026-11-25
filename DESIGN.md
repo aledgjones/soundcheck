@@ -204,10 +204,10 @@ The aim (Aled, 2026-10-28): the person manages a report's life, for flexibility 
 
   The collapsed row hints at a finding ("Passed · 1 finding"). The server enforces the failure block's input: a non-pass must name the outcomes it failed, with observed text for each.
 
-- **The page header says what's happening now:** how long the run has been going and the spec running on each platform, plus "idle 20 min: coordinator not responding" once it's true. That's the only alarm an unattended run needs.
+- **The page header says what's happening now:** how long the run has been going and the spec running on each platform, plus "idle 20 min: nothing has started" once it's true. That's the only alarm an unattended run needs. It shows only while the server has work it could be doing (rows not yet filed, side finds not yet reviewed) and the run isn't paused. Once every row is filed the bar reads "Every row filed · waiting for triage" with no alarm: the run is waiting for the person, not stuck (Aled, 2026-11-25). Before 0.4 it read "coordinator not responding" and fired on any quiet run, since a quiet run then meant a stalled coordinator.
 - **Page decisions** (Aled, 2026-10-21):
   - **Header:** the release label, devices, run start and last update. Commits stay out: the notes say which build each row ran on.
-  - **A slim sticky bar while the run is live** says what's happening now ("Run · 1 h 12 min · Android · annotations/003"), and goes once the run finishes. One timer, for the whole run: per-spec timers and "last event N ago" were noise (Aled, 2026-10-21). A check or an idle coordinator shows its time only once it's overdue, in amber.
+  - **A slim sticky bar while the run is live** says what's happening now ("Run · 1 h 12 min · Android · annotations/003"), and goes once the run finishes. One timer, for the whole run: per-spec timers and "last event N ago" were noise (Aled, 2026-10-21). A check or an idle run shows its time only once it's overdue, in amber.
   - **Rows show the spec's number within its feature card** ("001"); the full path appears on hover and in exports.
   - **Every row expands,** passes too, closed by default: a pass shows each outcome with what was seen, so you can check what it rested on.
   - **Problem titles are written by the reviewer** in plain words when it upholds a claim or a side find; the outcome-versus-observed lines sit beneath as the detail.
