@@ -1414,6 +1414,15 @@ async fn a_queued_install_waits_for_a_claim_to_be_reviewed() {
     )
     .await;
     assert_eq!(queued["queued"], "android", "{queued}");
+    // The post's own hold, while the platform's health is sampled, comes first and reads differently: wait it out.
+    for _ in 0..200 {
+        if !hub.sampling().contains(&ANDROID) {
+            break;
+        }
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
     // With no spec running there, only the queued install keeps the next row off the platform.
     let held = dispatch(
         &hub,
