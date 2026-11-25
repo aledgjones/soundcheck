@@ -873,11 +873,13 @@ impl Device for Ios {
         parse(&self.screen_json(all).await?, all)
     }
 
-    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
-        Ok(Some(parse(
-            &self.screen_json_at("/describe?lean&others").await?,
-            false,
-        )?))
+    async fn read_others(&self) -> Result<Vec<Element>> {
+        self.ensure_reader().await?;
+        match self.reader_get("/others").await {
+            Ok(json) => parse(&json, false),
+            Err(e) if lost_channel(&e) => Err(self.recover(e).await),
+            Err(e) => Err(e),
+        }
     }
 
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {

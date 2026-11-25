@@ -31,7 +31,7 @@ impl Device for AnyDevice {
     async fn read(&self, all: bool) -> Result<Vec<Element>> {
         each!(self, d => d.read(all).await)
     }
-    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
+    async fn read_others(&self) -> Result<Vec<Element>> {
         each!(self, d => d.read_others().await)
     }
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {

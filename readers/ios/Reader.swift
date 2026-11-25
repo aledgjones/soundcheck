@@ -29,8 +29,9 @@ final class Reader {
     .label, .frame, .value, .uniqueID, .type, .title, .frameDict, .help, .enabled, .customActions, .role,
     .roleDescription, .subrole, .contentRequired, .pid, .traits,
   ]
-  // What `see` reads (traits carry selected); fewer keys means fewer round trips per element.
-  static let leanKeys: Set<FBAXKeys> = [.label, .value, .uniqueID, .frame, .frameDict, .type, .enabled, .traits]
+  // What `see` reads (traits carry selected); fewer keys means fewer round trips per element. The pid costs none,
+  // and tells another process's element from the app's own with the same label and frame.
+  static let leanKeys: Set<FBAXKeys> = [.label, .value, .uniqueID, .frame, .frameDict, .type, .enabled, .traits, .pid]
 
   let udid: String
   var simulator: FBSimulator?
@@ -38,6 +39,9 @@ final class Reader {
   var held: Hold?
   // Bumped whenever the held touch changes, which ends the old one's keep-alive.
   var holdID = 0
+  // The latest frontmost read's elements, by process, label and frame, and its screen: what `others` compares hits with.
+  var known = Set<String>()
+  var screen = CGRect.zero
   var reloadedPID: Int?
 
   init(udid: String) {
@@ -60,11 +64,11 @@ final class Reader {
   }
 
   // The frontmost app's tree; like AXe, retry briefly while it has no children (just after boot or a launch).
-  func describe(lean: Bool = false, remoteStep: Double? = nil) async throws -> Data {
+  func describe(lean: Bool = false) async throws -> Data {
     guard let simulator else {
       throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
-    let latest = try await read(simulator, lean: lean, remoteStep: remoteStep)
+    let latest = try await read(simulator, lean: lean)
     // A relaunched app reads as an empty 0×0 node until Accessibility is loaded into the new process, which idb
     // only does on a reader's first read; load it once per app process, through the first read's session (a
     // second session ends the reader), rather than restarting the reader.
@@ -73,67 +77,159 @@ final class Reader {
     }
     reloadedPID = pid
     try FBSimulatorControlFrameworkLoader.reloadAccessibility(withTimeout: 5)
-    return try await read(simulator, lean: lean, remoteStep: remoteStep)
+    return try await read(simulator, lean: lean)
   }
 
-  // Sheets hosted by other processes (Google's sign-in in SafariViewService and WebKit) aren't in the frontmost tree,
-  // and idb's own remote pass drops WebKit's hits, so hit-test a grid `step` points apart and add each element the
-  // tree lacks under the root. About a second, so the driver asks only when a label it wants isn't in the tree.
-  func addRemote(_ data: Data, step: Double) async throws -> Data {
-    guard var roots = try JSONSerialization.jsonObject(with: data) as? [[String: Any]], var root = roots.first,
-      let frame = root["frame"] as? [String: Double], let width = frame["width"], let height = frame["height"]
-    else {
-      return data
-    }
-    var known = Set<String>()
-    Reader.collectKeys(root, into: &known)
-    // The app's own element at the centre means no sheet is up; the grid takes seconds on a busy screen.
-    if let centre = try? await hit(x: width / 2, y: height / 2), known.contains(Reader.key(centre)) {
-      return data
-    }
-    var found: [[String: Any]] = []
-    var y = step / 2
-    while y < height {
-      var x = step / 2
-      while x < width {
-        // A point over nothing throws.
-        if let element = try? await hit(x: x, y: y), known.insert(Reader.key(element)).inserted {
-          found.append(element)
-        }
-        x += step
-      }
-      y += step
-    }
-    root["children"] = ((root["children"] as? [[String: Any]]) ?? []) + found
-    roots[0] = root
-    return try JSONSerialization.data(withJSONObject: roots, options: [.prettyPrinted])
-  }
-
-  func hit(x: Double, y: Double) async throws -> [String: Any]? {
+  // What other processes draw over the app (the document picker, Google's sign-in in SafariViewService and WebKit),
+  // as a root holding each element the latest frontmost read lacks. None of it is in that tree, no element of it
+  // leads up to its own root, and idb's remote pass drops WebKit's hits, so it's found by hit-testing: a grid 80
+  // points apart over the screen says where the sheet is, and one 32 points apart inside that finds what a
+  // container doesn't list (the picker's 36-point toolbar buttons). A hit is 3 to 4 ms; serialising one is a round
+  // trip per attribute of every descendant, so only a hit whose process, label and frame are new is serialised,
+  // and no point inside a labelled leaf already found is hit again. The picker on an iPad takes about 4 s; with no
+  // sheet up it is one hit.
+  func others() async throws -> Data {
     guard let simulator else {
       throw NSError(domain: "reader", code: 2, userInfo: [NSLocalizedDescriptionKey: "Not set up"])
     }
-    let element = try await simulator.accessibilityElement(at: CGPoint(x: x, y: y))
-    defer { element.close() }
-    let response = try element.serialize(with: FBAccessibilityRequestOptions(nestedFormat: true, keys: Reader.leanKeys))
-    return response.elements as? [String: Any]
+
+    if screen.isEmpty {
+      _ = try await describe(lean: true)
+    }
+
+    let screen = self.screen
+    var known = self.known
+    var found: [[String: Any]] = []
+    var leaves: [CGRect] = []
+    var sheet = CGRect.null
+
+    func scan(_ area: CGRect, step: Double) async throws {
+      var y = area.minY + step / 2
+      while y < area.maxY {
+        var x = area.minX + step / 2
+        while x < area.maxX {
+          let point = CGPoint(x: x, y: y)
+          x += step
+          // A point over nothing throws.
+          guard !leaves.contains(where: { $0.contains(point) }),
+            let hit = try? await simulator.accessibilityElement(at: point)
+          else {
+            continue
+          }
+          defer { hit.close() }
+
+          // The key goes in with the element, so one that fails to serialise is tried again at its next point.
+          guard !known.contains(try Reader.key(hit)),
+            let element = try? hit.serialize(
+              with: FBAccessibilityRequestOptions(nestedFormat: true, keys: Reader.leanKeys)
+            ).elements as? [String: Any]
+          else {
+            continue
+          }
+
+          Reader.collect(element, keys: &known, leaves: &leaves)
+          // A labelled leaf as large as a backdrop would hide everything drawn over it.
+          leaves.removeAll { $0.width > screen.width / 2 || $0.height > screen.height / 2 }
+          sheet = sheet.union(Reader.rect(element).intersection(screen))
+          found.append(element)
+        }
+
+        y += step
+      }
+    }
+
+    func centre() async throws -> String? {
+      guard let hit = try? await simulator.accessibilityElement(at: CGPoint(x: screen.midX, y: screen.midY)) else {
+        return nil
+      }
+
+      defer { hit.close() }
+      return try Reader.key(hit)
+    }
+
+    // The app's own element at the centre means no sheet is up. A sheet still arriving reports its elements where
+    // they aren't yet, so one whose centre changed during the scan is scanned again, once: the driver waits
+    // 15 s for an answer.
+    var at = try await centre()
+
+    for _ in 0..<2 {
+      known = self.known
+      found = []
+      leaves = []
+      sheet = .null
+
+      if let at, known.contains(at) {
+        break
+      }
+
+      try await scan(screen, step: 80)
+      try await scan(sheet, step: 32)
+      let now = try await centre()
+
+      if now == at {
+        break
+      }
+
+      at = now
+    }
+
+    let root: [String: Any] = [
+      "type": "Application",
+      "frame": ["x": 0, "y": 0, "width": screen.width, "height": screen.height],
+      "children": found,
+    ]
+    return try JSONSerialization.data(withJSONObject: [root], options: [.prettyPrinted])
+  }
+
+  // A hit's process, label and frame, read from idb's own element: its handle offers only `serialize`. build.sh pins idb,
+  // so the field can't be renamed unseen, and a handle without it is an error, never an empty answer.
+  static func key(_ hit: FBAccessibilityElement) throws -> String {
+    guard let element = Mirror(reflecting: hit).children.first(where: { $0.label == "element" })?.value as? NSObject,
+      let frame = (element.value(forKey: "accessibilityFrame") as? NSValue)?.rectValue
+    else {
+      throw NSError(
+        domain: "reader", code: 7, userInfo: [NSLocalizedDescriptionKey: "idb's accessibility handle has no element"]
+      )
+    }
+
+    let label = element.perform(Selector(("accessibilityLabel")))?.takeUnretainedValue() as? String
+    let pid = (element.value(forKey: "translation") as? NSObject)?.value(forKey: "pid") as? NSNumber
+    return key(pid: pid, label: label, frame: frame)
   }
 
   static func key(_ element: [String: Any]) -> String {
+    // idb's pid is an Int32, which bridges to NSNumber and not to Int.
+    key(pid: element["pid"] as? NSNumber, label: element["AXLabel"] as? String, frame: rect(element))
+  }
+
+  // The picker's root is an unlabelled group the size of the screen, as several of the app's own are, so the
+  // process is part of what an element is.
+  static func key(pid: NSNumber?, label: String?, frame: CGRect) -> String {
+    "\(pid?.intValue ?? 0) \(label ?? "") \(frame.minX) \(frame.minY) \(frame.width) \(frame.height)"
+  }
+
+  static func rect(_ element: [String: Any]) -> CGRect {
     // A hit's frame holds CGFloats and a parsed tree's holds NSNumbers; both bridge to NSNumber.
     let frame = element["frame"] as? [String: Any] ?? [:]
     let box = ["x", "y", "width", "height"].map { (frame[$0] as? NSNumber)?.doubleValue ?? 0 }
-    return "\(element["AXLabel"] as? String ?? "") \(box)"
+    return CGRect(x: box[0], y: box[1], width: box[2], height: box[3])
   }
 
-  static func collectKeys(_ element: [String: Any], into keys: inout Set<String>) {
+  static func collect(_ element: [String: Any], keys: inout Set<String>, leaves: inout [CGRect]) {
     keys.insert(key(element))
-    for child in element["children"] as? [[String: Any]] ?? [] {
-      collectKeys(child, into: &keys)
+    let children = element["children"] as? [[String: Any]] ?? []
+    // Only a leaf with a label is all there is at its points: the picker's toolbar is an unlabelled leaf group
+    // with its buttons over it.
+    if children.isEmpty, !(element["AXLabel"] as? String ?? "").isEmpty {
+      leaves.append(rect(element))
+    }
+
+    for child in children {
+      collect(child, keys: &keys, leaves: &leaves)
     }
   }
 
-  func read(_ simulator: FBSimulator, lean: Bool, remoteStep: Double? = nil) async throws -> Data {
+  func read(_ simulator: FBSimulator, lean: Bool) async throws -> Data {
     var latest = Data()
     for attempt in 0..<5 {
       let element = try await simulator.accessibilityElementForFrontmostApplication()
@@ -145,8 +241,11 @@ final class Reader {
         withJSONObject: response.elements, options: [.prettyPrinted]
       )
       if Reader.hasDescendant(latest) {
-        if let remoteStep {
-          return try await addRemote(latest, step: remoteStep)
+        if let root = (response.elements as? [[String: Any]])?.first {
+          var leaves: [CGRect] = []
+          known = []
+          Reader.collect(root, keys: &known, leaves: &leaves)
+          screen = Reader.rect(root)
         }
         return latest
       }
@@ -341,9 +440,14 @@ struct Main {
           var body: Data
           if line.hasPrefix("GET /describe") {
             do {
-              // 80 points finds a sheet's close button; a wider grid misses it.
-              let others = line.contains("others") ? 80.0 : nil
-              body = try await reader.describe(lean: line.hasPrefix("GET /describe?lean"), remoteStep: others)
+              body = try await reader.describe(lean: line.hasPrefix("GET /describe?lean"))
+            } catch {
+              status = "500 Error"
+              body = error.localizedDescription.data(using: .utf8)!
+            }
+          } else if line.hasPrefix("GET /others") {
+            do {
+              body = try await reader.others()
             } catch {
               status = "500 Error"
               body = error.localizedDescription.data(using: .utf8)!

@@ -160,10 +160,11 @@ pub trait Device {
 
     /// The screen as a screen reader gets it; `all` includes views marked not important for accessibility.
     async fn read(&self, all: bool) -> Result<Vec<Element>>;
-    /// The screen with what other processes show over the app (iOS: Google's sign-in sheet). About a second, so only
-    /// a find whose target `read` misses asks; `None` where `read` already has everything.
-    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
-        Ok(None)
+    /// What other processes show over the app, which `read` leaves out (iOS: the document picker, Google's sign-in
+    /// sheet); nothing where `read` already has everything. A few milliseconds with no sheet up and seconds with
+    /// one, so `see`, the screen after an input and a find whose target `read` misses ask, and polling reads don't.
+    async fn read_others(&self) -> Result<Vec<Element>> {
+        Ok(Vec::new())
     }
     async fn tap_at(&self, x: f64, y: f64) -> Result<()>;
     async fn hold_at(&self, x: f64, y: f64, ms: u64) -> Result<()>;

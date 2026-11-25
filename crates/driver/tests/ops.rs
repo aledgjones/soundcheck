@@ -49,14 +49,9 @@ impl Device for Fake {
             screens[0].clone()
         })
     }
-    async fn read_others(&self) -> Result<Option<Vec<Element>>> {
+    async fn read_others(&self) -> Result<Vec<Element>> {
         *self.others_reads.lock().unwrap() += 1;
-        let Some(others) = &self.others else {
-            return Ok(None);
-        };
-        let mut screen = self.read(false).await?;
-        screen.extend(others.iter().cloned());
-        Ok(Some(screen))
+        Ok(self.others.clone().unwrap_or_default())
     }
     async fn tap_at(&self, x: f64, y: f64) -> Result<()> {
         self.log(format!("tap {x},{y}"));
@@ -243,23 +238,55 @@ async fn expect_with_a_timeout_waits_for_late_ui() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_target_only_another_process_shows_is_tapped_after_a_second() {
+async fn a_target_only_another_process_shows_is_tapped() {
     let app = vec![el("Sign in with Google", 0.0)];
     let driver = Driver::new(Fake::with_others(vec![app], vec![el("Continue", 50.0)]));
-    let start = tokio::time::Instant::now();
     driver.tap(&m("Continue"), false).await.unwrap();
-    assert!(start.elapsed() >= std::time::Duration::from_secs(1));
     assert_eq!(*driver.device.actions.lock().unwrap(), ["tap 55,5"]);
     assert_eq!(*driver.device.others_reads.lock().unwrap(), 1);
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_target_in_the_app_never_looks_at_other_processes() {
-    let late = vec![vec![], vec![], vec![el("Saved", 0.0)]];
-    let driver = Driver::new(Fake::with_others(late, vec![el("Continue", 50.0)]));
+async fn a_target_on_the_apps_screen_never_looks_at_other_processes() {
+    let app = vec![el("Saved", 0.0)];
+    let driver = Driver::new(Fake::with_others(vec![app], vec![el("Continue", 50.0)]));
     driver.tap(&m("Saved"), false).await.unwrap();
     driver.expect(&m("Saved")).await.unwrap();
     assert_eq!(*driver.device.others_reads.lock().unwrap(), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_target_slow_to_appear_looks_at_other_processes_every_three_seconds() {
+    let mut late = vec![vec![]; 20];
+    late.push(vec![el("Saved", 0.0)]);
+    let driver = Driver::new(Fake::with_others(late, vec![el("Continue", 50.0)]));
+    let start = tokio::time::Instant::now();
+    driver.tap(&m("Saved"), false).await.unwrap();
+    let looks = start.elapsed().as_millis() / 3_000 + 1;
+    assert_eq!(
+        u128::from(*driver.device.others_reads.lock().unwrap()),
+        looks
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn see_and_the_settled_screen_show_what_another_process_draws_over_the_app() {
+    let app = vec![el("Add PDFs", 0.0)];
+    let driver = Driver::new(Fake::with_others(vec![app], vec![el("import-canon", 50.0)]));
+    let labels = |elements: Vec<Element>| elements.into_iter().map(|e| e.label).collect::<Vec<_>>();
+    assert_eq!(
+        labels(driver.see(None, false).await.unwrap()),
+        ["Add PDFs", "import-canon"]
+    );
+    assert_eq!(
+        labels(driver.see(Some(&m("import-canon")), false).await.unwrap()),
+        ["import-canon"]
+    );
+    assert_eq!(
+        labels(driver.settled().await.unwrap()),
+        ["Add PDFs", "import-canon"]
+    );
+    assert_eq!(*driver.device.others_reads.lock().unwrap(), 3);
 }
 
 #[tokio::test(start_paused = true)]

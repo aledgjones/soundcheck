@@ -20,8 +20,8 @@ const SCROLL_SWIPE_MS: u64 = 300;
 const SCROLL_SETTLE_READS: u32 = 12;
 /// How long [`Driver::settled`] waits for the screen to hold still before taking it as it is.
 const SETTLE_MAX_MS: u64 = 2_000;
-/// A target missing this long is looked for in other processes' sheets too, then again at most this often.
-const OTHERS_AFTER_MS: u64 = 1_000;
+/// A target the app's own screen lacks is looked for in other processes' sheets too, at most this often: reading
+/// one that's up takes seconds.
 const OTHERS_EVERY_MS: u64 = 3_000;
 const FILL_TRIES: u32 = 3;
 /// Reads, `POLL_MS` apart, for typed text to show before `fill` tries again.
@@ -79,15 +79,32 @@ impl<D: Device> Driver<D> {
     }
 
     pub async fn see(&self, filter: Option<&Matcher>, all: bool) -> Result<Vec<Element>> {
-        let elements = self.device.read(all).await?;
+        let mut elements = self.device.read(all).await?;
+        elements.extend(self.over().await?);
         Ok(match filter {
             Some(m) => elements.into_iter().filter(|e| m.matches(e)).collect(),
             None => elements,
         })
     }
 
-    /// The screen once two reads `POLL_MS` apart match, so a reply after an input isn't a transition caught midway.
+    /// The screen once two reads `POLL_MS` apart match, so a reply after an input isn't a transition caught midway,
+    /// with what other processes show over it, read once.
     pub async fn settled(&self) -> Result<Vec<Element>> {
+        let mut elements = self.held_still().await?;
+        elements.extend(self.over().await?);
+        Ok(elements)
+    }
+
+    /// What other processes show over the app, beside a screen the app's own read already gave: a sheet that can't
+    /// be read just now (still arriving, a scan the reader didn't finish in time) leaves that screen standing.
+    async fn over(&self) -> Result<Vec<Element>> {
+        match self.device.read_others().await {
+            Err(e @ DriverError::Restarted(_)) => Err(e),
+            others => Ok(others.unwrap_or_default()),
+        }
+    }
+
+    async fn held_still(&self) -> Result<Vec<Element>> {
         let deadline = Instant::now() + Duration::from_millis(SETTLE_MAX_MS);
         let mut started = Instant::now();
         let mut last = self.device.read(false).await?;
@@ -577,7 +594,7 @@ impl<D: Device> Driver<D> {
     )> {
         crate::reference::check_exclude(exclude)?;
         let element = self.wait_for(target, TAP_WAIT_MS, false).await?;
-        self.settled().await?;
+        self.held_still().await?;
         if let Some(dir) = shot.parent() {
             std::fs::create_dir_all(dir).map_err(|e| DriverError::Device(e.to_string()))?;
         }
@@ -631,9 +648,7 @@ impl<D: Device> Driver<D> {
 
     /// Looks in what other processes show over the app, which a plain read leaves out.
     async fn find_others(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {
-        let Some(elements) = self.device.read_others().await? else {
-            return Ok(None);
-        };
+        let elements = self.device.read_others().await?;
         let mut matching = elements.into_iter().filter(|e| target.matches(e));
         Ok(if last {
             matching.next_back()
@@ -654,10 +669,7 @@ impl<D: Device> Driver<D> {
                 Err(e @ DriverError::Restarted(_)) => return Err(e),
                 _ => {}
             }
-            // Another process's sheet is slow to read, so look there only once the target has been missing a while.
-            if start.elapsed() >= Duration::from_millis(OTHERS_AFTER_MS)
-                && looked_wider
-                    .is_none_or(|at| at.elapsed() >= Duration::from_millis(OTHERS_EVERY_MS))
+            if looked_wider.is_none_or(|at| at.elapsed() >= Duration::from_millis(OTHERS_EVERY_MS))
             {
                 looked_wider = Some(Instant::now());
                 match self.find_others(target, last).await {
