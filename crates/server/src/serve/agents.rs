@@ -50,7 +50,15 @@ fn mcp(tool: &str) -> String {
 /// A tester's tools: what posts its result, and the driver's tools, the mechanics only for a spec that lists them
 /// (their schemas ride along on every turn).
 fn tester_tools(mechanics: bool) -> Vec<String> {
-    let mut tools = vec!["Read".to_string(), mcp("judge"), mcp("post_result")];
+    // The server's own tester tools, which the driver's registry doesn't list. A test keeps this in step with the
+    // tools the server marks "Tester": 0.4.0 left out `check_data` and `act`, and a spec that needed one was blocked.
+    let mut tools = vec![
+        "Read".to_string(),
+        mcp("judge"),
+        mcp("post_result"),
+        mcp("check_data"),
+        mcp("act"),
+    ];
     tools.extend(
         soundcheck_driver::TOOLS
             .iter()
@@ -224,6 +232,10 @@ impl Hub {
             .stdin(std::process::Stdio::piped())
             .stdout(std::fs::File::create(&stream)?)
             .stderr(std::fs::File::create(&errors)?)
+            // `--setting-sources ""` leaves Claude's auto-memory on, and an agent started inside the project's
+            // repository was given the person's memory of that project: about 11k tokens on every turn of every
+            // tester in the first 0.4.0 run on Solo Scores, and nothing a tester or reviewer should act on.
+            .env("CLAUDE_CODE_DISABLE_AUTO_MEMORY", "1")
             // In a group of its own, so a Ctrl-C at the server's terminal reaches only the server, which then stops
             // its agents itself and doesn't take their ending for a failure.
             .process_group(0)

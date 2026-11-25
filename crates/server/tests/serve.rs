@@ -2173,6 +2173,46 @@ async fn dispatch_with_no_spec_starts_the_next_row() {
 }
 
 #[tokio::test]
+async fn a_tester_is_launched_with_every_tool_the_server_has_for_testers() {
+    let (_server, url) = server().await;
+    let client = client(&url).await;
+    let definitions = agents::definitions();
+    let given = |agent: &str| -> Vec<String> {
+        definitions[agent]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap().to_string())
+            .collect()
+    };
+    let (plain, mechanics) = (given(agents::TESTER), given(agents::MECHANICS_TESTER));
+    let mut for_testers = 0;
+    for tool in client.list_all_tools().await.unwrap() {
+        let name = format!("mcp__soundcheck__{}", tool.name);
+        let description = tool.description.as_deref().unwrap_or_default();
+
+        // The server says who each tool is for at the start of its description.
+        if !description.starts_with("Tester") {
+            assert!(!mechanics.contains(&name), "{name} isn't a tester's tool");
+            continue;
+        }
+
+        for_testers += 1;
+        assert!(mechanics.contains(&name), "a tester is never given {name}");
+        let mechanic = soundcheck_driver::TOOLS
+            .iter()
+            .any(|t| t.mcp_name() == tool.name && t.kind == soundcheck_driver::Kind::Mechanic);
+        assert_eq!(
+            plain.contains(&name),
+            !mechanic,
+            "{name}: only a spec that lists a mechanic gets it"
+        );
+    }
+
+    assert!(for_testers > 20, "the server lists its testers' tools");
+}
+
+#[tokio::test]
 async fn a_dispatch_names_the_specs_tester_and_model() {
     let (server, url) = server().await;
     let back = dispatch_at(
