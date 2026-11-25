@@ -1066,6 +1066,37 @@ async fn the_build_identity_hook_records_each_platforms_build() {
     assert!(hub.read_builds(&[IOS]).await.is_empty());
 }
 
+#[tokio::test]
+async fn a_platforms_hooks_are_told_the_platform_and_no_device_before_one_is_connected() {
+    let (hub, run_dir) = hooked_hub(
+        r#"echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"'$SOUNDCHECK_PLATFORM/${SOUNDCHECK_DEVICE_ID:-none}'\", \"version\": \"2.16.2\"}'"#,
+        "echo $SOUNDCHECK_PLATFORM/${SOUNDCHECK_DEVICE_ID:-none} > install-said-{p}",
+    );
+
+    assert!(hub.read_builds(&[ANDROID, IOS]).await.is_empty());
+
+    for platform in [ANDROID, IOS] {
+        let build = hub
+            .with_run(|run, _| Ok(run.state().builds.get(&platform).cloned()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            build.fingerprint.as_deref(),
+            Some(format!("{platform}/none").as_str())
+        );
+    }
+
+    hub.install(IOS).await.unwrap();
+    assert_eq!(
+        std::fs::read_to_string(run_dir.join("../../suite/install-said-ios")).unwrap(),
+        "ios/none\n"
+    );
+    assert_eq!(
+        hub.platform_env(IOS),
+        std::collections::BTreeMap::from([("SOUNDCHECK_PLATFORM".to_string(), "ios".to_string())])
+    );
+}
+
 /// The run's events, once `done` holds for them (at most 10 s).
 async fn events_until(hub: &Hub, done: impl Fn(&[Event]) -> bool) -> Vec<Event> {
     for _ in 0..100 {

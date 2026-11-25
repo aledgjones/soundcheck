@@ -257,6 +257,8 @@ pub struct Hub {
     /// A driver per platform, connected on its first device call. Each has its own lock, so with platforms in parallel
     /// one platform's long call (a `wait`, a restart) never holds up the other's.
     pub devices: Mutex<std::collections::HashMap<Platform, DeviceSlot>>,
+    /// Each connected device's id, kept apart from its driver so a hook can be told it while the device is busy.
+    device_ids: Mutex<std::collections::HashMap<Platform, String>>,
     pub stall_ms: u64,
     /// How long a dispatched tester has to make its first tool call before its spec counts as stalled.
     pub start_ms: u64,
@@ -399,6 +401,7 @@ impl Hub {
             run: Mutex::new(run),
             events,
             devices: Mutex::new(std::collections::HashMap::new()),
+            device_ids: Mutex::new(std::collections::HashMap::new()),
             without_devices: Vec::new(),
             stall_ms,
             start_ms: START_STALL_MS,
@@ -706,6 +709,22 @@ impl Hub {
         }
     }
 
+    /// What a hook started for `platform` is told besides: the platform, and its device's id once it's connected.
+    pub fn platform_env(&self, platform: Platform) -> BTreeMap<String, String> {
+        let mut env = BTreeMap::from([(hooks::PLATFORM.to_string(), platform.to_string())]);
+
+        if let Some(id) = self
+            .device_ids
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&platform)
+        {
+            env.insert(hooks::DEVICE_ID.to_string(), id.clone());
+        }
+
+        env
+    }
+
     fn page<'a>(
         &'a self,
         suite: &'a Suite,
@@ -826,7 +845,16 @@ impl Hub {
             .clone();
         let mut device = slot.lock().await;
         if device.is_none() {
-            *device = Some(driver(platform, &self.suite(), self.headed).await?);
+            let connected = driver(platform, &self.suite(), self.headed).await?;
+
+            if let Some(id) = connected.device.id() {
+                self.device_ids
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(platform, id.to_string());
+            }
+
+            *device = Some(connected);
         }
         let Some(driver) = device.as_ref() else {
             unreachable!("connected above");
@@ -918,11 +946,10 @@ impl Hub {
         platform: Platform,
         config: &PlatformConfig,
     ) -> Result<Prepared> {
-        let mut env = BTreeMap::from([
-            ("SOUNDCHECK_PLATFORM".to_string(), platform.to_string()),
-            ("SOUNDCHECK_DRIVER".to_string(), config.driver.to_string()),
-            ("SOUNDCHECK_DEVICE".to_string(), config.device.clone()),
-        ]);
+        let mut env = self.platform_env(platform);
+        env.insert("SOUNDCHECK_DRIVER".to_string(), config.driver.to_string());
+        env.insert("SOUNDCHECK_DEVICE".to_string(), config.device.clone());
+
         if let Some(url) = self.url.get() {
             env.insert("SOUNDCHECK_SERVER".to_string(), url.clone());
         }
@@ -1616,7 +1643,16 @@ impl Hub {
             .map(|a| format!("'{}'", a.replace('\'', r"'\''")))
             .collect();
         let command = format!("{hook} {}", quoted.join(" "));
-        match hooks::run(&suite.root, &command, hooks::CHECK_TIMEOUT, self.run_env()).await {
+        let said = hooks::run_with(
+            &suite.root,
+            &command,
+            hooks::CHECK_TIMEOUT,
+            self.run_env(),
+            &self.platform_env(platform),
+        )
+        .await;
+
+        match said {
             Ok(out) => Ok(out),
             Err(e) => Ok(format!("{kind} failed: {e:#}")),
         }
@@ -1630,11 +1666,12 @@ impl Hub {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let command = &config.of(&platform).hooks.build_identity;
-        let out = hooks::run(
+        let out = hooks::run_with(
             &suite.root,
             command,
             hooks::BUILD_IDENTITY_TIMEOUT,
             self.run_env(),
+            &self.platform_env(platform),
         )
         .await?;
         let build: Build = serde_json::from_str(out.trim()).with_context(|| {
@@ -1657,11 +1694,12 @@ impl Hub {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no suite.yaml"))?;
         let platform_config = config.of(&platform);
-        hooks::run(
+        hooks::run_with(
             &suite.root,
             &platform_config.hooks.install,
             hooks::INSTALL_TIMEOUT,
             self.run_env(),
+            &self.platform_env(platform),
         )
         .await
         .with_context(|| format!("the install hook failed on {platform}"))?;

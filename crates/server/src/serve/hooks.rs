@@ -40,6 +40,13 @@ pub const UNCOMMITTED: &str = "SOUNDCHECK_UNCOMMITTED";
 /// This soundcheck's own executable, so a hook's `soundcheck drive` is the run's version and never one on the PATH.
 pub const BIN: &str = "SOUNDCHECK_BIN";
 
+/// The platform a hook was started for, by its name in suite.yaml.
+pub const PLATFORM: &str = "SOUNDCHECK_PLATFORM";
+
+/// What this Mac calls the run's device on that platform (a simulator's UDID, an emulator's adb serial), so a hook
+/// acts on that one whatever else is booted. Unset for a browser, and before the device is first connected.
+pub const DEVICE_ID: &str = "SOUNDCHECK_DEVICE_ID";
+
 /// What a run tells every hook it runs, through the environment. Every hook command takes one, so none is missed;
 /// a hook outside a run (`stack down`) gets the default.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

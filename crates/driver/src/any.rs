@@ -14,6 +14,17 @@ pub enum AnyDevice {
     Chrome(Box<Chrome>),
 }
 
+impl AnyDevice {
+    /// What this Mac calls the device: a simulator's UDID or an emulator's adb serial. A browser has none.
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            AnyDevice::Android(d) => Some(d.serial()),
+            AnyDevice::Ios(d) => Some(d.udid()),
+            AnyDevice::Chrome(_) => None,
+        }
+    }
+}
+
 macro_rules! each {
     ($self:ident, $d:ident => $e:expr) => {
         match $self {
