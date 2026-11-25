@@ -130,7 +130,7 @@ mod tests {
         let client = ClientConfig::default().serve(ours).await.unwrap();
 
         let tools = client.list_all_tools().await.unwrap();
-        assert!(tools.iter().any(|t| t.name == "dispatch"));
+        assert!(tools.iter().any(|t| t.name == "status"));
         assert!(tools.iter().any(|t| t.name == "post_result"));
 
         let result = client

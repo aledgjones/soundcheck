@@ -10,55 +10,10 @@ fn plugin_file(path: &str) -> String {
 const PREFIX: &str = "mcp__plugin_soundcheck_soundcheck__";
 
 #[test]
-fn the_tester_agents_list_their_driver_tools() {
-    // The plain tester leaves out the mechanics, whose schemas would ride along on every turn of a spec that can't use them.
-    for (file, with_mechanics) in [
-        ("agents/soundcheck-tester.md", false),
-        ("agents/soundcheck-tester-mechanics.md", true),
-    ] {
-        let agent = plugin_file(file);
-        for tool in soundcheck_driver::TOOLS {
-            let name = format!("{PREFIX}{}\n", tool.mcp_name());
-            let wanted = with_mechanics || tool.kind == soundcheck_driver::Kind::Basic;
-            assert_eq!(
-                agent.contains(&name),
-                wanted,
-                "{file} {} {}",
-                if wanted { "doesn't list" } else { "lists" },
-                name.trim()
-            );
-        }
-        assert!(agent.contains(&format!("{PREFIX}post_result")));
-        assert!(agent.contains(&format!("{PREFIX}brief")));
-        assert!(
-            !agent.contains(&format!("{PREFIX}review")),
-            "testers never review"
-        );
-    }
-}
-
-#[test]
-fn the_tester_agents_share_their_instructions() {
-    let body = |file| {
-        let text = plugin_file(file);
-        text.split("\n---\n").nth(1).unwrap().to_string()
-    };
-    assert_eq!(
-        body("agents/soundcheck-tester.md"),
-        body("agents/soundcheck-tester-mechanics.md"),
-        "the two tester agents differ only in their tools"
-    );
-}
-
-#[test]
-fn dispatch_names_agents_the_plugin_has() {
-    for agent in [
-        soundcheck::serve::prompt::TESTER,
-        soundcheck::serve::prompt::MECHANICS_TESTER,
-    ] {
-        let file = plugin_file(&format!("agents/{agent}.md"));
-        assert!(file.contains(&format!("name: {agent}\n")));
-    }
+fn the_plugin_ships_no_agents() {
+    // The server launches its testers and reviewers itself, with their definitions (SA-1049).
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../plugin");
+    assert!(!root.join("agents").exists());
 }
 
 #[test]
@@ -66,7 +21,6 @@ fn the_run_skill_pre_allows_every_coordinator_tool() {
     let skill = plugin_file("skills/run/SKILL.md");
     for tool in [
         "status",
-        "dispatch",
         "queue",
         "review",
         "review_find",
@@ -98,19 +52,13 @@ fn the_mcp_config_runs_the_stdio_bridge() {
 #[test]
 fn each_hook_runs_its_soundcheck_hook_command() {
     let config: serde_json::Value = serde_json::from_str(&plugin_file("hooks/hooks.json")).unwrap();
-    for (event, command) in [
-        ("SubagentStop", "subagent-stop"),
-        ("Stop", "stop"),
-        ("SessionStart", "session-start"),
-        ("PreToolUse", "pre-tool-use"),
-    ] {
-        assert_eq!(
-            config["hooks"][event][0]["hooks"][0]["command"],
-            format!("\"${{CLAUDE_PLUGIN_ROOT}}/bin/soundcheck\" hook {command}"),
-            "{event}"
-        );
-    }
-    assert_eq!(config["hooks"]["PreToolUse"][0]["matcher"], "Agent|Task");
+    assert_eq!(
+        config["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+        "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook session-start"
+    );
+    // The hooks that made a coordinator dispatch went with SA-1049: the server dispatches.
+    let events: Vec<&String> = config["hooks"].as_object().unwrap().keys().collect();
+    assert_eq!(events, ["SessionStart"]);
 }
 
 #[test]

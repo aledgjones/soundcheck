@@ -2,10 +2,11 @@ use crate::suite::config::Platform;
 use crate::suite::spec::Spec;
 use std::fmt::Write;
 
-/// The whole brief a tester gets: the spec, its feature's context and the result contract. It's journalled as sent.
+/// The brief a tester is launched with, as its prompt: the spec and its feature's context. It's journalled as sent.
 pub fn render(
     spec: &Spec,
-    feature_context: Option<&str>,
+    // The feature's `_feature.md`, then the suite's `_suite.md`.
+    (feature_context, suite_context): (Option<&str>, Option<&str>),
     platform: Platform,
     token: &str,
     verify: Option<&str>,
@@ -85,6 +86,11 @@ pub fn render(
     if let Some(context) = feature_context.map(str::trim).filter(|c| !c.is_empty()) {
         let _ = writeln!(out, "## About this feature\n\n{context}\n");
     }
+
+    if let Some(context) = suite_context.map(str::trim).filter(|c| !c.is_empty()) {
+        let _ = writeln!(out, "## About this app's suite\n\n{context}\n");
+    }
+
     if !spec.front.tools.is_empty() {
         let _ = writeln!(
             out,
@@ -92,31 +98,12 @@ pub fn render(
             spec.front.tools.join(", ")
         );
     }
-    out.push_str(CONTRACT);
     out
 }
 
-/// The tester agent type for a spec. Only specs that list driver tools get the one with the mechanics: their schemas
-/// are sent on every turn, and most specs never use them.
-pub fn agent(spec: &Spec) -> &'static str {
-    if spec.front.tools.is_empty() {
-        TESTER
-    } else {
-        MECHANICS_TESTER
-    }
-}
-
-pub const TESTER: &str = "soundcheck-tester";
-pub const MECHANICS_TESTER: &str = "soundcheck-tester-mechanics";
-
-/// What the coordinator passes to the tester agent: the brief itself travels by `brief`, outside the coordinator.
-pub fn handoff(token: &str) -> String {
-    format!(
-        "Run soundcheck spec `{token}`: call `brief` with this token first, and follow it. When you've posted, reply with one line only: the token, the claim `post_result` returned and how many side finds you posted."
-    )
-}
-
-const CONTRACT: &str = "## Posting your result
+/// How every tester posts, paces itself and saves calls. It's the same for every spec, so it sits in the tester's
+/// own instructions rather than in each brief (SA-1049): testers then share it as one cached prefix.
+pub const CONTRACT: &str = "## Posting your result
 
 As soon as you've settled an outcome, record it with `judge`: the run shows your progress as you go. Judging the same outcome again replaces it, if a later step changes your mind.
 
@@ -124,7 +111,7 @@ Call `post_result` once, at the end. It takes up everything you've judged; add a
 
 - `held`: you observed it working, all of it.
 - `failed`: you observed it broken.
-- An outcome, or part of one, that this platform can't show (an on-screen keyboard on web, say) is never `held`: judge it `unsure` and say what the platform lacks, so the coordinator can sort out which platforms the spec is for.
+- An outcome, or part of one, that this platform can't show (an on-screen keyboard on web, say) is never `held`: judge it `unsure` and say what the platform lacks, so the reviewer can note which platforms the spec is for.
 - `unsure`: you observed it but can't tell whether it's right. Say exactly what was unclear.
 - `couldnt-check`: you never got to observe it (a control you couldn't reach, a step that wouldn't work). Say why.
 
@@ -169,7 +156,7 @@ mod tests {
         let on = |name: &'static str, prepared: Option<&str>| {
             super::render(
                 &spec,
-                None,
+                (None, Some("The second test account is b@example.test.")),
                 Platform::literal(name),
                 "t",
                 None,
@@ -178,6 +165,10 @@ mod tests {
             )
         };
         let ios = on("ios", Some(r#"{"scores":2}"#));
+        assert!(
+            ios.contains("## About this app's suite\n\nThe second test account is b@example.test."),
+            "the suite's own facts reach every brief"
+        );
         assert!(ios.contains(
             "The app is ready for you where the spec's prepare steps left it. If it isn't there, judge the outcomes couldn't check"
         ));

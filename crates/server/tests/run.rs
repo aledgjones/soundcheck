@@ -575,6 +575,96 @@ fn an_attempt_journals_its_calls_and_working_time_when_it_ends() {
 }
 
 #[test]
+fn each_reviewer_journals_what_it_cost() {
+    let (mut run, _) = open("reviews");
+    let spent = Spent {
+        input: 30,
+        cache_write: 9_000,
+        cache_read: 1_200_000,
+        output: 4_000,
+    };
+    assert_eq!(usage::all(&spent), 1_213_030);
+    assert_eq!(usage::all(&Spent::default()), 0);
+
+    let token = run.dispatch(0, DRAW, ANDROID, brief).unwrap();
+    run.post(1_000, &token, judged(&[Answer::Failed, Answer::Held]))
+        .unwrap();
+    assert_eq!(usage::reviews(run.entries_after(0)), []);
+
+    // The first reviewer never got a reply; the second left the row for the coordinator; iOS's settled its own.
+    run.reviewer(2_000, DRAW, ANDROID, None, 4_000, None)
+        .unwrap();
+    run.reviewer(
+        3_000,
+        DRAW,
+        ANDROID,
+        Some((21_000, spent)),
+        95_000,
+        Some("2 reviewers ended without settling it".into()),
+    )
+    .unwrap();
+    run.reviewer(
+        4_000,
+        DRAW,
+        IOS,
+        Some((7_000, Spent::default())),
+        12_000,
+        None,
+    )
+    .unwrap();
+
+    let reviews = usage::reviews(run.entries_after(0));
+    assert_eq!(
+        reviews,
+        [
+            usage::ReviewUsage {
+                spec: DRAW.into(),
+                platform: "android".into(),
+                tokens: None,
+                spent: None,
+                duration_ms: Some(4_000),
+                unsettled: false,
+            },
+            usage::ReviewUsage {
+                spec: DRAW.into(),
+                platform: "android".into(),
+                tokens: Some(21_000),
+                spent: Some(spent),
+                duration_ms: Some(95_000),
+                unsettled: true,
+            },
+            usage::ReviewUsage {
+                spec: DRAW.into(),
+                platform: "ios".into(),
+                tokens: Some(7_000),
+                spent: Some(Spent::default()),
+                duration_ms: Some(12_000),
+                unsettled: false,
+            },
+        ],
+        "in the order they ended"
+    );
+    assert!(
+        usage::attempts(run.entries_after(0)).is_empty(),
+        "a reviewer is no attempt"
+    );
+}
+
+#[test]
+fn a_reviewer_journalled_before_its_time_was_kept_reads_without_one() {
+    // A `reviewer` entry as 0.3's server wrote it: no `duration_ms`.
+    let old = r#"{"seq":1,"at":5,"event":"reviewer","spec":"annotations/001-draw","platform":"android","tokens":900}"#;
+    let Ok(entry) = serde_json::from_str::<soundcheck::run::journal::Entry>(old) else {
+        panic!("an older reviewer entry must still read");
+    };
+    let reviews = usage::reviews(&[entry]);
+    assert_eq!(reviews.len(), 1);
+    assert_eq!(reviews[0].tokens, Some(900));
+    assert_eq!(reviews[0].duration_ms, None);
+    assert_eq!(reviews[0].spent, None);
+}
+
+#[test]
 fn stalling_on_the_last_attempt_files_blocked() {
     let (mut run, _) = open("stall-last");
     for attempt in 1..=MAX_ATTEMPTS {

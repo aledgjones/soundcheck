@@ -7,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Child;
 
-/// The page's own GETs. The same port serves `/mcp`, `/dispatch` and `/next`, which must never leave the machine.
+/// The page's own GETs. The same port serves `/mcp`, `/drive` and `/remote`, which must never leave the machine.
 const PAGE_PATHS: &[&str] = &[
     "/",
     "/download",

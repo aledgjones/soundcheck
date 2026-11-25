@@ -202,10 +202,26 @@ pub enum Event {
         /// From its first call to its last.
         duration_ms: u64,
     },
-    /// A tester's tokens, from its transcript when it stops (the plugin's `SubagentStop` hook).
+    /// A reviewer the server launched for a row's claim or side finds has ended (SA-1050).
+    Reviewer {
+        spec: String,
+        platform: Platform,
+        /// Its context on its last turn; missing when it never got a reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tokens: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spent: Option<Spent>,
+        /// How long it ran, from its launch to its end.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        duration_ms: Option<u64>,
+        /// Why the row is left for the coordinator: no reviewer settled it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        unsettled: Option<String>,
+    },
+    /// A tester's tokens, read from its output stream when it ends.
     Tokens {
         token: String,
-        /// Its context on its last turn: the figure Claude Code's completion notice gives.
+        /// Its context on its last turn: read from its output stream.
         tokens: u64,
         /// What its turns added up to; missing for attempts recorded before soundcheck kept it.
         #[serde(default, skip_serializing_if = "Option::is_none")]

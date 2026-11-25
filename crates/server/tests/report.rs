@@ -525,3 +525,51 @@ fn the_timer_counts_working_time_not_a_night_between_sessions() {
     let entries = [at(1, 0), at(2, 4), at(3, 10), at(4, 10 + 600), at(5, 615)];
     assert_eq!(report::active_ms(&entries), 15 * 60_000);
 }
+
+#[test]
+fn the_tokens_fact_adds_reviewers_to_testers() {
+    use soundcheck::run::event::Spent;
+    let tokens = |run: &Run, suite: &suite::Suite| {
+        let view = embedded(&report::document(&page(suite, run, "v0.0.0", false)));
+        view["facts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|f| f["text"].as_str())
+            .find(|text| text.starts_with("Tokens"))
+            .map(str::to_string)
+    };
+    let (suite, mut run) = sample();
+    assert_eq!(tokens(&run, &suite), None, "nothing counted, nothing said");
+
+    let spent = Spent {
+        input: 10,
+        cache_write: 200,
+        cache_read: 3_000,
+        output: 40,
+    };
+    run.tokens(1, "annotations/001-draw#1@android", 42_000, Some(spent))
+        .unwrap();
+    assert_eq!(tokens(&run, &suite).as_deref(), Some("Tokens 42k"));
+
+    // A reviewer's context counts beside the tester's; one that never got a reply adds nothing.
+    run.reviewer(
+        2,
+        "annotations/001-draw",
+        ANDROID,
+        Some((18_000, spent)),
+        30_000,
+        None,
+    )
+    .unwrap();
+    run.reviewer(
+        3,
+        "annotations/001-draw",
+        ANDROID,
+        None,
+        1_000,
+        Some("2 reviewers ended without settling it".into()),
+    )
+    .unwrap();
+    assert_eq!(tokens(&run, &suite).as_deref(), Some("Tokens 60k"));
+}

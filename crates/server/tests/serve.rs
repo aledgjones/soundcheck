@@ -5,11 +5,14 @@ use rmcp::transport::streamable_http_client::StreamableHttpClientTransportConfig
 use rmcp::{RoleClient, ServiceExt};
 use serde_json::{Value, json};
 use soundcheck::run::event::Event;
+use soundcheck::run::event::Spent;
 use soundcheck::run::{Plan, PlannedSpec, Run, saved};
-use soundcheck::serve::{self, Hub};
+use soundcheck::serve::agents::{self, Ended};
+use soundcheck::serve::{self, Hub, orchestrate};
 use soundcheck::suite;
 use soundcheck::suite::config::Platform;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const ANDROID: Platform = Platform::literal("android");
@@ -78,8 +81,14 @@ async fn server_hub_as(
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    // The clock alone doesn't tell apart two tests that start in the same microsecond.
+    static SERVERS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let nth = SERVERS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir()
-        .join(format!("soundcheck-serve-{}-{nanos}", std::process::id()))
+        .join(format!(
+            "soundcheck-serve-{}-{nanos}-{nth}",
+            std::process::id()
+        ))
         .join("20261021-090000");
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
@@ -94,7 +103,50 @@ async fn server_hub_as(
     std::sync::Arc::get_mut(&mut hub).unwrap().uncommitted = uncommitted;
     let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
+    HUBS.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((url.clone(), hub.clone()));
     (server, url, dir, hub)
+}
+
+/// The hub of each server started here, by its URL, so a test that kept only the URL can dispatch.
+static HUBS: Mutex<Vec<(String, Arc<Hub>)>> = Mutex::new(Vec::new());
+
+/// Starts a row's next attempt as the server's own lanes do (nothing here starts them, so each test dispatches by
+/// hand): the attempt as JSON, or the refusal as the text a tool would answer with.
+async fn dispatch(hub: &Arc<Hub>, args: Value) -> Value {
+    let started = async {
+        let platform = args["platform"]
+            .as_str()
+            .map(|name| hub.platform(name))
+            .transpose()?;
+        hub.dispatch(args["spec"].as_str(), platform).await
+    };
+    match started.await {
+        Ok(dispatched) => serde_json::to_value(dispatched).unwrap(),
+        Err(e) => Value::String(format!("refused: {e:#}")),
+    }
+}
+
+/// [`dispatch`], on the server at `url`.
+async fn dispatch_at(url: &str, args: Value) -> Value {
+    let hub = HUBS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|(at, _)| at == url)
+        .map(|(_, hub)| hub.clone())
+        .expect("a server started by server_hub_as");
+    dispatch(&hub, args).await
+}
+
+/// The run's journal, one entry per line.
+fn journal(dir: &Path) -> Vec<Value> {
+    std::fs::read_to_string(dir.join("journal.jsonl"))
+        .unwrap()
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect()
 }
 
 /// The view a page carries in its `<script type="application/json">`.
@@ -129,7 +181,7 @@ async fn call(
     if result.is_error == Some(true) {
         Value::String(text)
     } else {
-        // `brief` answers in plain Markdown.
+        // `sleep` answers in plain text.
         serde_json::from_str(&text).unwrap_or(Value::String(text))
     }
 }
@@ -291,70 +343,158 @@ async fn ready_answers_whether_a_platform_can_take_a_spec() {
 }
 
 #[tokio::test]
-async fn a_stopped_testers_hook_records_its_tokens() {
-    let (server, url, dir) = server_in().await;
+async fn a_tester_that_ends_without_posting_leaves_its_tokens_and_a_stall() {
+    let (_server, url, dir, hub) = server_hub(&[ANDROID, IOS, WEB]).await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch(
+        &hub,
         json!({ "spec": "annotations/001-draw", "platform": "android" }),
     )
     .await;
     let token = dispatched["token"].as_str().unwrap();
-    let transcript = dir.join("agent.jsonl");
-    let lines = [
-        json!({ "type": "user", "message": { "content": dispatched["prompt"] } }),
-        json!({ "type": "assistant", "message": { "id": "m1", "usage": {
-            "input_tokens": 2, "cache_creation_input_tokens": 13_000,
-            "cache_read_input_tokens": 0, "output_tokens": 100 } } }),
-        json!({ "type": "assistant", "message": { "id": "m2", "usage": {
-            "input_tokens": 1, "cache_creation_input_tokens": 400,
-            "cache_read_input_tokens": 13_000, "output_tokens": 60 } } }),
-    ];
-    std::fs::write(&transcript, lines.map(|l| l.to_string()).join("\n")).unwrap();
-    let hook = |agent_type: &str| {
-        json!({ "agent_type": agent_type, "agent_transcript_path": transcript }).to_string()
+    // It got as far as driving the device: one that never makes a call is the harness's failure, not a stall.
+    call(&client, "sleep", json!({ "token": token, "ms": 10 })).await;
+    let spent = Spent {
+        input: 3,
+        cache_write: 13_400,
+        cache_read: 13_000,
+        output: 160,
     };
+    hub.tester_done(
+        token,
+        Ended {
+            error: None,
+            usage: Some((13_461, spent)),
+        },
+    );
 
-    let port = server.addr.port();
-    let other = soundcheck::tester_usage::subagent_stop(&hook("general-purpose"), port)
-        .await
-        .unwrap();
-    assert_eq!(other, None, "other agents are left alone");
-    let said = soundcheck::tester_usage::subagent_stop(&hook("soundcheck:soundcheck-tester"), port)
-        .await
-        .unwrap();
+    let status = call(&client, "status", json!({})).await;
     assert_eq!(
-        said,
-        Some(format!(
-            "{token} used 13461 tokens; {token}: the tester ended without posting"
-        )),
+        status["rows"][0]["state"], "queued",
         "a tester that never posted is queued again"
     );
-    let status = call(&client, "status", json!({})).await;
-    assert_eq!(status["rows"][0]["state"], "queued");
-
-    let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
-    let recorded: Value = journal
-        .lines()
-        .map(|l| serde_json::from_str::<Value>(l).unwrap())
-        .find(|e| e["event"] == "tokens")
-        .unwrap();
+    assert_eq!(status["paused"], false, "a clean end pauses nothing");
+    let entries = journal(&dir);
+    let recorded = entries.iter().find(|e| e["event"] == "tokens").unwrap();
     assert_eq!(recorded["token"], token);
     assert_eq!(recorded["tokens"], 13_461);
     assert_eq!(
         recorded["spent"],
         json!({ "input": 3, "cache_write": 13_400, "cache_read": 13_000, "output": 160 })
     );
+    let stalled = entries.iter().find(|e| e["event"] == "stalled").unwrap();
+    assert_eq!(stalled["token"], token);
+    assert_eq!(stalled["reason"], serve::ENDED_WITHOUT_POSTING);
 
-    let unknown = reqwest::Client::new()
-        .post(format!("{url}/tokens"))
-        .json(&json!({ "token": "nope#1@ios", "tokens": 1,
-            "spent": { "input": 0, "cache_write": 0, "cache_read": 0, "output": 0 } }))
-        .send()
-        .await
+    // A token no attempt has is left out of the journal.
+    hub.tester_done(
+        "nope#1@ios",
+        Ended {
+            error: None,
+            usage: Some((1, Spent::default())),
+        },
+    );
+    assert_eq!(journal(&dir).len(), entries.len());
+}
+
+/// What a tester's process ending in `error` leaves behind.
+fn failed(error: &str) -> Ended {
+    Ended {
+        error: Some(error.to_string()),
+        usage: None,
+    }
+}
+
+#[tokio::test]
+async fn a_tester_that_could_not_run_puts_its_row_back_and_pauses_the_run() {
+    let (_server, url, dir, hub) = server_hub(&[ANDROID, IOS, WEB]).await;
+    let client = client(&url).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    let token = dispatched["token"].as_str().unwrap();
+    hub.tester_done(token, failed("usage limit reached"));
+
+    let entries = journal(&dir);
+    assert!(
+        entries
+            .iter()
+            .any(|e| e["event"] == "interrupted" && e["token"] == token),
+        "{entries:?}"
+    );
+    assert!(
+        !entries.iter().any(|e| e["event"] == "stalled"),
+        "the harness failed it, not the app"
+    );
+    let paused = entries.iter().find(|e| e["event"] == "paused").unwrap();
+    let reason = paused["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("a tester couldn't run (usage limit reached)"),
+        "{reason}"
+    );
+    let row = hub
+        .with_run(|run, _| Ok(run.row(DRAW, ANDROID).cloned()))
+        .unwrap()
         .unwrap();
-    assert_eq!(unknown.status().as_u16(), 409);
+    assert_eq!(row.budget, 0, "no attempt was used");
+    assert!(matches!(row.row, soundcheck::run::Row::Queued { .. }));
+
+    // The rows after it aren't thrown at the same wall.
+    let refused = dispatch(&hub, json!({})).await;
+    assert!(
+        refused.as_str().is_some_and(|r| r.contains("paused")),
+        "{refused}"
+    );
+    call(&client, "resume", json!({})).await;
+    let again = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    assert!(again["token"].is_string(), "{again}");
+}
+
+#[tokio::test]
+async fn a_tester_that_failed_after_a_call_counts_as_a_stall_and_pauses_the_run() {
+    let (_server, url, dir, hub) = server_hub(&[ANDROID, IOS, WEB]).await;
+    let client = client(&url).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    let token = dispatched["token"].as_str().unwrap();
+    call(&client, "sleep", json!({ "token": token, "ms": 10 })).await;
+    hub.tester_done(token, failed("the model is overloaded"));
+
+    let entries = journal(&dir);
+    let stalled = entries.iter().find(|e| e["event"] == "stalled").unwrap();
+    assert_eq!(stalled["token"], token);
+    assert_eq!(
+        stalled["reason"],
+        format!("{}: the model is overloaded", serve::ENDED_WITHOUT_POSTING)
+    );
+    assert!(!entries.iter().any(|e| e["event"] == "interrupted"));
+    let paused = entries.iter().find(|e| e["event"] == "paused").unwrap();
+    assert!(
+        paused["reason"]
+            .as_str()
+            .unwrap()
+            .contains("the model is overloaded"),
+        "{paused}"
+    );
+    let budget = hub
+        .with_run(|run, _| Ok(run.row(DRAW, ANDROID).map(|r| r.budget)))
+        .unwrap();
+    assert_eq!(budget, Some(1), "the attempt was used");
+}
+
+#[tokio::test]
+async fn a_tester_that_ends_after_posting_changes_nothing() {
+    let (_server, url, dir, hub) = server_hub(&[ANDROID, IOS, WEB]).await;
+    let client = client(&url).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    let token = dispatched["token"].as_str().unwrap();
+    pass_draw(&client, token).await;
+    let before = journal(&dir).len();
+
+    hub.tester_done(token, Ended::default());
+    // Even one that ended in error: its result is in, so nothing is left to settle.
+    hub.tester_done(token, failed("it was stopped"));
+
+    assert_eq!(journal(&dir).len(), before);
+    let status = call(&client, "status", json!({})).await;
+    assert_eq!(status["paused"], false);
 }
 
 #[tokio::test]
@@ -415,10 +555,8 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<_> = tools.iter().map(|t| t.name.to_string()).collect();
     for want in [
-        "brief",
         "post_result",
         "status",
-        "dispatch",
         "queue",
         "review",
         "review_find",
@@ -436,34 +574,40 @@ async fn a_spec_runs_end_to_end_over_mcp() {
         );
     }
 
-    let dispatched = call(
-        &client,
-        "dispatch",
+    for gone in ["dispatch", "brief"] {
+        assert!(
+            !names.contains(&gone.to_string()),
+            "the server dispatches and briefs by itself: {gone}"
+        );
+    }
+
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/001-draw", "platform": "android" }),
     )
     .await;
     let token = dispatched["token"].as_str().unwrap().to_string();
-    let prompt = dispatched["prompt"].as_str().unwrap();
-    assert!(
-        prompt.contains(&token) && prompt.contains("`brief`"),
-        "{prompt}"
-    );
-    assert!(
-        dispatched.get("brief").is_none(),
-        "the brief skips the coordinator"
-    );
-    let brief = call(&client, "brief", json!({ "token": token })).await;
-    let brief = brief.as_str().unwrap();
+    assert_eq!(dispatched["agent"], agents::TESTER);
+    // The tester is launched with its brief as the prompt.
+    let brief = dispatched["prompt"].as_str().unwrap();
     assert!(brief.contains(&token));
     assert!(brief.contains("0. The stroke disappears on undo"));
     assert!(
         brief.contains("Open a score, then tap Annotate."),
         "feature context is in the brief"
     );
+    // How to post is the same for every spec, so it's in the tester's own instructions instead.
+    assert!(!brief.contains("## Posting your result"), "{brief}");
+    let definitions = agents::definitions();
+    for tester in [agents::TESTER, agents::MECHANICS_TESTER] {
+        let instructions = definitions[tester]["prompt"].as_str().unwrap();
+        for part in ["## Posting your result", "## Pace", "## Fewer calls"] {
+            assert!(instructions.contains(part), "{tester} lacks {part}");
+        }
+    }
 
-    let refused = call(
-        &client,
-        "dispatch",
+    let refused = dispatch_at(
+        &url,
         json!({ "spec": "annotations/001-draw", "platform": "ios" }),
     )
     .await;
@@ -488,14 +632,7 @@ async fn a_spec_runs_end_to_end_over_mcp() {
     )
     .await;
     assert_eq!(posted["claim"], "FAIL");
-    let refused = call(&client, "brief", json!({ "token": token })).await;
-    assert!(
-        refused
-            .as_str()
-            .unwrap()
-            .starts_with(&format!("refused: token {token} isn't a running spec")),
-        "a posted spec's brief is refused: {refused}"
-    );
+    assert_eq!(posted["next"], "you're done: reply `done` and stop");
 
     let status = call(&client, "status", json!({})).await;
     assert_eq!(status["verdict"]["status"], "not-ready");
@@ -809,6 +946,16 @@ fn hooked_hub_with(
     install: &str,
     prepare: Option<&str>,
 ) -> (std::sync::Arc<Hub>, std::path::PathBuf) {
+    hooked_hub_run(identity, install, prepare, false)
+}
+
+/// [`hooked_hub_with`], its platforms running side by side when `parallel`.
+fn hooked_hub_run(
+    identity: &str,
+    install: &str,
+    prepare: Option<&str>,
+    parallel: bool,
+) -> (std::sync::Arc<Hub>, std::path::PathBuf) {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -874,7 +1021,7 @@ fn hooked_hub_with(
                 outcomes: soundcheck::run::outcomes_by_platform(s, &s.front.platforms),
             })
             .collect(),
-        parallel: false,
+        parallel,
     };
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
@@ -1019,29 +1166,22 @@ async fn a_platform_takes_no_spec_while_its_build_installs() {
 
     call(&client, "install_build", json!({ "platform": "android" })).await;
 
-    let named = call(
-        &client,
-        "dispatch",
+    let named = dispatch(
+        &hub,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
-    assert!(
-        named
-            .as_str()
-            .is_some_and(|t| t.contains("held: installing a build")),
-        "{named}"
-    );
+    assert_eq!(named, "refused: held: installing a build");
     let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
     assert_eq!(ready.status().as_u16(), 409);
     assert!(ready.text().await.unwrap().contains("installing a build"));
-    // `next` (and the plugin's hook, which asks it) passes android over.
-    let next: Value = reqwest::get(format!("{url}/next"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_ne!(next["platform"], "android", "{next}");
+    // A dispatch of the next row passes android over: it gets as far as iOS, which has no build either.
+    let next = dispatch(&hub, json!({})).await;
+    assert!(
+        next.as_str()
+            .is_some_and(|t| t.contains("which build is on ios") && !t.contains("held")),
+        "{next}"
+    );
 
     events_until(&hub, |events| {
         events
@@ -1074,9 +1214,8 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
     })
     .await;
 
-    let named = call(
-        &client,
-        "dispatch",
+    let named = dispatch(
+        &hub,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1086,15 +1225,18 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
         ),
         "{named}"
     );
+    assert!(
+        !named.to_string().contains("soundcheck ready"),
+        "nobody is told to wait for it: the server dispatches again by itself: {named}"
+    );
     let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
     assert_eq!(ready.status().as_u16(), 409);
-    let next: Value = reqwest::get(format!("{url}/next"))
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_ne!(next["platform"], "android", "{next}");
+    let next = dispatch(&hub, json!({})).await;
+    assert!(
+        next.as_str()
+            .is_some_and(|t| t.contains("which build is on ios") && !t.contains("held")),
+        "the next row passes android over for iOS, which has no build either: {next}"
+    );
     let view = view_at(&format!("{url}/{}/view", hub.page_key())).await;
     assert!(
         view.to_string().contains("android: install failed"),
@@ -1123,6 +1265,197 @@ async fn a_failed_install_holds_its_platform_until_a_build_reads_again() {
     server.shutdown.cancel();
 }
 
+/// A hub whose builds always read and whose installs work at once, its platforms side by side: what a queued install
+/// needs around it.
+fn installable_hub() -> (std::sync::Arc<Hub>, std::path::PathBuf) {
+    hooked_hub_run(
+        r#"echo '{\"commit\": \"abc1234def\", \"fingerprint\": \"fp-{p}\"}'"#,
+        "touch installed-{p}",
+        None,
+        true,
+    )
+}
+
+/// What the journal says of installs and of 001-draw's claim on android, in order.
+fn install_story(events: &[Event]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Posted { .. } => Some("posted".to_string()),
+            Event::Reviewed { .. } => Some("reviewed".to_string()),
+            Event::InstallStarted { platform } => Some(format!("started {platform}")),
+            Event::InstallFailed { platform, reason } => {
+                Some(format!("failed {platform}: {reason}"))
+            }
+            Event::BuildInstalled {
+                platform, reruns, ..
+            } if !reruns.is_empty() => Some(format!("installed {platform}")),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The reruns every queued install here asks for, so its `build-installed` is told from the ones a dispatch logs.
+fn rerun_draw() -> Value {
+    json!([{ "spec": DRAW, "reason": "the fix touches undo" }])
+}
+
+#[tokio::test]
+async fn an_install_asked_for_mid_spec_is_queued_and_starts_once_the_spec_is_filed() {
+    let (hub, _) = installable_hub();
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let url = format!("http://{}", server.addr);
+    let client = client(&url).await;
+    let running = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    let token = running["token"].as_str().expect("an attempt").to_string();
+
+    let queued = call(
+        &client,
+        "install_build",
+        json!({ "platform": "android", "reruns": rerun_draw() }),
+    )
+    .await;
+    assert_eq!(queued["queued"], "android", "{queued}");
+    assert!(
+        queued["result"].as_str().is_some_and(|t| t
+            .contains("annotations/001-draw still running or waiting for review")
+            && t.contains("nothing new starts on android")),
+        "{queued}"
+    );
+
+    // Nothing new starts on the platform that waits to install, and the others carry on.
+    let held = dispatch(
+        &hub,
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    assert!(
+        held.as_str().is_some_and(|t| t.starts_with("refused: ")),
+        "{held}"
+    );
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+    assert!(
+        ready
+            .text()
+            .await
+            .unwrap()
+            .contains("waiting to install a build once its spec is settled")
+    );
+    let elsewhere = dispatch(&hub, json!({ "spec": DRAW, "platform": "ios" })).await;
+    assert!(elsewhere["token"].is_string(), "{elsewhere}");
+    assert_eq!(
+        install_story(&events_until(&hub, |_| true).await),
+        [] as [&str; 0],
+        "nothing is installed under a running spec"
+    );
+
+    // The pass files the row, and the install starts with no second call.
+    pass_draw(&client, &token).await;
+    let events = events_until(&hub, |events| {
+        install_story(events).contains(&"installed android".to_string())
+    })
+    .await;
+    assert_eq!(
+        install_story(&events),
+        ["posted", "started android", "installed android"]
+    );
+    let rerun = events.iter().any(|e| {
+        matches!(e, Event::BuildInstalled { platform: ANDROID, reruns, .. }
+            if reruns.iter().any(|r| r.spec == DRAW))
+    });
+    assert!(
+        rerun,
+        "the queued install keeps the reruns it was asked for"
+    );
+    // The hold lifts with the install: the platform takes a spec again.
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 200);
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_second_install_is_refused_while_one_is_queued() {
+    let (hub, _) = installable_hub();
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let client = client(&format!("http://{}", server.addr)).await;
+    dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+
+    let queued = call(&client, "install_build", json!({ "platform": "android" })).await;
+    assert_eq!(queued["queued"], "android", "{queued}");
+    let again = call(&client, "install_build", json!({ "platform": "android" })).await;
+    assert!(
+        again
+            .as_str()
+            .is_some_and(|t| t.contains("android already has an install queued")),
+        "{again}"
+    );
+    // A platform with nothing running isn't caught up in it: its install starts at once.
+    let free = call(&client, "install_build", json!({ "platform": "ios" })).await;
+    assert_eq!(free["installing"], "ios", "{free}");
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_queued_install_waits_for_a_claim_to_be_reviewed() {
+    let (hub, run_dir) = installable_hub();
+    let server = serve::start(hub.clone(), 0).await.unwrap();
+    let client = client(&format!("http://{}", server.addr)).await;
+    let running = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    fail_draw(&client, &run_dir, running["token"].as_str().unwrap()).await;
+
+    // Nothing runs on android now, but its claim isn't settled: the install is queued all the same.
+    let queued = call(
+        &client,
+        "install_build",
+        json!({ "platform": "android", "reruns": rerun_draw() }),
+    )
+    .await;
+    assert_eq!(queued["queued"], "android", "{queued}");
+    // With no spec running there, only the queued install keeps the next row off the platform.
+    let held = dispatch(
+        &hub,
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    assert_eq!(
+        held,
+        "refused: held: waiting to install a build once its spec is settled"
+    );
+    let next = dispatch(&hub, json!({})).await;
+    assert_ne!(next["platform"], "android", "{next}");
+    assert!(
+        next["token"].is_string(),
+        "another platform takes the next row: {next}"
+    );
+
+    let reviewed = call(
+        &client,
+        "review",
+        json!({
+            "spec": DRAW,
+            "platform": "android",
+            "call": { "call": "uphold", "title": "Undo leaves the stroke on screen" },
+            "reason": "screenshot shows the stroke after undo"
+        }),
+    )
+    .await;
+    assert!(reviewed.is_object(), "{reviewed}");
+    let events = events_until(&hub, |events| {
+        install_story(events).contains(&"installed android".to_string())
+    })
+    .await;
+    // The order is the point: an install that started under the claim would come before its review.
+    assert_eq!(
+        install_story(&events),
+        ["posted", "reviewed", "started android", "installed android"]
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
 /// A hub whose 002-back resets only once `prepared` exists in the suite folder, and that folder.
 fn wedged_hub() -> (std::sync::Arc<Hub>, std::path::PathBuf) {
     let (hub, run_dir) = hooked_hub_with(
@@ -1135,10 +1468,9 @@ fn wedged_hub() -> (std::sync::Arc<Hub>, std::path::PathBuf) {
 }
 
 /// Dispatches 002-back on android, returning the reply.
-async fn dispatch_back(client: &RunningService<RoleClient, ClientConfig>) -> Value {
-    call(
-        client,
-        "dispatch",
+async fn dispatch_back(hub: &Arc<Hub>) -> Value {
+    dispatch(
+        hub,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await
@@ -1149,9 +1481,8 @@ async fn a_failed_reset_restarts_the_device_and_files_nothing() {
     let (hub, suite_dir) = wedged_hub();
     let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
-    let client = client(&url).await;
 
-    let refused = dispatch_back(&client).await;
+    let refused = dispatch_back(&hub).await;
     assert!(
         refused.as_str().is_some_and(|t| t.contains(
             "held: restarting the android device after annotations/002-back: its reset failed"
@@ -1169,7 +1500,7 @@ async fn a_failed_reset_restarts_the_device_and_files_nothing() {
 
     // The restart is what it needed: the next dispatch starts, and nothing was filed.
     std::fs::write(suite_dir.join("prepared"), "").unwrap();
-    let dispatched = dispatch_back(&client).await;
+    let dispatched = dispatch_back(&hub).await;
     assert!(dispatched["token"].is_string(), "{dispatched}");
     let events = events_until(&hub, |_| true).await;
     assert!(
@@ -1185,9 +1516,8 @@ async fn a_reset_that_fails_on_a_restarted_device_is_filed_blocked() {
     let (hub, _) = wedged_hub();
     let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
-    let client = client(&url).await;
 
-    dispatch_back(&client).await;
+    dispatch_back(&hub).await;
     events_until(&hub, |events| {
         events
             .iter()
@@ -1205,7 +1535,7 @@ async fn a_reset_that_fails_on_a_restarted_device_is_filed_blocked() {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    let filed = dispatch_back(&client).await;
+    let filed = dispatch_back(&hub).await;
     assert!(
         filed
             .as_str()
@@ -1472,9 +1802,8 @@ fn a_run_is_found_again_by_its_id() {
 async fn a_tester_can_run_the_projects_data_checks() {
     let (server, url) = server().await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1504,9 +1833,8 @@ async fn a_tester_can_run_the_projects_data_checks() {
 async fn status_names_each_waiting_side_find_by_id() {
     let (server, url) = server().await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1533,9 +1861,8 @@ async fn status_names_each_waiting_side_find_by_id() {
 async fn a_tester_can_sleep_without_stalling() {
     let (server, url) = server().await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1557,9 +1884,8 @@ async fn a_tester_can_sleep_without_stalling() {
 async fn post_result_resolves_evidence_to_the_attempts_own_shot() {
     let (server, url, dir) = server_in().await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1599,9 +1925,8 @@ async fn post_result_resolves_evidence_to_the_attempts_own_shot() {
 async fn post_result_refuses_evidence_that_was_never_saved() {
     let (server, url) = server().await;
     let client = client(&url).await;
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch_at(
+        &url,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -1662,19 +1987,15 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
     saved::save(&dir, &info, &suite).unwrap();
     let plan = saved::plan_for(&suite, &info.platforms, &info.scope).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(
-        Hub::without_devices(
-            suite,
-            run,
-            info.label.clone(),
-            dir.clone(),
-            120_000,
-            info.platforms.clone(),
-        ),
-        0,
-    )
-    .await
-    .unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        info.label.clone(),
+        dir.clone(),
+        120_000,
+        info.platforms.clone(),
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
     let client = client(&format!("http://{}", server.addr)).await;
 
     let refused = call(
@@ -1736,15 +2057,13 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
             { "spec": "annotations/002-back", "platform": "android", "was": "not run" }
         ] })
     );
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch(
+        &hub,
         json!({ "spec": "annotations/003-erase", "platform": "ios" }),
     )
     .await;
-    let brief = call(&client, "brief", json!({ "token": dispatched["token"] })).await;
     assert!(
-        brief
+        dispatched["prompt"]
             .as_str()
             .is_some_and(|b| b.contains("Erase a pen stroke")),
         "the run is open again and dispatches the new spec: {dispatched}"
@@ -1789,18 +2108,16 @@ async fn queue_adds_new_specs_reruns_old_ones_and_reopens_a_finished_run() {
             .any(|r| r["spec"] == "annotations/003-erase" && r["was"] == "running"),
         "a running attempt is abandoned: {queued}"
     );
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch(
+        &hub,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
-    let brief = call(&client, "brief", json!({ "token": dispatched["token"] })).await;
     assert!(
-        brief
+        dispatched["prompt"]
             .as_str()
             .is_some_and(|b| b.contains("tap back twice, a second apart")),
-        "the rerun gets the edited spec: {brief}"
+        "the rerun gets the edited spec: {dispatched}"
     );
     assert!(
         std::fs::read_to_string(dir.join("suite/annotations/002-back.spec.md"))
@@ -1839,279 +2156,38 @@ async fn pass_draw(client: &RunningService<RoleClient, ClientConfig>, token: &st
 async fn dispatch_with_no_spec_starts_the_next_row() {
     let (server, url) = server().await;
     let client = client(&url).await;
-    let first = call(&client, "dispatch", json!({})).await;
+    let first = dispatch_at(&url, json!({})).await;
     assert_eq!(first["token"], format!("{DRAW}#1@android"));
-    let refused = call(&client, "dispatch", json!({})).await;
+    let refused = dispatch_at(&url, json!({})).await;
     assert!(
         refused.as_str().unwrap().contains("one spec at a time"),
         "{refused}"
     );
 
     pass_draw(&client, first["token"].as_str().unwrap()).await;
-    let next = reqwest::get(format!("{url}/next")).await.unwrap();
-    assert_eq!(
-        next.json::<Value>().await.unwrap(),
-        json!({ "spec": DRAW, "platform": "ios" }),
-        "asking doesn't dispatch"
-    );
-    let back = call(&client, "dispatch", json!({ "platform": "android" })).await;
+    let back = dispatch_at(&url, json!({ "platform": "android" })).await;
     assert_eq!(back["token"], "annotations/002-back#1@android");
-    assert_eq!(back["agent"], "soundcheck-tester-mechanics");
+    assert_eq!(back["agent"], agents::MECHANICS_TESTER);
     client.cancel().await.unwrap();
     server.shutdown.cancel();
 }
 
 #[tokio::test]
-async fn an_agent_call_after_dispatch_starts_that_attempts_tester() {
-    // The coordinator dispatches, then starts an Agent for it (run 9decb1a9's Chrome): with the prompt it was given,
-    // or naming the row.
-    for by_prompt in [true, false] {
-        let (server, url, dir) = server_in().await;
-        let port = server.addr.port();
-        let client = client(&url).await;
-        let decide = async |prompt: &str| -> Value {
-            let input = json!({
-                "session_id": "coordinator-1",
-                "tool_name": "Agent",
-                "tool_input": { "subagent_type": "soundcheck:soundcheck-tester", "prompt": prompt, "description": "tester" },
-            })
-            .to_string();
-            let reply = soundcheck::plugin_hooks::pre_tool_use(&input, port)
-                .await
-                .unwrap()
-                .unwrap();
-            serde_json::from_str::<Value>(&reply).unwrap()["hookSpecificOutput"].clone()
-        };
-
-        let dispatched = call(
-            &client,
-            "dispatch",
-            json!({ "spec": "annotations/002-back", "platform": "android" }),
-        )
-        .await;
-        let token = dispatched["token"].as_str().expect("dispatched");
-        let prompt = if by_prompt {
-            dispatched["prompt"].as_str().unwrap()
-        } else {
-            "annotations/002-back on android"
-        };
-        let out = decide(prompt).await;
-        assert_eq!(out["permissionDecision"], "allow", "{out}");
-        assert_eq!(out["updatedInput"]["description"], token);
-        // Only once: a second Agent for the same attempt would be a second tester on it.
-        let again = decide(prompt).await;
-        assert_eq!(again["permissionDecision"], "deny", "{again}");
-
-        let journal = std::fs::read_to_string(dir.join("journal.jsonl")).unwrap();
-        let dispatches = journal
-            .lines()
-            .filter(|l| l.contains(r#""event":"dispatched""#))
-            .count();
-        assert_eq!(dispatches, 1, "one attempt");
-        server.shutdown.cancel();
-    }
-}
-
-#[tokio::test]
-async fn the_tester_hook_turns_an_agent_call_into_a_dispatch() {
-    let (server, _) = server().await;
-    let port = server.addr.port();
-    let hook = |agent: &str, prompt: &str| {
-        json!({
-            "session_id": "coordinator-1",
-            "tool_name": "Agent",
-            "tool_input": { "subagent_type": agent, "prompt": prompt, "description": "next tester", "model": "haiku" },
-        })
-        .to_string()
-    };
-    let other = soundcheck::plugin_hooks::pre_tool_use(&hook("general-purpose", "next"), port)
-        .await
-        .unwrap();
-    assert_eq!(other, None, "other agents are left alone");
-
-    let named = hook(
-        "soundcheck:soundcheck-tester",
-        "annotations/002-back, please",
-    );
-    let reply: Value = serde_json::from_str(
-        &soundcheck::plugin_hooks::pre_tool_use(&named, port)
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    let out = &reply["hookSpecificOutput"];
-    assert_eq!(out["permissionDecision"], "allow");
-    let token = "annotations/002-back#1@android";
-    let updated = &out["updatedInput"];
-    assert_eq!(
-        updated["subagent_type"],
-        "soundcheck:soundcheck-tester-mechanics"
-    );
-    assert_eq!(updated["description"], token);
-    assert_eq!(updated["model"], "opus", "the spec's model");
-    assert_eq!(updated["run_in_background"], true);
-    assert!(
-        updated["prompt"]
-            .as_str()
-            .unwrap()
-            .starts_with(&format!("Run soundcheck spec `{token}`"))
-    );
-
-    let next = hook("soundcheck:soundcheck-tester", "next");
-    let reply: Value = serde_json::from_str(
-        &soundcheck::plugin_hooks::pre_tool_use(&next, port)
-            .await
-            .unwrap()
-            .unwrap(),
-    )
-    .unwrap();
-    let out = &reply["hookSpecificOutput"];
-    assert_eq!(out["permissionDecision"], "deny");
-    assert!(
-        out["permissionDecisionReason"]
-            .as_str()
-            .unwrap()
-            .contains("one spec at a time"),
-        "{out}"
-    );
-
-    server.shutdown.cancel();
-    server.handle.await.unwrap();
-    let down = soundcheck::plugin_hooks::pre_tool_use(&next, port)
-        .await
-        .unwrap();
-    assert_eq!(down, None, "no run up, no change");
-}
-
-#[tokio::test]
-async fn the_stop_hook_holds_only_a_stalled_coordinator() {
+async fn a_dispatch_names_the_specs_tester_and_model() {
     let (server, url) = server().await;
-    let port = server.addr.port();
-    let client = client(&url).await;
-    let stop = |session: &str, active: bool| {
-        json!({ "session_id": session, "stop_hook_active": active }).to_string()
-    };
-    let stopping =
-        |input: String| async move { soundcheck::plugin_hooks::stop(&input, port).await.unwrap() };
+    let back = dispatch_at(
+        &url,
+        json!({ "spec": "annotations/002-back", "platform": "android" }),
+    )
+    .await;
+    assert_eq!(back["token"], "annotations/002-back#1@android");
     assert_eq!(
-        stopping(stop("coordinator-1", false)).await,
-        None,
-        "not a coordinator yet"
+        back["agent"],
+        agents::MECHANICS_TESTER,
+        "the spec lists driver tools"
     );
-
-    let dispatched: Value = reqwest::Client::new()
-        .post(format!("{url}/dispatch"))
-        .json(&json!({ "prompt": "next", "session": "coordinator-1" }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(
-        stopping(stop("coordinator-1", false)).await,
-        None,
-        "a tester is running"
-    );
-
-    pass_draw(&client, dispatched["token"].as_str().unwrap()).await;
-    let blocked: Value =
-        serde_json::from_str(&stopping(stop("coordinator-1", false)).await.unwrap()).unwrap();
-    assert_eq!(blocked["decision"], "block");
-    assert!(
-        blocked["reason"]
-            .as_str()
-            .unwrap()
-            .starts_with(&format!("dispatch {DRAW} on ios")),
-        "{blocked}"
-    );
-    assert_eq!(
-        stopping(stop("coordinator-1", true)).await,
-        None,
-        "never twice in a row"
-    );
-    assert_eq!(
-        stopping(stop("someone-else", false)).await,
-        None,
-        "other sessions stop freely"
-    );
-
-    call(&client, "pause", json!({ "reason": "a fix first" })).await;
-    assert_eq!(
-        stopping(stop("coordinator-1", false)).await,
-        None,
-        "a paused run waits"
-    );
-
-    client.cancel().await.unwrap();
+    assert_eq!(back["model"], "opus", "the spec's model");
     server.shutdown.cancel();
-    server.handle.await.unwrap();
-    assert_eq!(
-        stopping(stop("coordinator-1", false)).await,
-        None,
-        "no run up"
-    );
-}
-
-#[tokio::test]
-async fn a_coordinator_mid_turn_hears_when_a_row_could_start() {
-    let (server, url) = server().await;
-    let port = server.addr.port();
-    let client = client(&url).await;
-    let after = |session: &str| {
-        let input =
-            json!({ "session_id": session, "tool_name": "Bash", "tool_input": {} }).to_string();
-        async move {
-            soundcheck::plugin_hooks::post_tool_use(&input, port)
-                .await
-                .unwrap()
-        }
-    };
-    assert_eq!(after("coordinator-1").await, None, "not a coordinator yet");
-
-    let dispatched: Value = reqwest::Client::new()
-        .post(format!("{url}/dispatch"))
-        .json(&json!({ "prompt": "next", "session": "coordinator-1" }))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    assert_eq!(after("coordinator-1").await, None, "a tester is running");
-
-    pass_draw(&client, dispatched["token"].as_str().unwrap()).await;
-    let parallel_dispatch = json!({
-        "session_id": "coordinator-1",
-        "tool_name": "Agent",
-        "tool_input": { "subagent_type": "soundcheck:soundcheck-tester", "prompt": "next" },
-    })
-    .to_string();
-    assert_eq!(
-        soundcheck::plugin_hooks::post_tool_use(&parallel_dispatch, port)
-            .await
-            .unwrap(),
-        None,
-        "a dispatch may have a parallel one the server hasn't seen yet"
-    );
-    let nudge: Value = serde_json::from_str(&after("coordinator-1").await.unwrap()).unwrap();
-    let text = nudge["hookSpecificOutput"]["additionalContext"]
-        .as_str()
-        .unwrap();
-    assert!(
-        text.contains(&format!("{DRAW} on ios could start now")),
-        "{text}"
-    );
-    assert_eq!(after("someone-else").await, None, "only the coordinator");
-
-    call(&client, "pause", json!({ "reason": "a fix first" })).await;
-    assert_eq!(after("coordinator-1").await, None, "a paused run waits");
-
-    client.cancel().await.unwrap();
-    server.shutdown.cancel();
-    server.handle.await.unwrap();
-    assert_eq!(after("coordinator-1").await, None, "no run up");
 }
 
 #[tokio::test]
@@ -2142,16 +2218,16 @@ async fn a_new_session_hears_where_the_run_stands() {
 
 #[tokio::test]
 async fn the_run_stays_open_until_it_is_closed() {
-    let (server, url, dir) = server_on(&[ANDROID, IOS]).await;
+    let (server, url, dir, hub) = server_hub(&[ANDROID, IOS]).await;
     let client = client(&url).await;
     for _ in 0..2 {
-        let d = call(&client, "dispatch", json!({ "spec": DRAW })).await;
+        let d = dispatch(&hub, json!({ "spec": DRAW })).await;
         pass_draw(&client, d["token"].as_str().unwrap()).await;
     }
     let status = call(&client, "status", json!({})).await;
     assert_eq!(status["finished"], false, "a row is still untested");
 
-    let back = call(&client, "dispatch", json!({})).await;
+    let back = dispatch(&hub, json!({})).await;
     call(
         &client,
         "post_result",
@@ -2174,14 +2250,20 @@ async fn the_run_stays_open_until_it_is_closed() {
     assert!(report.contains("Final report, exported"));
     assert!(!report.contains("used 9876 tokens"));
 
-    let late = reqwest::Client::new()
-        .post(format!("{url}/tokens"))
-        .json(&json!({ "token": back["token"], "tokens": 9_876,
-            "spent": { "input": 1, "cache_write": 9_000, "cache_read": 0, "output": 875 } }))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(late.status().as_u16(), 200);
+    // The last tester's process ends after its result has closed the run.
+    let spent = Spent {
+        input: 1,
+        cache_write: 9_000,
+        cache_read: 0,
+        output: 875,
+    };
+    hub.tester_done(
+        back["token"].as_str().unwrap(),
+        Ended {
+            error: None,
+            usage: Some((9_876, spent)),
+        },
+    );
     let report = std::fs::read_to_string(dir.join("report.html")).unwrap();
     assert!(
         report.contains("used 9876 tokens"),
@@ -2197,15 +2279,12 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
     let (_server, url, _, hub) = server_hub(&[ANDROID]).await;
     hub.begin_start(vec!["the suite lints clean".into()]);
     hub.start_step("android: building and installing the app");
-    let client = client(&url).await;
-    let refused = call(&client, "dispatch", json!({})).await;
-    assert!(
-        refused
-            .as_str()
-            .is_some_and(|r| r.contains("still starting (android: building")),
-        "{refused}"
+    let refused = dispatch(&hub, json!({})).await;
+    assert_eq!(
+        refused,
+        "refused: the run is still starting (android: building and installing the app)"
     );
-    // `soundcheck ready --wait` keeps waiting rather than send the coordinator to a dispatch that's refused.
+    // `soundcheck ready --wait` keeps waiting too.
     let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
     assert_eq!(ready.status().as_u16(), 409);
     assert!(ready.text().await.unwrap().contains("still starting"));
@@ -2237,4 +2316,331 @@ async fn a_starting_run_shows_its_checks_and_dispatches_nothing() {
         .await
         .unwrap();
     assert!(stepped.status().is_success());
+}
+
+#[tokio::test]
+async fn a_platform_takes_no_spec_while_its_health_is_sampled() {
+    let (server, url, _, hub) = server_hub(&[ANDROID]).await;
+    // As `post_result` leaves it. Its own sample is over before its reply arrives here, where no device is read,
+    // so the hold is set by hand.
+    hub.sampling().insert(ANDROID);
+    let held = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    assert_eq!(
+        held,
+        "refused: held: sampling the device's health after the last spec"
+    );
+    let ready = reqwest::get(format!("{url}/ready/android")).await.unwrap();
+    assert_eq!(ready.status().as_u16(), 409);
+
+    hub.check_health(DRAW, ANDROID, 1).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    assert!(dispatched["token"].is_string(), "{dispatched}");
+    server.shutdown.cancel();
+}
+
+/// Has the server launch a stand-in for Claude Code from here on: a script that reads its prompt and then does what
+/// the run folder's `fake-claude` file says. `exit` ends cleanly having done nothing; `limit` ends in error as
+/// Claude does at a usage limit. The variable is the whole process's, so every test shares the one script.
+fn fake_claude(run_dir: &Path, behaviour: &str) {
+    static SCRIPT: std::sync::Once = std::sync::Once::new();
+    SCRIPT.call_once(|| {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("soundcheck-claude-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("claude");
+        // Its third argument is the agents file, which is in the run folder's `agents`.
+        std::fs::write(
+            &script,
+            r#"#!/bin/sh
+behaviour="$(cat "$(dirname "$3")/../fake-claude")"
+cat > /dev/null
+if [ "$behaviour" = limit ]; then
+  echo '{"type":"result","is_error":true,"result":"usage limit reached"}'
+  exit 1
+fi
+exit 0
+"#,
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // No test reads this variable itself, and the server reads it only as it launches an agent.
+        unsafe { std::env::set_var(agents::CLAUDE_ENV, &script) };
+    });
+    std::fs::write(run_dir.join("fake-claude"), behaviour).unwrap();
+}
+
+#[tokio::test]
+async fn a_lane_pauses_the_run_when_its_tester_ends_without_a_single_call() {
+    let (server, url, dir, hub) = server_hub(&[ANDROID]).await;
+    hub.url.set(url).unwrap();
+    fake_claude(&dir, "exit");
+    orchestrate::start(&hub);
+
+    let events = events_until(&hub, |events| {
+        events.iter().any(|e| matches!(e, Event::Paused { .. }))
+    })
+    .await;
+    // Long enough for a lane that hadn't stopped to dispatch again.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let after = events_until(&hub, |_| true).await;
+    server.shutdown.cancel();
+
+    let first = format!("{DRAW}#1@android");
+    let at = |wanted: &dyn Fn(&Event) -> bool| events.iter().position(wanted);
+    let dispatched =
+        at(&|e| matches!(e, Event::Dispatched { token, .. } if *token == first)).unwrap();
+    let interrupted = at(&|e| matches!(e, Event::Interrupted { token } if *token == first))
+        .expect("a tester that never drove the device uses no attempt");
+    let paused = at(&|e| {
+        matches!(e, Event::Paused { reason }
+            if reason.starts_with(orchestrate::PAUSED_BY_SERVER)
+                && reason.contains("without making a single call"))
+    })
+    .expect("the run pauses rather than throwing every row at the same wall");
+    assert!(
+        dispatched < interrupted && interrupted < paused,
+        "{events:?}"
+    );
+    assert_eq!(
+        after
+            .iter()
+            .filter(|e| matches!(e, Event::Dispatched { .. }))
+            .count(),
+        1,
+        "nothing more starts while the run is paused"
+    );
+    // The tester was launched with its brief, as the agent the dispatch named.
+    let definitions: Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.join("agents/agents.json")).unwrap())
+            .unwrap();
+    assert_eq!(definitions, agents::definitions());
+    assert!(
+        dir.join("agents/annotations-001-draw-1-android.jsonl")
+            .exists()
+    );
+}
+
+#[tokio::test]
+async fn a_tester_stopped_by_a_usage_limit_pauses_the_run_without_using_an_attempt() {
+    let (server, url, dir, hub) = server_hub(&[ANDROID]).await;
+    hub.url.set(url).unwrap();
+    fake_claude(&dir, "limit");
+    orchestrate::start(&hub);
+
+    let events = events_until(&hub, |events| {
+        events.iter().any(|e| matches!(e, Event::Paused { .. }))
+    })
+    .await;
+    let reason = events
+        .iter()
+        .find_map(|e| match e {
+            Event::Paused { reason } => Some(reason.clone()),
+            _ => None,
+        })
+        .unwrap();
+    assert!(reason.contains("usage limit reached"), "{reason}");
+    let token = format!("{DRAW}#1@android");
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, Event::Interrupted { token: t } if *t == token)),
+        "{events:?}"
+    );
+    assert!(!events.iter().any(|e| matches!(e, Event::Stalled { .. })));
+
+    // The lane has been woken by now: a paused run starts nothing more.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (dispatches, budget) = hub
+        .with_run(|run, _| {
+            let dispatches = run
+                .entries_after(0)
+                .iter()
+                .filter(|e| matches!(e.event, Event::Dispatched { .. }))
+                .count();
+            Ok((dispatches, run.row(DRAW, ANDROID).map(|r| r.budget)))
+        })
+        .unwrap();
+    assert_eq!(dispatches, 1);
+    assert_eq!(budget, Some(0), "no attempt was used");
+    server.shutdown.cancel();
+}
+
+/// Posts a FAIL for a running attempt of 001-draw with a screenshot and a side find, leaving both for review.
+async fn fail_draw(
+    client: &RunningService<RoleClient, ClientConfig>,
+    dir: &Path,
+    token: &str,
+) -> std::path::PathBuf {
+    let shot = dir.join("evidence/annotations-001-draw-1-android-after-undo.png");
+    std::fs::create_dir_all(dir.join("evidence")).unwrap();
+    std::fs::write(&shot, b"png").unwrap();
+    let posted = call(
+        client,
+        "post_result",
+        json!({
+            "token": token,
+            "judgments": [
+                { "outcome": 0, "answer": "failed", "observed": "the stroke stayed after undo", "evidence": ["after-undo"] },
+                { "outcome": 1, "answer": "held", "observed": "Undo greyed out after the undo" }
+            ],
+            "side_finds": [{ "summary": "The toolbar flickers", "observed": "it blinked twice on undo" }]
+        }),
+    )
+    .await;
+    assert_eq!(posted["claim"], "FAIL", "{posted}");
+    shot
+}
+
+#[tokio::test]
+async fn a_review_brief_carries_the_claim_its_evidence_and_the_rows_side_finds() {
+    let (server, url, dir, hub) = server_hub(&[ANDROID]).await;
+    let client = client(&url).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    let shot = fail_draw(&client, &dir, dispatched["token"].as_str().unwrap()).await;
+
+    let suite = hub.suite();
+    let brief = hub
+        .with_run(|run, _| Ok(orchestrate::review_brief(run, &suite, &hub, DRAW, ANDROID)))
+        .unwrap();
+    for part in [
+        "# Review annotations/001-draw on android",
+        "## The claim: FAIL",
+        "The stroke disappears on undo and returns in the same place on redo.",
+        "failed: the stroke stayed after undo",
+        "held: Undo greyed out after the undo",
+        &shot.display().to_string(),
+        "Record your call with `review`, `spec` `annotations/001-draw` and `platform` `android`.",
+        "- id 1: The toolbar flickers",
+        "observed: it blinked twice on undo",
+        "Record a call on each with `review_find` and its `id`.",
+    ] {
+        assert!(brief.contains(part), "no {part:?} in:\n{brief}");
+    }
+    assert!(shot.is_absolute());
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[tokio::test]
+async fn a_claim_two_reviewers_leave_unsettled_is_left_for_the_coordinator() {
+    let (server, url, dir, hub) = server_hub(&[ANDROID]).await;
+    hub.url.set(url.clone()).unwrap();
+    let client = client(&url).await;
+    let dispatched = dispatch(&hub, json!({ "spec": DRAW, "platform": "android" })).await;
+    fail_draw(&client, &dir, dispatched["token"].as_str().unwrap()).await;
+    // Only the reviewers are wanted here: a paused run's lane starts no row.
+    call(&client, "pause", json!({ "reason": "reviews only" })).await;
+    fake_claude(&dir, "exit");
+    orchestrate::start(&hub);
+
+    let events = events_until(&hub, |events| {
+        events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Reviewer {
+                    unsettled: Some(_),
+                    ..
+                }
+            )
+        })
+    })
+    .await;
+    let reviewers: Vec<Option<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Reviewer {
+                spec,
+                platform,
+                unsettled,
+                ..
+            } if spec == DRAW && *platform == ANDROID => Some(unsettled.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reviewers,
+        [
+            None,
+            Some("2 reviewers ended without settling it".to_string())
+        ]
+    );
+    let status = call(&client, "status", json!({})).await;
+    assert!(
+        status.to_string().contains("needs review"),
+        "the claim still waits: {status}"
+    );
+    client.cancel().await.unwrap();
+    server.shutdown.cancel();
+}
+
+#[test]
+fn attention_picks_out_what_needs_the_coordinator() {
+    let mut attention = serve::events::Attention::default();
+    let mut seq = 0;
+    let mut heard = |event: Value| {
+        seq += 1;
+        let mut entry = json!({ "seq": seq, "at": 0 });
+        entry
+            .as_object_mut()
+            .unwrap()
+            .extend(event.as_object().unwrap().clone());
+        attention
+            .of(&serde_json::from_value(entry).unwrap())
+            .is_some()
+    };
+    let build = json!({ "commit": "abc1234def" });
+
+    assert!(
+        !heard(
+            json!({ "event": "build-installed", "platform": "ios", "build": build, "reruns": [] })
+        ),
+        "a build the run logs at its start is no news"
+    );
+    assert!(!heard(
+        json!({ "event": "install-started", "platform": "android" })
+    ));
+    assert!(
+        heard(
+            json!({ "event": "build-installed", "platform": "android", "build": build, "reruns": [] })
+        ),
+        "an install the coordinator started has ended"
+    );
+    assert!(!heard(
+        json!({ "event": "install-started", "platform": "ios" })
+    ));
+    assert!(heard(
+        json!({ "event": "install-failed", "platform": "ios", "reason": "no simulator" })
+    ));
+    assert!(
+        !heard(json!({ "event": "paused", "reason": "a fix first" })),
+        "the coordinator's own pause is no news to it"
+    );
+    assert!(!heard(json!({ "event": "resumed" })));
+    assert!(
+        heard(
+            json!({ "event": "paused", "reason": "soundcheck paused the run: a tester couldn't run (usage limit reached); resume once that's fixed" })
+        ),
+        "a pause the server made"
+    );
+    let failed =
+        json!({ "event": "restart-failed", "platform": "ios", "spec": DRAW, "error": "no boot" });
+    assert!(heard(failed.clone()), "a device that couldn't restart");
+    assert!(
+        !heard(failed.clone()),
+        "its retries every minute say nothing new"
+    );
+    assert!(!heard(
+        json!({ "event": "device-restarted", "platform": "ios", "spec": DRAW, "reason": "degraded" })
+    ));
+    assert!(heard(failed), "a restart that fails after one worked");
+    assert!(
+        !heard(json!({ "event": "reviewer", "spec": DRAW, "platform": "android", "tokens": 9 })),
+        "a reviewer that settled its row"
+    );
+    assert!(heard(
+        json!({ "event": "reviewer", "spec": DRAW, "platform": "android", "unsettled": "2 reviewers ended without settling it" })
+    ));
+    assert!(!heard(
+        json!({ "event": "stalled", "token": "annotations/001-draw#1@android", "reason": "silent" })
+    ));
 }

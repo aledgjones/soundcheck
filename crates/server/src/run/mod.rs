@@ -968,7 +968,7 @@ impl Run {
         )
     }
 
-    /// A tester's tokens, posted by the plugin's hook when it stops. Allowed after the run has finished, since the
+    /// A tester's tokens, read from its output stream when it ends. Allowed after the run has finished, since the
     /// last tester stops after its post; a second post for an attempt replaces the first.
     pub fn tokens(
         &mut self,
@@ -1035,9 +1035,43 @@ impl Run {
         })
     }
 
-    /// Whether `token`'s attempt is running and its tester hasn't made a call yet.
-    pub fn waiting_for_tester(&self, token: &str) -> bool {
-        self.row_of(token).is_some() && !self.started(token)
+    /// A running attempt whose tester couldn't run at all (Claude not found, a usage limit): back to the front of the
+    /// queue without using an attempt, since the harness stopped it rather than the app.
+    pub fn interrupt(&mut self, now: u64, token: &str) -> Result<()> {
+        self.open_for_commands()?;
+        self.running(token)?;
+        self.commit(
+            now,
+            Event::Interrupted {
+                token: token.into(),
+            },
+        )?;
+        self.end_activity(now, token)?;
+        Ok(())
+    }
+
+    /// A reviewer the server launched for a row has ended: what it used, and, when no reviewer settled the row's
+    /// claim or side finds, why they're left for the coordinator.
+    pub fn reviewer(
+        &mut self,
+        now: u64,
+        spec: &str,
+        platform: Platform,
+        usage: Option<(u64, event::Spent)>,
+        duration_ms: u64,
+        unsettled: Option<String>,
+    ) -> Result<()> {
+        self.commit(
+            now,
+            Event::Reviewer {
+                spec: spec.into(),
+                platform,
+                tokens: usage.map(|(tokens, _)| tokens),
+                spent: usage.map(|(_, spent)| spent),
+                duration_ms: Some(duration_ms),
+                unsettled,
+            },
+        )
     }
 
     pub fn stall(&mut self, now: u64, token: &str, reason: &str) -> Result<()> {
@@ -1963,6 +1997,7 @@ impl State {
             Event::Preflight { .. }
             | Event::Usage { .. }
             | Event::Tokens { .. }
+            | Event::Reviewer { .. }
             | Event::RestartFailed { .. } => {}
             Event::Paused { .. } => self.paused = true,
             Event::Resumed => self.paused = false,

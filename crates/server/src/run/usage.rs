@@ -27,6 +27,49 @@ impl AttemptUsage {
     }
 }
 
+/// What one reviewer cost, from its `Reviewer` entry (SA-1059): reviews are part of what a run costs, so they're
+/// listed and compared beside the attempts.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReviewUsage {
+    pub spec: String,
+    pub platform: String,
+    pub tokens: Option<u64>,
+    pub spent: Option<Spent>,
+    pub duration_ms: Option<u64>,
+    /// It was the row's last reviewer and left it for the coordinator.
+    pub unsettled: bool,
+}
+
+/// Every reviewer the server launched, in the order they ended.
+pub fn reviews(entries: &[Entry]) -> Vec<ReviewUsage> {
+    entries
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            Event::Reviewer {
+                spec,
+                platform,
+                tokens,
+                spent,
+                duration_ms,
+                unsettled,
+            } => Some(ReviewUsage {
+                spec: spec.clone(),
+                platform: platform.to_string(),
+                tokens: *tokens,
+                spent: *spent,
+                duration_ms: *duration_ms,
+                unsettled: unsettled.is_some(),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Everything a `Spent` adds up to: what was read fresh, written to the cache, read from it and written out.
+pub fn all(spent: &Spent) -> u64 {
+    spent.input + spent.cache_write + spent.cache_read + spent.output
+}
+
 /// Every attempt that has any usage recorded, in the order they were dispatched.
 pub fn attempts(entries: &[Entry]) -> Vec<AttemptUsage> {
     let mut order: Vec<String> = Vec::new();

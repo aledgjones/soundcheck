@@ -1,7 +1,10 @@
-//! The one process a run needs: MCP tools for testers and the coordinator, and the event stream, on one local port.
+//! The one process a run needs: MCP tools for testers, reviewers and the coordinator, and the event stream, on one
+//! local port. It runs the suite itself: see [`orchestrate`].
 
+pub mod agents;
 pub mod events;
 pub mod hooks;
+pub mod orchestrate;
 pub mod prompt;
 pub mod reports;
 pub mod tools;
@@ -190,7 +193,7 @@ pub async fn wait_for_calm_host() -> bool {
 
 pub const ENDED_WITHOUT_POSTING: &str = "the tester ended without posting";
 
-/// A started attempt: what its tester agent is started with.
+/// A started attempt: what its tester is launched with, its brief as the prompt.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Dispatched {
     pub token: String,
@@ -230,8 +233,6 @@ pub struct Summary {
     /// Claims waiting for review, as "spec on platform".
     pub review: Vec<String>,
     pub side_finds: usize,
-    /// Whether the session asked about has started testers in this run.
-    pub coordinator: bool,
     /// A trial on uncommitted code, which files no tickets.
     pub uncommitted: bool,
 }
@@ -283,11 +284,18 @@ pub struct Hub {
     /// Platforms a dispatch is resetting for its attempt, before the run marks anything running there: another
     /// dispatch meanwhile takes another platform, or, with platforms taking turns, none.
     starting: Mutex<std::collections::HashSet<Platform>>,
-    /// Attempts the `dispatch` tool started whose tester the coordinator hasn't started yet: token → what it starts
-    /// with. The plugin's hook takes one when the coordinator's Agent call is for it (SA-926).
-    handed_out: Mutex<std::collections::HashMap<String, Dispatched>>,
+    /// Platforms whose health is being sampled after an attempt posted: the next spec there waits for the reading,
+    /// which may call for a restart first.
+    sampling: Mutex<std::collections::HashSet<Platform>>,
+    /// Nudges the server's own dispatch and review loops for what no journal entry says: a health sample ending.
+    wake: tokio::sync::Notify,
+    /// What the run is testing, in the person's words (`run --about`): every reviewer is told.
+    pub about: Option<String>,
     /// Platforms whose install hook is running on the server's own task, started by `install_build`.
     installing: Mutex<std::collections::HashSet<Platform>>,
+    /// Platforms with an `install_build` waiting for their spec to be settled (SA-1058): no new spec starts there,
+    /// and the install starts by itself once the platform is between specs.
+    install_queued: Mutex<std::collections::HashSet<Platform>>,
     /// Each platform's current or just-ended wait for a busy host, until a dispatch journals it.
     waits: Mutex<std::collections::HashMap<Platform, Wait>>,
     /// When a wait for the host last ran out, so a host that stays busy doesn't hold every spec.
@@ -301,8 +309,6 @@ pub struct Hub {
     heartbeat_ms: std::sync::atomic::AtomicU64,
     /// Stops the server, when a new run takes the port.
     stop: CancellationToken,
-    /// The Claude Code sessions that started testers through the plugin's hook: only they are told to dispatch.
-    coordinators: Mutex<std::collections::HashSet<String>>,
     /// Set from the server's start until the run's checks pass: nothing is dispatched meanwhile.
     start_up: Mutex<Option<report::StartUp>>,
     /// Tells live pages to redraw for what isn't in the journal: the start's progress.
@@ -318,8 +324,18 @@ pub struct Hub {
 /// How long a finished run must go without a tool call before a new run may take its port.
 const STEP_DOWN_IDLE_MS: u64 = 5 * 60_000;
 
+/// How long a device has to answer a quick question before it counts as not answering.
+const DEVICE_ANSWERS_IN: Duration = Duration::from_secs(15);
+
+/// Why a platform takes no spec in the seconds after a result: the reading may call for a restart first.
+const SAMPLING: &str = "sampling the device's health after the last spec";
+
 /// Why a platform whose build `install_build` is installing takes no spec (SA-923).
 const INSTALLING: &str = "installing a build";
+/// Why a platform with an install queued takes no new spec (SA-1058).
+const INSTALL_QUEUED: &str = "waiting to install a build once its spec is settled";
+/// How often a queued install asks whether its platform is between specs, besides at every journal entry.
+const INSTALL_QUEUE_POLL: Duration = Duration::from_secs(2);
 
 /// At most one restart per platform in this window; a device still degraded after that is only noted.
 const RESTART_COOLDOWN_MS: u64 = 15 * 60_000;
@@ -396,12 +412,14 @@ impl Hub {
             restart_failed: Mutex::new(std::collections::HashMap::new()),
             reset_restarted: Mutex::new(std::collections::HashSet::new()),
             starting: Mutex::new(std::collections::HashSet::new()),
-            handed_out: Mutex::new(std::collections::HashMap::new()),
+            sampling: Mutex::new(std::collections::HashSet::new()),
+            wake: tokio::sync::Notify::new(),
+            about: None,
             installing: Mutex::new(std::collections::HashSet::new()),
+            install_queued: Mutex::new(std::collections::HashSet::new()),
             waits: Mutex::new(std::collections::HashMap::new()),
             gave_up: Mutex::new(std::collections::HashMap::new()),
             seen: Mutex::new(std::collections::HashMap::new()),
-            coordinators: Mutex::new(std::collections::HashSet::new()),
             start_up: Mutex::new(None),
             nudges: broadcast::channel(16).0,
             web_app: tokio::sync::Mutex::new(None),
@@ -969,8 +987,16 @@ impl Hub {
     /// checked on demand, by a dispatch and by `soundcheck ready`, so nothing has to watch for the hold to end. A
     /// dispatch refuses rather than blocking, since a tool call times out long before a boot settles.
     pub async fn hold(self: &Arc<Self>, platform: Platform) -> Option<String> {
+        if self.sampling().contains(&platform) {
+            return Some(SAMPLING.to_string());
+        }
+
         if self.installing().contains(&platform) {
             return Some(INSTALLING.to_string());
+        }
+
+        if self.install_queued().contains(&platform) {
+            return Some(INSTALL_QUEUED.to_string());
         }
 
         if let Some(held) = self.install_unfinished(platform).await {
@@ -1140,7 +1166,7 @@ impl Hub {
         platform: Option<Platform>,
     ) -> Result<Dispatched> {
         if let Some(starting) = self.still_starting() {
-            anyhow::bail!("{starting}; dispatch once soundcheck prints `MCP at`");
+            anyhow::bail!("{starting}");
         }
 
         if let Some(spec) = spec
@@ -1171,7 +1197,9 @@ impl Hub {
             }
         };
 
-        self.probe_build(platform).await?;
+        self.probe_build(platform)
+            .await
+            .context(orchestrate::BUILD_UNKNOWN)?;
 
         self.start_attempt(&spec, platform).await
     }
@@ -1188,7 +1216,7 @@ impl Hub {
 
     /// Restarts `platform`'s device: relaunches Chrome, or restarts the simulator or emulator. A platform whose
     /// device this server leaves alone (its own tests) has nothing to restart.
-    async fn restart_device(&self, platform: Platform) -> Result<()> {
+    pub async fn restart_device(&self, platform: Platform) -> Result<()> {
         if self.without_devices.contains(&platform) {
             return Ok(());
         }
@@ -1227,6 +1255,38 @@ impl Hub {
         Ok(())
     }
 
+    pub fn sampling(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
+        self.sampling.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Where a reviewer starts, to read how the app is meant to behave: the suite's repository, or its folder when
+    /// it's in none.
+    pub fn project_dir(&self) -> PathBuf {
+        let root = self.suite().root.clone();
+        let top = std::process::Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .current_dir(&root)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| PathBuf::from(String::from_utf8_lossy(&o.stdout).trim()));
+        top.filter(|dir| dir.is_dir()).unwrap_or(root)
+    }
+
+    /// Whether `platform`'s device answers a quick question (its screen's size) within [`DEVICE_ANSWERS_IN`]: a hung
+    /// emulator answers nothing, however long it's given.
+    pub async fn device_answers(&self, platform: Platform) -> bool {
+        if self.without_devices.contains(&platform) {
+            return true;
+        }
+
+        let asked = self.on_device(platform, async |d| d.device.screen_size().await);
+        matches!(
+            tokio::time::timeout(DEVICE_ANSWERS_IN, asked).await,
+            Ok(Ok(_))
+        )
+    }
+
     fn installing(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
         self.installing.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -1256,18 +1316,8 @@ impl Hub {
         })
     }
 
-    /// The row `dispatch` would start next, asking each platform whether it's held at most once.
-    pub async fn pick(
-        self: &Arc<Self>,
-        spec: Option<&str>,
-        platform: Option<Platform>,
-    ) -> Result<(String, Platform)> {
-        let (spec, platform, _) = self.pick_row(spec, platform, None).await?;
-        Ok((spec, platform))
-    }
-
-    /// [`Self::pick`], and with `claim` (whether platforms run in parallel) the row's platform claimed for its reset.
-    /// Concurrent `next` dispatches each take a different free platform (SA-927): a platform claimed by another
+    /// The row a dispatch starts next, asking each platform whether it's held at most once, and with `claim` (whether
+    /// platforms run in parallel) the row's platform claimed for its reset. Concurrent dispatches each take a different free platform (SA-927): a platform claimed by another
     /// dispatch since the rows were read, or a row it started, is passed over for the next, so a call is refused only
     /// when no platform is free.
     async fn pick_row(
@@ -1320,12 +1370,7 @@ impl Hub {
             [(_, reason)] => vec![reason.clone()],
             _ => held.iter().map(|(p, r)| format!("{p}: {r}")).collect(),
         };
-        let first = held.first().map(|(p, _)| p.to_string()).unwrap_or_default();
-        format!(
-            "held: {}. Run `soundcheck ready {} {first} --wait` in the background, and dispatch again when it exits",
-            reasons.join("; "),
-            self.run_dir.display(),
-        )
+        format!("held: {}", reasons.join("; "))
     }
 
     async fn start_attempt(
@@ -1405,7 +1450,7 @@ impl Hub {
                 |token, verify| {
                     prompt::render(
                         &briefed,
-                        context,
+                        (context, suite.context.as_deref()),
                         platform,
                         token,
                         verify,
@@ -1420,73 +1465,14 @@ impl Hub {
                     .model
                     .clone()
                     .or_else(|| suite.config.as_ref().map(|c| c.models.default.clone())),
-                agent: prompt::agent(spec).to_string(),
-                prompt: prompt::handoff(&token),
+                agent: agents::tester_for(spec).to_string(),
+                prompt: run.brief(&token)?,
                 token,
             })
         })
     }
 
-    /// The row a tester agent's prompt names, if any: the longest spec ID in it, and a platform named as a word.
-    /// The `dispatch` tool started an attempt: kept until the coordinator's Agent call for it comes through the hook.
-    pub fn hand_out(&self, dispatched: &Dispatched) {
-        self.handed_out
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(dispatched.token.clone(), dispatched.clone());
-    }
-
-    /// The attempt the `dispatch` tool started that an Agent call's prompt is for, by its token or else its spec and
-    /// platform, while its tester hasn't started: the hook starts that tester rather than dispatching the row again,
-    /// which a running row refuses (SA-926). Taken once, so one attempt never gets two testers.
-    pub fn take_handed_out(&self, prompt: &str) -> Option<Dispatched> {
-        let (spec, platform) = self.named_row(prompt);
-        let mut handed_out = self.handed_out.lock().unwrap_or_else(|e| e.into_inner());
-        let token = self
-            .with_run(|run, _| {
-                handed_out.retain(|token, _| run.waiting_for_tester(token));
-                let by_token = handed_out
-                    .keys()
-                    .filter(|token| prompt.contains(token.as_str()))
-                    .max_by_key(|token| token.len())
-                    .cloned();
-                let by_row = || {
-                    handed_out
-                        .keys()
-                        .find(|token| {
-                            run.row_of(token).is_some_and(|(s, p)| {
-                                Some(s) == spec.as_deref() && Some(p) == platform
-                            })
-                        })
-                        .cloned()
-                };
-                Ok(by_token.or_else(by_row))
-            })
-            .ok()
-            .flatten()?;
-        handed_out.remove(&token)
-    }
-
-    pub fn named_row(&self, prompt: &str) -> (Option<String>, Option<Platform>) {
-        let suite = self.suite();
-        let spec = suite
-            .specs
-            .iter()
-            .map(|s| s.id.clone())
-            .filter(|id| prompt.contains(id.as_str()))
-            .max_by_key(String::len);
-        let rest = match &spec {
-            Some(id) => prompt.replace(id.as_str(), " "),
-            None => prompt.to_string(),
-        };
-        let platform = suite.config.as_ref().and_then(|config| {
-            rest.split(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
-                .find_map(|word| config.platform(&word.to_ascii_lowercase()).ok())
-        });
-        (spec, platform)
-    }
-
-    pub fn summary(&self, session: Option<&str>) -> Summary {
+    pub fn summary(&self) -> Summary {
         let run = self.run.lock().unwrap_or_else(|e| e.into_inner());
         let state = run.state();
         let mut running = Vec::new();
@@ -1518,36 +1504,8 @@ impl Hub {
             running,
             review,
             side_finds: state.pending_finds.len(),
-            coordinator: session.is_some_and(|s| self.is_coordinator(s)),
             uncommitted: self.uncommitted,
         }
-    }
-
-    pub fn add_coordinator(&self, session: &str) {
-        self.coordinators
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(session.to_string());
-    }
-
-    pub fn is_coordinator(&self, session: &str) -> bool {
-        self.coordinators
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(session)
-    }
-
-    /// A tester agent has stopped. If its attempt is still running it never posted, so the attempt counts as a
-    /// stall and the row is queued again (or filed BLOCKED on its last attempt). Returns what happened, if anything.
-    pub fn tester_ended(&self, token: &str) -> Result<Option<String>> {
-        self.with_run(|run, now| {
-            if run.state().finished || run.running(token).is_err() {
-                return Ok(None);
-            }
-
-            run.stall(now, token, ENDED_WITHOUT_POSTING)?;
-            Ok(Some(format!("{token}: {ENDED_WITHOUT_POSTING}")))
-        })
     }
 
     async fn host_busy(&self, platform: Platform) -> Vec<String> {
@@ -1560,6 +1518,13 @@ impl Hub {
     /// Samples the device's health after an attempt posted and journals it with that attempt. A degraded device is
     /// restarted before the next spec on it; a busy host is waited out before the next spec instead.
     pub async fn check_health(&self, spec: &str, platform: Platform, attempt: u32) {
+        self.sample_health(spec, platform, attempt).await;
+        // The platform takes its next spec only now: the reading may have called for a restart first.
+        self.sampling().remove(&platform);
+        self.wake.notify_waiters();
+    }
+
+    async fn sample_health(&self, spec: &str, platform: Platform, attempt: u32) {
         if self.without_devices.contains(&platform) {
             return;
         }
@@ -1712,21 +1677,101 @@ impl Hub {
     /// the server's own, then the build is logged and the listed rows queued. A native build takes minutes, and a hook
     /// run inside the tool call died with the call when the client's session dropped (SA-922). The call returns as
     /// soon as the install starts, and the journal says how it ended: `build-installed` or `install-failed`.
+    ///
+    /// An install only starts between specs, and the server starts the next spec the moment one is filed, so a
+    /// platform that's busy takes the install as queued (SA-1058, Aled 2026-11-25): nothing new starts there, and the
+    /// install starts by itself once what's running has posted and been reviewed. Before, the coordinator had to pause
+    /// the run and call again until it was accepted.
     pub async fn install_build(
         self: &Arc<Self>,
         platform: Platform,
         reruns: Vec<Rerun>,
     ) -> Result<serde_json::Value> {
+        if self.installing().contains(&platform) {
+            anyhow::bail!("{platform} is already installing a build");
+        }
+
+        // Taken before the platform is asked whether it's busy, so two calls at once can't both queue one.
+        if !self.install_queued().insert(platform) {
+            anyhow::bail!(
+                "{platform} already has an install queued; it starts once its spec is settled"
+            );
+        }
+
+        let ends = format!(
+            "its end comes as an event: `build ... installed on {platform}` or `install failed on {platform}`"
+        );
+        let busy = match self.start_install(platform, &reruns) {
+            Ok(Some(busy)) => busy,
+            started => {
+                self.install_queued().remove(&platform);
+                started?;
+                return Ok(serde_json::json!({
+                    "installing": platform,
+                    "result": format!("the install runs on the server and {ends}"),
+                }));
+            }
+        };
+
+        let hub = self.clone();
+        tokio::spawn(async move {
+            let mut events = hub.events.subscribe();
+            loop {
+                tokio::select! {
+                    _ = hub.stop.cancelled() => break,
+                    _ = events.recv() => {}
+                    _ = tokio::time::sleep(INSTALL_QUEUE_POLL) => {}
+                }
+
+                match hub.start_install(platform, &reruns) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    // The run can't take it any more (it finished meanwhile): said as a failed install, which holds
+                    // nothing new and tells the coordinator.
+                    Err(e) => {
+                        let reason = format!("the queued install couldn't start: {e:#}");
+                        let _ = hub.with_run(|run, now| run.install_failed(now, platform, &reason));
+                        break;
+                    }
+                }
+            }
+
+            hub.install_queued().remove(&platform);
+            hub.wake.notify_waiters();
+        });
+        Ok(serde_json::json!({
+            "queued": platform,
+            "result": format!(
+                "{busy}, so the install is queued: nothing new starts on {platform}, the install starts by itself once that's settled, and {ends}"
+            ),
+        }))
+    }
+
+    fn install_queued(&self) -> std::sync::MutexGuard<'_, std::collections::HashSet<Platform>> {
+        self.install_queued
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Starts `platform`'s install on a task of the server's own if the platform is between specs. `Ok(Some(why))`
+    /// when it isn't yet: a dispatch is resetting it, or a spec there is running or waits for review.
+    fn start_install(
+        self: &Arc<Self>,
+        platform: Platform,
+        reruns: &[Rerun],
+    ) -> Result<Option<String>> {
         {
             // Under the dispatch claim's lock: a dispatch resetting its attempt here has no running row yet.
             let starting = self.starting();
+
             if starting.contains(&platform) {
-                anyhow::bail!(
-                    "install between specs: {platform} is starting an attempt; install once it's running and filed"
-                );
+                return Ok(Some(format!("{platform} is starting an attempt")));
             }
 
-            self.with_run(|run, _| run.between_specs(platform))?;
+            if let Err(busy) = self.with_run(|run, _| run.between_specs(platform)) {
+                return Ok(Some(format!("{busy:#}")));
+            }
+
             if !self.installing().insert(platform) {
                 anyhow::bail!("{platform} is already installing a build");
             }
@@ -1737,6 +1782,7 @@ impl Hub {
             return Err(e);
         }
 
+        let reruns = reruns.to_vec();
         let hub = self.clone();
         tokio::spawn(async move {
             let installed = match hub.install(platform).await {
@@ -1750,14 +1796,9 @@ impl Hub {
             }
 
             hub.installing().remove(&platform);
+            hub.wake.notify_waiters();
         });
-
-        Ok(serde_json::json!({
-            "installing": platform,
-            "result": format!(
-                "the install runs on the server and its end comes as an event: `build ... installed on {platform}` or `install failed on {platform}`"
-            ),
-        }))
+        Ok(None)
     }
 
     /// Logs the build the build-identity hook reads on `platform` with the listed reruns.
@@ -2092,12 +2133,8 @@ pub async fn start(hub: Arc<Hub>, port: u16) -> Result<Server> {
         .route("/events", get(events_stream))
         .route("/ready/{platform}", get(ready))
         .route("/remote", post(remote_route))
-        .route("/tokens", post(tokens))
-        .route("/ended", post(ended))
-        .route("/dispatch", post(dispatch_route))
         .route("/drive", post(drive_route))
         .route("/summary", get(summary))
-        .route("/next", get(next))
         .route("/", get(runs_index))
         .route(&format!("/{key}"), get(to_page))
         .route(&format!("/{key}/"), get(page))
@@ -2349,7 +2386,7 @@ struct EventsQuery {
 }
 
 /// Newline-delimited journal entries after `after`, then each new one as it's written. Replaying from a cursor
-/// means a coordinator whose Monitor lapsed misses nothing.
+/// means a reader that comes back later (`soundcheck attention`) misses nothing.
 /// Tool calls are POSTs to `/mcp`; the live page's polling isn't anyone using the run.
 async fn note_call(State(hub): State<Arc<Hub>>, request: Request, next: Next) -> Response {
     let path = request.uri().path();
@@ -2404,34 +2441,6 @@ async fn step_down(State(hub): State<Arc<Hub>>) -> Response {
 }
 
 #[derive(Deserialize)]
-struct DispatchRequest {
-    /// The tester agent's prompt as the coordinator wrote it, which may name a row.
-    #[serde(default)]
-    prompt: String,
-    session: Option<String>,
-}
-
-/// The plugin's PreToolUse hook starts a tester through this: the attempt's details, or 409 with the refusal.
-async fn dispatch_route(
-    State(hub): State<Arc<Hub>>,
-    axum::Json(d): axum::Json<DispatchRequest>,
-) -> Response {
-    if let Some(session) = &d.session {
-        hub.add_coordinator(session);
-    }
-
-    if let Some(dispatched) = hub.take_handed_out(&d.prompt) {
-        return axum::Json(dispatched).into_response();
-    }
-
-    let (spec, platform) = hub.named_row(&d.prompt);
-    match hub.dispatch(spec.as_deref(), platform).await {
-        Ok(dispatched) => axum::Json(dispatched).into_response(),
-        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
-    }
-}
-
-#[derive(Deserialize)]
 struct RemoteRequest {
     on: bool,
 }
@@ -2474,59 +2483,8 @@ async fn drive_route(
     }
 }
 
-#[derive(Deserialize)]
-struct SummaryQuery {
-    session: Option<String>,
-}
-
-async fn summary(State(hub): State<Arc<Hub>>, Query(q): Query<SummaryQuery>) -> Response {
-    axum::Json(hub.summary(q.session.as_deref())).into_response()
-}
-
-/// The row a dispatch would start now, without starting it, else 409 with why none can.
-async fn next(State(hub): State<Arc<Hub>>) -> Response {
-    match hub.pick(None, None).await {
-        Ok((spec, platform)) => {
-            axum::Json(serde_json::json!({ "spec": spec, "platform": platform })).into_response()
-        }
-        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-struct EndedRequest {
-    token: String,
-}
-
-/// A tester agent has stopped: the plugin's SubagentStop hook says so after posting its tokens.
-async fn ended(State(hub): State<Arc<Hub>>, axum::Json(e): axum::Json<EndedRequest>) -> Response {
-    match hub.tester_ended(&e.token) {
-        Ok(said) => (StatusCode::OK, said.map(|s| s + "\n").unwrap_or_default()).into_response(),
-        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
-    }
-}
-
-async fn tokens(
-    State(hub): State<Arc<Hub>>,
-    axum::Json(t): axum::Json<crate::tester_usage::TesterTokens>,
-) -> Response {
-    let recorded = hub.with_run(|run, now| {
-        run.tokens(now, &t.token, t.tokens, Some(t.spent))?;
-        // The last tester's tokens land after its result has finished the run and exported it.
-        if run.state().finished {
-            let _ = hub.export(run, now);
-        }
-
-        Ok(())
-    });
-    match recorded {
-        Ok(()) => (
-            StatusCode::OK,
-            format!("{} used {} tokens\n", t.token, t.tokens),
-        )
-            .into_response(),
-        Err(e) => (StatusCode::CONFLICT, format!("{e:#}\n")).into_response(),
-    }
+async fn summary(State(hub): State<Arc<Hub>>) -> Response {
+    axum::Json(hub.summary()).into_response()
 }
 
 /// 200 when the platform can take a spec, else 409 with why it's held; `soundcheck ready` asks this.

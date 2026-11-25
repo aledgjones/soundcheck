@@ -59,11 +59,13 @@ enum Command {
         #[arg(default_value = ".")]
         suite: PathBuf,
     },
-    /// What each tester attempt in a run cost: tokens, calls by tool and working time, with totals.
+    /// What a run cost: each tester attempt's tokens, calls by tool and working time, each reviewer's tokens and
+    /// time, and the whole run's total.
     Usage {
         /// The run's folder.
         run: PathBuf,
-        /// Another run's folder: pairs each spec on each platform with its last attempt there, and shows the change.
+        /// Another run's folder: pairs each spec on each platform with its last attempt there and shows the change,
+        /// then the two runs' totals, reviewers included.
         #[arg(long)]
         compare: Option<PathBuf>,
         /// Add usage from a TSV (token, tokens, calls, duration_ms) to a run recorded before soundcheck kept it.
@@ -86,7 +88,14 @@ enum Command {
         #[arg(long)]
         remote: bool,
     },
-    /// Print one line per run event, replaying from a cursor: run it under a Monitor.
+    /// Wait until the run needs its coordinator, say why and exit: the run paused itself, a claim no reviewer
+    /// settled, an install ending, a restart that failed, every row filed, the server stopping. Run it in the
+    /// background and again after each exit: it keeps its own place in the run's folder, so nothing is missed.
+    Attention {
+        /// The run's folder (holding server.json).
+        run: PathBuf,
+    },
+    /// Print one line per run event, replaying from a cursor: for looking into a run, not for waiting on one.
     Events {
         /// The run's folder (holding server.json).
         run: PathBuf,
@@ -121,7 +130,7 @@ enum Command {
     /// The plugin's hooks, which Claude Code runs with the hook's input on stdin.
     #[command(hide = true)]
     Hook {
-        #[arg(value_parser = ["subagent-stop", "stop", "session-start", "pre-tool-use", "post-tool-use"])]
+        #[arg(value_parser = ["session-start"])]
         event: String,
         #[arg(long, default_value_t = 7357)]
         port: u16,
@@ -194,9 +203,13 @@ struct RunArgs {
     #[arg(long)]
     uncommitted: bool,
     /// Also open the live page through an ngrok tunnel, behind Google sign-in for suite.yaml's `remote.allow`.
-    /// Read-only: the tunnel passes only the page's GETs, never `/mcp` or dispatch.
+    /// Read-only: the tunnel passes only the page's GETs, never `/mcp`.
     #[arg(long)]
     remote: bool,
+    /// What the run is testing, in a sentence or two (the release's changes, the fix being checked): every reviewer
+    /// is told, so it judges a claim knowing what changed. Kept with the run; given again on `--open`, it replaces it.
+    #[arg(long)]
+    about: Option<String>,
 }
 
 fn main() -> ExitCode {
@@ -204,6 +217,7 @@ fn main() -> ExitCode {
         Command::Lint { suite } => return lint_command(&suite),
         Command::Run(args) => run_command(args),
         Command::Events { run, after, once } => events_command(&run, after, once),
+        Command::Attention { run } => attention_command(&run),
         Command::Ready {
             run,
             platform,
@@ -355,6 +369,7 @@ fn run_command(args: RunArgs) -> Result<()> {
         install,
         uncommitted,
         remote,
+        about,
     } = args;
     let (root, scope, open_page) = (root.as_path(), scope.as_slice(), !no_open);
     let suite = suite::load(root);
@@ -529,6 +544,14 @@ fn run_command(args: RunArgs) -> Result<()> {
         run_dir.join(serve::SUMMARY_FILE),
         soundcheck::report::run_summary(&run, &label, uncommitted).to_string(),
     )?;
+    // What the run is testing stays with it, so a run opened again tells its reviewers the same.
+    let about_file = run_dir.join(soundcheck::run::saved::ABOUT_FILE);
+
+    if let Some(about) = &about {
+        std::fs::write(&about_file, about)?;
+    }
+
+    let about = std::fs::read_to_string(&about_file).ok();
     // The chrome platform the run serves its site for, with that site's command and the routes it may go through.
     let served = config.served();
     let web_routes = served
@@ -550,6 +573,7 @@ fn run_command(args: RunArgs) -> Result<()> {
             only.uncommitted = uncommitted;
             only.start_ms = first_call_seconds * 1000;
             only.prepare_timeout = std::time::Duration::from_secs(prepare_timeout);
+            only.about = about;
         }
         if let Some(new) = relabel_to {
             hub.with_run(|run, now| {
@@ -576,7 +600,11 @@ fn run_command(args: RunArgs) -> Result<()> {
             run_dir.join("server.json"),
             serde_json::to_string_pretty(&info)?,
         )?;
-        println!("the live page is at {url}/{key}/ while the run starts");
+        // The id is said before the checks run, so a start that fails can still be opened again.
+        let run_id = soundcheck::run::saved::read_info(&run_dir)
+            .map(|info| info.id)
+            .unwrap_or_default();
+        println!("run {run_id}; the live page is at {url}/{key}/ while the run starts");
         // However the run ends, the web app and the remote tunnel stop with it.
         let _services = StopsServices(hub.clone());
         // The hub holds the tunnel, so `soundcheck remote` can close it or open one later.
@@ -600,6 +628,10 @@ fn run_command(args: RunArgs) -> Result<()> {
             hub.start_passed(check);
         };
         let preflight = async {
+        // The server launches every tester and reviewer itself, so Claude Code must be there before anything is built.
+        hub.start_step("checking Claude Code can launch the testers");
+        let claude = serve::agents::check().await?;
+        pass(format!("Claude Code launches the testers and reviewers ({claude})"));
         let records = soundcheck::stack::records_dir(&root_dir, &stack_config);
         let starting = soundcheck::stack::Live::Wait(platforms.clone());
         hub.start_step("clearing stacks earlier runs left");
@@ -663,9 +695,33 @@ fn run_command(args: RunArgs) -> Result<()> {
         // Results count only for an identified build, so a platform without one is built before anything runs.
         for &platform in &platforms {
             hub.start_step(format!("{platform}: identifying the installed build"));
-            let unknown = hub.read_build(platform).await.err();
+            let timed_out = |why: &anyhow::Error| why.chain().any(|e| e.is::<serve::hooks::TimedOut>());
+            let mut unknown = hub.read_build(platform).await.err();
+
+            // A hook that times out is more often a device that has stopped answering than a stuck hook (SA-1053:
+            // an emulator whose adb took 54 s was reported as the hook's fault). Ask the device something quick
+            // first, and restart one that doesn't answer, as a run does for a degraded device.
+            if unknown.as_ref().is_some_and(timed_out) && !hub.device_answers(platform).await {
+                println!(
+                    "{platform}: the build-identity hook timed out because the device isn't answering; restarting it"
+                );
+                hub.start_step(format!("{platform}: restarting a device that isn't answering"));
+                hub.restart_device(platform).await.with_context(|| {
+                    format!("{platform}: the device isn't answering and couldn't be restarted")
+                })?;
+                pass(format!("{platform}: the device wasn't answering and was restarted"));
+                hub.start_step(format!("{platform}: identifying the installed build"));
+                unknown = hub.read_build(platform).await.err();
+
+                if let Some(why) = unknown.as_ref().filter(|why| timed_out(why)) {
+                    bail!(
+                        "{platform}: {why:#}, on a device that was restarted because it had stopped answering; check the device, then the hook"
+                    );
+                }
+            }
+
             if let Some(why) = &unknown
-                && why.chain().any(|e| e.is::<serve::hooks::TimedOut>())
+                && timed_out(why)
             {
                 if settled {
                     bail!(
@@ -738,6 +794,7 @@ fn run_command(args: RunArgs) -> Result<()> {
                 // Said now, so whoever started the run hears at once; the page shows it until a new run takes the
                 // port, the server is stopped, or the wait runs out.
                 eprintln!("soundcheck: {why:#}");
+                eprintln!("soundcheck: once that's fixed, start run {run_id} again with --open {run_id}");
                 hub.start_failed(format!("{why:#}"));
                 drop(_stacks);
                 if remote.is_some() || open_page {
@@ -752,15 +809,16 @@ fn run_command(args: RunArgs) -> Result<()> {
                 }
                 server.shutdown.cancel();
                 let _ = server.handle.await;
-                if !resuming && never_started(&run_dir) {
-                    let _ = std::fs::remove_dir_all(&run_dir);
-                }
-
+                // The folder stays (SA-1054): the run keeps its id and its page's address, so once what stopped the
+                // start is fixed, `--open` starts it again as the same run.
                 return Err(AlreadySaid.into());
             }
         };
         let _ = hub.url.set(url.to_string());
         hub.started();
+        // From here the server runs the suite itself: it dispatches each row, launches its tester and has every
+        // claim reviewed (SA-1049, SA-1050).
+        serve::orchestrate::start(&hub);
         let id = soundcheck::run::saved::read_info(&run_dir)
             .map(|info| info.id)
             .unwrap_or_default();
@@ -983,6 +1041,121 @@ fn events_command(run_dir: &Path, after: u64, once: bool) -> Result<()> {
     })
 }
 
+/// Where `soundcheck attention` keeps the last journal entry it has read, in the run's folder.
+const ATTENTION_CURSOR: &str = "attention.cursor";
+/// How long `attention` goes on reading after its first line, so things that happen together are told together.
+const ATTENTION_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Waits for the journal to say something the coordinator must act on, prints it and exits (SA-1051). Its place in
+/// the journal is saved as it exits, so the next call carries on from there and a call that's killed loses nothing.
+fn attention_command(run_dir: &Path) -> Result<()> {
+    use serve::events::Attention;
+    use soundcheck::run::journal::Entry;
+
+    let cursor_file = run_dir.join(ATTENTION_CURSOR);
+    let cursor: u64 = std::fs::read_to_string(&cursor_file)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+    let mut attention = Attention::default();
+    // What was already read still counts: an install that started before the cursor ends after it.
+    let journal = std::fs::read_to_string(run_dir.join(soundcheck::run::saved::JOURNAL_FILE))
+        .unwrap_or_default();
+    for line in journal.lines().filter(|l| !l.trim().is_empty()) {
+        let entry: Entry = serde_json::from_str(line)?;
+
+        if entry.seq <= cursor {
+            attention.of(&entry);
+        }
+    }
+
+    let url = server_url(run_dir)?;
+    let runtime = tokio::runtime::Runtime::new()?;
+    let (last, lines) = runtime.block_on(async {
+        let client = reqwest::Client::new();
+        // server.json outlives its server, and another run may hold the port by now: its events aren't this run's.
+        let serving: Option<serve::Summary> = match client.get(format!("{url}/summary")).send().await {
+            Ok(response) => response.json().await.ok(),
+            Err(_) => None,
+        };
+        let here = std::fs::canonicalize(run_dir).unwrap_or_else(|_| run_dir.to_path_buf());
+
+        if serving.is_none_or(|s| s.folder != here) {
+            bail!(
+                "this run's server isn't up; open the run again with `soundcheck run <suite> --open <id>`"
+            );
+        }
+
+        let mut response = client
+            .get(format!("{url}/events?after={cursor}"))
+            .send()
+            .await
+            .context("the run's server isn't up; open the run again with `soundcheck run <suite> --open <id>`")?
+            .error_for_status()?;
+        let mut pending = Vec::new();
+        let mut lines: Vec<String> = Vec::new();
+        let mut last = cursor;
+        loop {
+            // Once there's something to say, a short quiet ends the wait; until then it waits as long as it takes.
+            let chunk = if lines.is_empty() {
+                response.chunk().await
+            } else {
+                match tokio::time::timeout(ATTENTION_SETTLE, response.chunk()).await {
+                    Ok(chunk) => chunk,
+                    Err(_) => break,
+                }
+            };
+            // A stopped server ends the stream mid-chunk, which is how a run ends, not an error.
+            let Ok(Some(chunk)) = chunk else {
+                lines.push("the run's server stopped".to_string());
+                break;
+            };
+            pending.extend_from_slice(&chunk);
+            let mut asked = false;
+            while let Some(end) = pending.iter().position(|&b| b == b'\n') {
+                let line: Vec<u8> = pending.drain(..=end).collect();
+                let entry: Entry = serde_json::from_slice(&line)?;
+                last = entry.seq;
+
+                if let Some(line) = attention.of(&entry) {
+                    lines.push(line);
+                }
+
+                asked |= Attention::may_end_the_work(&entry);
+            }
+
+            if !asked {
+                continue;
+            }
+
+            let summary: Option<serve::Summary> = match client.get(format!("{url}/summary")).send().await {
+                Ok(response) => response.json().await.ok(),
+                Err(_) => None,
+            };
+
+            if let Some(s) = summary
+                && !s.finished
+                && s.left == 0
+                && s.side_finds == 0
+            {
+                lines.push(format!(
+                    "every row is filed: verdict {}; go through the findings with the person",
+                    s.verdict
+                ));
+                // Nothing more can happen until the coordinator acts, so there's no quiet to wait out.
+                break;
+            }
+        }
+        anyhow::Ok((last, lines))
+    })?;
+    std::fs::write(&cursor_file, last.to_string())?;
+    for line in lines {
+        println!("{line}");
+    }
+
+    Ok(())
+}
+
 /// Frees the port before anything slow happens: a finished run nobody is using, or a reports server, steps down;
 /// anything else refuses the run with what holds the port.
 fn take_port(port: u16) -> Result<Option<String>> {
@@ -1025,7 +1198,7 @@ fn take_port(port: u16) -> Result<Option<String>> {
     bail!("{text}, but port {port} is still in use after 10 s")
 }
 
-fn read_attempts(run_dir: &Path) -> Result<Vec<soundcheck::run::usage::AttemptUsage>> {
+fn read_journal(run_dir: &Path) -> Result<Vec<soundcheck::run::journal::Entry>> {
     let path = run_dir.join(soundcheck::run::saved::JOURNAL_FILE);
     let journal = std::fs::read_to_string(&path)
         .with_context(|| format!("no {}: is this a run folder?", path.display()))?;
@@ -1034,7 +1207,137 @@ fn read_attempts(run_dir: &Path) -> Result<Vec<soundcheck::run::usage::AttemptUs
         entries.push(serde_json::from_str(line)?);
     }
 
-    Ok(soundcheck::run::usage::attempts(&entries))
+    Ok(entries)
+}
+
+/// What a run's agents cost in all, which is what two runs are compared on: every token its testers and its
+/// reviewers read or wrote, cache included, and how long they worked.
+#[derive(Default)]
+struct WholeRun {
+    testers: u64,
+    reviewers: u64,
+    reviews: u64,
+    tester_ms: u64,
+    reviewer_ms: u64,
+}
+
+impl WholeRun {
+    fn of(
+        attempts: &[soundcheck::run::usage::AttemptUsage],
+        reviews: &[soundcheck::run::usage::ReviewUsage],
+    ) -> WholeRun {
+        use soundcheck::run::usage::all;
+
+        WholeRun {
+            testers: attempts
+                .iter()
+                .filter_map(|a| a.spent.as_ref().map(all))
+                .sum(),
+            reviewers: reviews
+                .iter()
+                .filter_map(|r| r.spent.as_ref().map(all))
+                .sum(),
+            reviews: reviews.len() as u64,
+            tester_ms: attempts.iter().filter_map(|a| a.duration_ms).sum(),
+            reviewer_ms: reviews.iter().filter_map(|r| r.duration_ms).sum(),
+        }
+    }
+
+    fn spent(&self) -> u64 {
+        self.testers + self.reviewers
+    }
+}
+
+/// Each reviewer the server launched, then their total.
+fn print_reviews(reviews: &[soundcheck::run::usage::ReviewUsage]) {
+    if reviews.is_empty() {
+        return;
+    }
+
+    let rows: Vec<String> = reviews
+        .iter()
+        .map(|r| format!("{}@{}", r.spec, r.platform))
+        .collect();
+    let width = rows.iter().map(String::len).max().unwrap_or(0).max(8);
+    println!();
+    println!(
+        "{:width$}  {:>7}  {:>10}  {:>6}",
+        "reviewer", "tokens", "cache read", "time"
+    );
+    for (row, r) in rows.iter().zip(reviews) {
+        println!(
+            "{row:width$}  {:>7}  {:>10}  {:>6}{}",
+            opt(r.tokens),
+            opt(r.spent.map(|s| s.cache_read)),
+            duration(r.duration_ms),
+            if r.unsettled { "  left unsettled" } else { "" }
+        );
+    }
+
+    let n = reviews.len() as u64;
+    let tokens: u64 = reviews.iter().filter_map(|r| r.tokens).sum();
+    let ms: u64 = reviews.iter().filter_map(|r| r.duration_ms).sum();
+    println!(
+        "{n} reviewers: {tokens} tokens, {} (average {} tokens, {})",
+        duration(Some(ms)),
+        tokens / n,
+        duration(Some(ms / n))
+    );
+}
+
+fn print_whole_run(whole: &WholeRun) {
+    println!();
+    println!(
+        "whole run: {} tokens spent, cache included (testers {}, reviewers {}); {} of agent time (testers {}, reviewers {})",
+        whole.spent(),
+        whole.testers,
+        whole.reviewers,
+        duration(Some(whole.tester_ms + whole.reviewer_ms)),
+        duration(Some(whole.tester_ms)),
+        duration(Some(whole.reviewer_ms))
+    );
+}
+
+/// Two runs' totals side by side: unlike the pairs above, this counts every attempt and every reviewer in each run.
+fn print_whole_comparison(before: &WholeRun, after: &WholeRun) {
+    let change = |b: u64, a: u64| {
+        if b == 0 {
+            return format!("{b} → {a}");
+        }
+
+        format!(
+            "{b} → {a} ({:+}%)",
+            (a as f64 / b as f64 * 100.0 - 100.0).round()
+        )
+    };
+    println!();
+    println!("whole run, every attempt and reviewer:");
+    println!(
+        "  tokens spent, cache included: {}",
+        change(before.spent(), after.spent())
+    );
+    println!("    testers: {}", change(before.testers, after.testers));
+    println!(
+        "    reviewers: {} ({} → {} reviews)",
+        change(before.reviewers, after.reviewers),
+        before.reviews,
+        after.reviews
+    );
+    println!(
+        "  agent time: {} → {} (testers {} → {}, reviewers {} → {})",
+        duration(Some(before.tester_ms + before.reviewer_ms)),
+        duration(Some(after.tester_ms + after.reviewer_ms)),
+        duration(Some(before.tester_ms)),
+        duration(Some(after.tester_ms)),
+        duration(Some(before.reviewer_ms)),
+        duration(Some(after.reviewer_ms))
+    );
+
+    if before.reviews == 0 || after.reviews == 0 {
+        println!(
+            "  a run from before 0.4 was reviewed by its coordinator, whose tokens no journal holds, so its reviewers read 0"
+        );
+    }
 }
 
 fn duration(ms: Option<u64>) -> String {
@@ -1049,43 +1352,43 @@ fn opt(n: Option<u64>) -> String {
 }
 
 /// Always succeeds: a hook that fails would show in the person's session, and a missed hook costs nothing the run
-/// can't recover. SubagentStop's message goes to stderr; the others print their JSON reply, if any, on stdout.
+/// can't recover. It prints its JSON reply, if any, on stdout.
 fn hook_command(event: &str, port: u16) -> ExitCode {
-    use soundcheck::{plugin_hooks, tester_usage};
-    let mut stdin = String::new();
-    let result = std::io::Read::read_to_string(&mut std::io::stdin(), &mut stdin)
+    let result = tokio::runtime::Runtime::new()
         .map_err(anyhow::Error::from)
-        .and_then(|_| tokio::runtime::Runtime::new().map_err(anyhow::Error::from))
-        .and_then(|rt| {
-            rt.block_on(async {
-                match event {
-                    "subagent-stop" => tester_usage::subagent_stop(&stdin, port).await,
-                    "stop" => plugin_hooks::stop(&stdin, port).await,
-                    "session-start" => plugin_hooks::session_start(port).await,
-                    "post-tool-use" => plugin_hooks::post_tool_use(&stdin, port).await,
-                    _ => plugin_hooks::pre_tool_use(&stdin, port).await,
-                }
-            })
-        });
-    match (event, result) {
-        ("subagent-stop", Ok(Some(line))) => eprintln!("soundcheck: {line}"),
-        (_, Ok(Some(reply))) => println!("{reply}"),
-        (_, Ok(None)) => {}
-        (_, Err(e)) => eprintln!("soundcheck: {event} hook: {e:#}"),
+        .and_then(|rt| rt.block_on(soundcheck::plugin_hooks::session_start(port)));
+    match result {
+        Ok(Some(reply)) => println!("{reply}"),
+        Ok(None) => {}
+        Err(e) => eprintln!("soundcheck: {event} hook: {e:#}"),
     }
 
     ExitCode::SUCCESS
 }
 
 fn usage_command(run_dir: &Path, compare: Option<&Path>) -> Result<()> {
-    let attempts = read_attempts(run_dir)?;
+    use soundcheck::run::usage;
+
+    let entries = read_journal(run_dir)?;
+    let (attempts, reviews) = (usage::attempts(&entries), usage::reviews(&entries));
     if attempts.is_empty() {
         bail!("{} has no usage recorded", run_dir.display());
     }
 
+    let whole = WholeRun::of(&attempts, &reviews);
     match compare {
-        None => print_usage(&attempts),
-        Some(other) => print_comparison(&read_attempts(other)?, &attempts),
+        None => {
+            print_usage(&attempts);
+            print_reviews(&reviews);
+            print_whole_run(&whole);
+        }
+        Some(other) => {
+            let before = read_journal(other)?;
+            let (attempts_before, reviews_before) =
+                (usage::attempts(&before), usage::reviews(&before));
+            print_comparison(&attempts_before, &attempts);
+            print_whole_comparison(&WholeRun::of(&attempts_before, &reviews_before), &whole);
+        }
     }
 
     Ok(())
@@ -1395,12 +1698,6 @@ fn ready_command(run_dir: &Path, platform: &str, wait: bool) -> Result<()> {
 
 /// How long the page of a run that couldn't start stays up to show why, unless a new run takes the port first.
 const FAILED_START_SHOWN_MS: u64 = 10 * 60_000;
-
-/// A run whose journal is still empty: nothing was tested, so a failed start leaves nothing worth keeping.
-fn never_started(run_dir: &std::path::Path) -> bool {
-    std::fs::metadata(run_dir.join(soundcheck::run::saved::JOURNAL_FILE))
-        .map_or(true, |m| m.len() == 0)
-}
 
 /// An error already printed where it happened: the process only exits with failure.
 #[derive(Debug)]

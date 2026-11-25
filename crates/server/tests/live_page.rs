@@ -34,19 +34,21 @@ async fn call(
     serde_json::from_str(&text).unwrap()
 }
 
-/// A call the server refuses: its text.
-async fn refused(
-    client: &RunningService<RoleClient, ClientConfig>,
-    tool: &'static str,
-    args: Value,
-) -> String {
-    let mut params = CallToolRequestParams::new(tool);
-    if let Value::Object(map) = args {
-        params = params.with_arguments(map);
-    }
-    let result = client.call_tool(params).await.unwrap();
-    assert_eq!(result.is_error, Some(true), "{tool} should be refused");
-    result.content[0].as_text().unwrap().text.clone()
+/// Starts a row's next attempt as the server's own lanes do (nothing here starts them): the attempt, or the reason
+/// it was refused.
+async fn try_dispatch(hub: &std::sync::Arc<Hub>, args: &Value) -> Result<Value, String> {
+    let platform = args["platform"]
+        .as_str()
+        .map(|name| hub.platform(name).unwrap());
+    hub.dispatch(args["spec"].as_str(), platform)
+        .await
+        .map(|dispatched| serde_json::to_value(dispatched).unwrap())
+        .map_err(|e| format!("{e:#}"))
+}
+
+/// [`try_dispatch`], for a dispatch that must start.
+async fn dispatch(hub: &std::sync::Arc<Hub>, args: Value) -> Value {
+    try_dispatch(hub, &args).await.unwrap()
 }
 
 fn m(target: &str) -> Matcher {
@@ -78,19 +80,15 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
         .join("run");
     std::fs::create_dir_all(&dir).unwrap();
     let run = Run::open(plan, &dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(
-        Hub::without_devices(
-            suite,
-            run,
-            "v9.9.9 · live".into(),
-            dir,
-            120_000,
-            vec![ANDROID, IOS],
-        ),
-        0,
-    )
-    .await
-    .unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "v9.9.9 · live".into(),
+        dir,
+        120_000,
+        vec![ANDROID, IOS],
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
 
     let web = match Chrome::launch(&format!("{url}/run/"), 1200, 900, false).await {
@@ -109,9 +107,8 @@ async fn the_live_page_follows_the_run_in_a_real_browser() {
         StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")),
     );
     let client = ClientConfig::default().serve(transport).await.unwrap();
-    let dispatched = call(
-        &client,
-        "dispatch",
+    let dispatched = dispatch(
+        &hub,
         json!({ "spec": "annotations/001-draw", "platform": "android" }),
     )
     .await;
@@ -241,19 +238,15 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(
-        Hub::without_devices(
-            suite,
-            run,
-            "web".into(),
-            run_dir.clone(),
-            120_000,
-            vec![ANDROID, IOS],
-        ),
-        0,
-    )
-    .await
-    .unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "web".into(),
+        run_dir.clone(),
+        120_000,
+        vec![ANDROID, IOS],
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
     let url = format!("http://{}", server.addr);
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(format!("{url}/mcp")),
@@ -278,9 +271,8 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
         );
     }
 
-    let web = call(
-        &client,
-        "dispatch",
+    let web = dispatch(
+        &hub,
         json!({ "spec": "annotations/001-draw", "platform": "web" }),
     )
     .await;
@@ -401,9 +393,8 @@ async fn a_tester_drives_a_web_page_through_soundcheck() {
     );
 
     // This server leaves Android's device alone: it says so rather than pretending.
-    let android = call(
-        &client,
-        "dispatch",
+    let android = dispatch(
+        &hub,
         json!({ "spec": "annotations/002-back", "platform": "android" }),
     )
     .await;
@@ -482,19 +473,15 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
     let run_dir = base.join("reports/run");
     std::fs::create_dir_all(&run_dir).unwrap();
     let run = Run::open(plan, &run_dir.join("journal.jsonl"), serve::now_ms()).unwrap();
-    let server = serve::start(
-        Hub::without_devices(
-            suite,
-            run,
-            "reset".into(),
-            run_dir,
-            120_000,
-            vec![ANDROID, IOS],
-        ),
-        0,
-    )
-    .await
-    .unwrap();
+    let hub = Hub::without_devices(
+        suite,
+        run,
+        "reset".into(),
+        run_dir,
+        120_000,
+        vec![ANDROID, IOS],
+    );
+    let server = serve::start(hub.clone(), 0).await.unwrap();
     let transport = StreamableHttpClientTransport::from_config(
         StreamableHttpClientTransportConfig::with_uri(format!("http://{}/mcp", server.addr)),
     );
@@ -502,7 +489,7 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
 
     let back = json!({ "spec": "annotations/002-back", "platform": "android" });
     // Three failed resets restart the device and file nothing (SA-925).
-    let restarting = refused(&client, "dispatch", back.clone()).await;
+    let restarting = try_dispatch(&hub, &back).await.unwrap_err();
     assert!(
         restarting.contains("held: restarting") && restarting.contains("database is down"),
         "{restarting}"
@@ -516,7 +503,7 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
     // Once restarted, three more fail, and only then is it filed. A held dispatch tries no reset.
     let mut text = String::new();
     for _ in 0..100 {
-        text = refused(&client, "dispatch", back.clone()).await;
+        text = try_dispatch(&hub, &back).await.unwrap_err();
         if !text.contains("held: restarting") {
             break;
         }
@@ -544,9 +531,8 @@ async fn a_reset_runs_the_prepare_steps_and_a_failing_one_files_the_spec_blocked
     assert_eq!(row["result"], "BLOCKED");
     assert_eq!(row["attempts"], 0, "a reset failure uses no attempt");
 
-    call(
-        &client,
-        "dispatch",
+    dispatch(
+        &hub,
         json!({ "spec": "annotations/001-draw", "platform": "android" }),
     )
     .await;
@@ -669,15 +655,13 @@ async fn a_killed_chrome_is_reaped_and_relaunched_before_the_next_spec() {
     let mut held = Vec::new();
     let mut dispatched = None;
     for _ in 0..200 {
-        let mut params = CallToolRequestParams::new("dispatch");
-        params = params.with_arguments(draw.as_object().unwrap().clone());
-        let result = client.call_tool(params).await.unwrap();
-        let text = result.content[0].as_text().unwrap().text.clone();
-
-        if result.is_error != Some(true) {
-            dispatched = Some(text);
-            break;
-        }
+        let text = match try_dispatch(&hub, &draw).await {
+            Ok(started) => {
+                dispatched = Some(started);
+                break;
+            }
+            Err(refused) => refused,
+        };
 
         assert!(text.contains("held: restarting"), "{text}");
         held.push(text);

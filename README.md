@@ -10,8 +10,8 @@
 
 - **Specs read like a test plan, not code.** No selectors, no page objects, no waits. A spec says what a user does and the outcomes to judge, and it keeps working when the screens are redesigned.
 - **Testers use the app the way people do.** They read the screen as a screen reader gets it, tap labelled controls, type, drag and go offline at a person's pace. A control with no label is a finding, not a flaky test.
-- **Every claim is checked.** A tester says what it saw for each outcome. A coordinator agent reviews each failure or doubt as it lands. It can uphold it, have it reproduced on a fresh attempt, send it back, or put it down to the harness. Nothing reaches the report on one agent's say-so.
-- **Runs go unattended.** Start a run, go and do something else. The live page updates as each result lands, and a degraded device is restarted between specs. A run survives a server restart and carries on from its journal.
+- **Every claim is checked.** A tester says what it saw for each outcome. A reviewer agent, fresh for each one, checks each failure or doubt as it lands. It can uphold it, have it reproduced on a fresh attempt, send it back, or put it down to the harness. Nothing reaches the report on one agent's say-so.
+- **Runs go unattended.** Start a run, go and do something else. The server starts each spec, launches its tester and has its claims reviewed by itself; the live page updates as each result lands, and a degraded device is restarted between specs. A run survives a server restart and carries on from its journal.
 - **It ends in decisions, not logs.** Problems come with their evidence and a plain-words title. You triage them with the coordinator: fix, defer, dismiss or duplicate, linked to your tracker.
 
 ## Specs in plain words
@@ -45,7 +45,7 @@ Every spec starts on a fresh relaunch, then its `prepare` steps (the project's o
 A folder of specs, one subfolder per feature, and a `suite.yaml` that says how each platform gets the app running:
 
 ```yaml
-soundcheck: "0.3"
+soundcheck: "0.4"
 platforms:
   android:
     driver: android
@@ -73,13 +73,13 @@ tickets:
   url: https://example.atlassian.net/browse/{id}
 ```
 
-Each platform block is the whole of how that platform runs: its device, its own hooks with the platform written into each command, and its own proxy routes, which `offline`, `network-drop` and `fault` act on. Nothing is shared from the top level. A spec's `platforms` name these blocks, and readying a spec (seeding, signing in) is its own `prepare`, never a hook. [DESIGN.md](DESIGN.md) (5.2, 5.3) has every key and hook; [plugin/MIGRATIONS.md](plugin/MIGRATIONS.md) moves a 0.2 suite across, which 0.3 refuses by name.
+Each platform block is the whole of how that platform runs: its device, its own hooks with the platform written into each command, and its own proxy routes, which `offline`, `network-drop` and `fault` act on. Nothing is shared from the top level. A spec's `platforms` name these blocks, and readying a spec (seeding, signing in) is its own `prepare`, never a hook. An optional `_suite.md` beside `suite.yaml` holds what every tester needs to know whatever its spec (the test accounts' names, say); it goes into every tester's brief. [DESIGN.md](DESIGN.md) (5.2, 5.3) has every key and hook; [plugin/MIGRATIONS.md](plugin/MIGRATIONS.md) moves a 0.2 suite across, which 0.3 refuses by name.
 
 ## Every failure comes with its evidence
 
 ![A failure on Android: the outcome, what was expected and what happened, two screenshots, and the note that it reproduced](docs/images/failure.png)
 
-The tester's own words, the screenshots it took and the coordinator's call sit together. This one was seen once, sent back to be reproduced on a fresh attempt, and only then filed as a failure.
+The tester's own words, the screenshots it took and the reviewer's call sit together. This one was seen once, sent back to be reproduced on a fresh attempt, and only then filed as a failure.
 
 ## Triage, then a verdict
 
@@ -90,15 +90,18 @@ At the end the coordinator goes through the problems with you, one at a time. It
 ## How a run works
 
 ```
- you ──▶ coordinator ──▶ soundcheck server ──▶ tester agent ──▶ device
-          (Claude)         journal · live page    (one per spec)    Android · iOS · Chrome
-            ▲                      │
-            └── reviews each claim ┘
+ you ──▶ coordinator ──▶ soundcheck server ──┬──▶ tester ────────▶ device
+          (Claude)        dispatch · journal  │    (one per spec)    Android · iOS · Chrome
+             ▲            live page           └──▶ reviewer
+             │                 │                   (one per claim)
+             └── when needed ──┘
 ```
 
-- **The server** holds all state in an append-only journal and serves MCP over local HTTP, the live page and the reports. Nothing lives only in an agent's memory.
-- **The coordinator** dispatches one background tester per spec, reviews results while the next spec runs, and can pause, rerun or add specs at any point (`queue`). A fix build can be installed mid-run, and the rows it could affect rerun on it.
-- **Testers** fetch their brief from the server and drive the device through soundcheck's tools: `see`, `tap`, `fill`, `touch` (one finger along a path), `swipe`, `hold`, `offline`, `network-drop`, `fault`, `preview-compare`, `match` and more. They post one result with a judgment per outcome.
+- **The server** runs the suite. It starts each spec on each platform, launches its tester, files clean passes, launches a reviewer for every claim, and waits out a busy Mac or a restarting device. It holds all state in an append-only journal and serves MCP over local HTTP, the live page and the reports. Nothing lives only in an agent's memory, and the server never makes a judgment call itself.
+- **Testers and reviewers** are headless Claude Code processes the server launches (`claude --print`), each with only its own tools and nothing of your project's settings, hooks or CLAUDE.md. They run on your Claude subscription, so `claude` must be on the PATH where the server runs.
+- **The coordinator** is the Claude session you talk to. It starts the run, then waits on `soundcheck attention <run folder>`, which exits only when the run needs it: the run paused itself, a review nobody settled, a fix build installed or failed, a device that won't restart, every row filed. It can pause, rerun or add specs at any point (`queue`), and it triages the findings with you at the end. A fix build can be installed mid-run (`install_build`), and the rows it could affect rerun on it; asked for while a spec is running or waiting for review on that platform, the install is queued and starts by itself once that spec is settled. `soundcheck usage <run folder>` lists what each attempt and each reviewer cost and the run's total, and `--compare <other run folder>` sets two runs side by side.
+- **Reviewers** each settle one row's claim and side finds from the evidence the tester posted and the server captured, knowing what the run is testing (`soundcheck run --about "<text>"`). They can read the project's files but change nothing. Their model is `models.reviewer` in suite.yaml.
+- **Testers** are launched with their brief and drive the device through soundcheck's tools: `see`, `tap`, `fill`, `touch` (one finger along a path), `swipe`, `hold`, `offline`, `network-drop`, `fault`, `preview-compare`, `match` and more. They post one result with a judgment per outcome.
 - **Drivers:**
   - **Android:** a persistent reader APK reads the screen and injects input in milliseconds.
   - **iOS:** a persistent simulator reader does the same.
@@ -120,7 +123,7 @@ soundcheck serve docs/demo/suite --open latest
 
 ## Install
 
-You need what each platform drives: Chrome for chrome platforms, the Android SDK (adb, an emulator on Android 14, API 34, or newer) for Android, Xcode for iOS. Then, in Claude Code:
+You need what each platform drives: Chrome for chrome platforms, the Android SDK (adb, an emulator on Android 14, API 34, or newer) for Android, Xcode for iOS. You also need Claude Code itself (`claude`) on the PATH of the machine that runs the server, since the server launches its testers and reviewers with it. Then, in Claude Code:
 
 ```
 /plugin marketplace add aledgjones/soundcheck
@@ -149,15 +152,15 @@ Bump the version in `Cargo.toml` and `plugin/.claude-plugin/plugin.json` togethe
 
 ## Use
 
-1. **Set a project up** with the plugin's `setup` skill. It writes `suite.yaml`, hook stubs, a draft regression skill for the project, and the permission rules that stop background testers and soundcheck's commands prompting.
+1. **Set a project up** with the plugin's `setup` skill. It writes `suite.yaml`, hook stubs, a draft regression skill for the project, and the permission rules that stop the coordinator's soundcheck tools and commands prompting. (Testers and reviewers are given their tools when the server launches them, so they never prompt.)
 2. **Write specs** with `create-test`, then check them with `soundcheck lint <suite>`.
-3. **Run:** the project's regression skill hands a scope to the plugin's `run` skill. That skill starts the server (`soundcheck run <suite> --scope <features or specs> --label "v1.2.3 · candidate"`), which opens the live page and serves MCP at `http://127.0.0.1:7357/mcp`. The plugin reaches it through `soundcheck mcp`, a stdio bridge, so a Claude Code session started before the server needs no reconnect. To try specs on code not yet committed, add `--uncommitted`: every project hook gets `SOUNDCHECK_UNCOMMITTED=1`, so the build-identity hook may accept the build, and the run is marked a trial, not a regression result, and files no tickets.
+3. **Run:** the project's regression skill hands a scope to the plugin's `run` skill. That skill starts the server (`soundcheck run <suite> --scope <features or specs> --label "v1.2.3 · candidate" --about "<what the run is testing>"`), which opens the live page, serves MCP at `http://127.0.0.1:7357/mcp` and, once its checks pass, runs the suite by itself. `--about` is a sentence or two for the reviewers (the release's changes, the fix being checked). The plugin reaches the server through `soundcheck mcp`, a stdio bridge, so a Claude Code session started before the server needs no reconnect. The skill then runs `soundcheck attention <run folder>` in the background: it waits until the run needs the coordinator, prints why and exits, and running it again misses nothing. `soundcheck events <run folder> --once` prints a run's story so far, and `soundcheck ready <run folder> <platform>` says why a platform is held. To try specs on code not yet committed, add `--uncommitted`: every project hook gets `SOUNDCHECK_UNCOMMITTED=1`, so the build-identity hook may accept the build, and the run is marked a trial, not a regression result, and files no tickets.
 
 To look at runs without one going, `soundcheck serve <suite> --open latest` opens the newest run's page, and the list of every run is at its root; nothing needs exporting first. An export (`report.html`, screenshots embedded) is for sharing.
 
 Outside a run, `soundcheck drive <android|ios> <command>` runs one driver command (`see`, `tap`, `touch`, `wait`, `shot`…) from the suite folder, for exploring, reproducing a bug or setting up screenshots; the plugin's `drive` skill tells Claude how. `soundcheck drive <platform> network offline|online` and `network-drop <seconds>` take the app's network away through that platform's proxy (its `proxy` routes in `suite.yaml`: each route's `upstream` is a local port or a remote URL such as `https://api.revenuecat.com`, which the proxy reaches over TLS), which runs detached once started; `soundcheck proxy status|stop` manage it.
 
-Runs are written beside the suite in `reports/<run>/`: the journal, a summary, evidence, and `report.html` once the run finishes. `/runs` on the server lists every run. A start that fails before testing anything (a check that doesn't pass, a build that won't install) shows why on the page, then leaves no run behind.
+Runs are written beside the suite in `reports/<run>/`: the journal, a summary, evidence, each tester's and reviewer's whole conversation (`agents/`), and `report.html` once the run finishes. `/runs` on the server lists every run. A start that fails before testing anything (a check that doesn't pass, a build that won't install) shows why on the page and keeps its run: its id is printed before the checks, and `--open <id>` starts it again once the cause is fixed.
 
 ## Reference
 
@@ -167,12 +170,12 @@ What every key does. The reasons behind them are in [DESIGN.md](DESIGN.md) (5.2 
 
 | Key          | Required | What it does                                                                                                 |
 | ------------ | -------- | ------------------------------------------------------------------------------------------------------------ |
-| `soundcheck` | yes      | The soundcheck version the suite is written for (`"0.3"`). A suite for another minor version is refused.     |
+| `soundcheck` | yes      | The soundcheck version the suite is written for (`"0.4"`). A suite for another minor version is refused.     |
 | `platforms`  | yes      | One block per platform, named by the project (`ios`, `android`, `chrome`…). Specs use these names.           |
 | `specs`      |          | The folder holding the feature folders, relative to the suite. Default: the suite folder itself.             |
 | `fixtures`   |          | Files testers can `push` onto a device. Default: `fixtures/` in the suite folder.                            |
 | `reports`    |          | Where runs are written. Default: `reports/` beside the suite folder.                                         |
-| `models`     |          | `default`: the testers' model. Default: `sonnet`. A spec's `model` overrides it.                             |
+| `models`     |          | `default`: the testers' model (`sonnet`; a spec's `model` overrides it). `reviewer`: reviewers' (`opus`).    |
 | `parallel`   |          | `true` runs one spec at a time on each platform, the platforms side by side. Default: one spec at a time.    |
 | `tickets`    |          | `url`: a link with `{id}` in place of a ticket ID, for triage. Leave it out to keep findings in the report.  |
 | `remote`     |          | `allow`: the Google accounts that may open the live page through `--remote`. Without it, `--remote` refuses. |

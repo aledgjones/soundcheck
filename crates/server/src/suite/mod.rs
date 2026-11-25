@@ -39,6 +39,9 @@ pub struct Suite {
     /// The feature folders' folder, relative to `root` (empty when they sit in it).
     pub specs_dir: PathBuf,
     pub config: Option<SuiteConfig>,
+    /// `_suite.md`, beside suite.yaml: what every tester needs to know whatever its spec (the test accounts' names,
+    /// say), so no spec has to point at something a tester can't read (SA-1057).
+    pub context: Option<String>,
     pub features: Vec<Feature>,
     /// In run order: by feature folder, then file name.
     pub specs: Vec<Spec>,
@@ -47,6 +50,7 @@ pub struct Suite {
 
 pub const CONFIG_FILE: &str = "suite.yaml";
 pub const FEATURE_FILE: &str = "_feature.md";
+pub const SUITE_FILE: &str = "_suite.md";
 /// Folders in the suite root that aren't features.
 const NOT_FEATURES: &[&str] = &["hooks", "scripts", "fixtures"];
 
@@ -60,6 +64,7 @@ pub fn load(root: &Path) -> Suite {
         root: root.to_path_buf(),
         specs_dir: PathBuf::new(),
         config: None,
+        context: fs::read_to_string(root.join(SUITE_FILE)).ok(),
         features: Vec::new(),
         specs: Vec::new(),
         problems: Vec::new(),

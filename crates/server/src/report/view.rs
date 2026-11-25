@@ -500,11 +500,16 @@ fn facts(page: &Page) -> Vec<Fact> {
         ));
     }
 
-    let tokens: u64 = attempts.iter().filter_map(|a| a.tokens).sum();
+    let testers: u64 = attempts.iter().filter_map(|a| a.tokens).sum();
+    let reviewers: u64 = crate::run::usage::reviews(entries)
+        .iter()
+        .filter_map(|r| r.tokens)
+        .sum();
+    let tokens = testers + reviewers;
     if tokens > 0 {
         facts.push(fact(
             format!("Tokens {}", thousands(tokens)),
-            Some("Testers' tokens, added up across attempts"),
+            Some("Testers' and reviewers' tokens, added up across attempts and reviews"),
         ));
     }
 

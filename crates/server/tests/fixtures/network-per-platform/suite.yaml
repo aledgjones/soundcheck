@@ -1,4 +1,4 @@
-soundcheck: "0.3"
+soundcheck: "0.4"
 platforms:
   android:
     driver: android

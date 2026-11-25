@@ -54,14 +54,6 @@ pub struct JudgeParams {
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
-pub struct DispatchParams {
-    /// Spec ID, e.g. `annotations/001-draw`; leave out for the next row.
-    pub spec: Option<String>,
-    /// Leave out for the next platform that can take a spec.
-    pub platform: Option<String>,
-}
-
-#[derive(Deserialize, schemars::JsonSchema)]
 pub struct ReviewParams {
     pub spec: String,
     pub platform: String,
@@ -652,7 +644,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: post your spec's result once, at the end, judging every outcome you haven't recorded with `judge`. A PASS files at once; anything else goes to the coordinator for review."
+        description = "Tester: post your spec's result once, at the end, judging every outcome you haven't recorded with `judge`. A PASS files at once; anything else goes to a reviewer."
     )]
     async fn post_result(
         &self,
@@ -697,13 +689,19 @@ impl Tools {
             .specs
             .iter()
             .any(|s| s.id == spec && s.for_platform(platform).probe.is_some());
+        // Held from before the post is journalled: the server starts the platform's next spec the moment it sees the
+        // post, and that must wait for this attempt's capture and the health reading, which may call for a restart.
+        self.hub.sampling().insert(platform);
         let claim = match self.hub.with_run(|run, now| {
             run.call_started(now, &p.token, "post_result");
             run.call_finished(now, &p.token, "post_result");
             run.post_probed(now, &p.token, posted, has_probes)
         }) {
             Ok(claim) => claim,
-            Err(e) => return reply(Err(e)),
+            Err(e) => {
+                self.hub.sampling().remove(&platform);
+                return reply(Err(e));
+            }
         };
 
         // Save the evidence now: the next spec's seed wipes the device, and review comes later.
@@ -719,12 +717,12 @@ impl Tools {
         let hub = self.hub.clone();
         tokio::spawn(async move { hub.check_health(&spec, platform, attempt).await });
         reply(Ok(
-            json!({ "claim": claim, "next": "you're done: reply in one line (token, claim, side finds) and stop" }),
+            json!({ "claim": claim, "next": "you're done: reply `done` and stop" }),
         ))
     }
 
     #[tool(
-        description = "Coordinator: the run at a glance: verdict and its reasons, whether it's an uncommitted trial (no tickets), counts (rows not run yet are counted, per platform too, not listed), the rows that are running, queued, waiting for review or didn't pass, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) narrows it to one spec, with the judgments a review rests on; `full` lists every row."
+        description = "Coordinator: the run at a glance: verdict and its reasons, whether it's an uncommitted trial (no tickets), counts (rows not run yet are counted, per platform too, not listed), the rows that are running, queued, waiting for review or didn't pass, problems, side finds waiting, and what stops the run finishing. `spec` (and `platform`) gives one spec only: its rows with the judgments a review rests on, its problems and its waiting side finds, without the run-wide counts and notes; `full` lists every row."
     )]
     async fn status(
         &self,
@@ -849,6 +847,18 @@ impl Tools {
                     })
                 })
                 .collect();
+
+            // One spec's status is that spec only (SA-1052): the run-wide notes and counts grow all run, and a
+            // review of one row re-read them every time.
+            if p.spec.is_some() {
+                return Ok(json!({
+                    "rows": rows,
+                    "problems": state.problems.iter().filter(|q| wanted(&q.spec, q.platform)).collect::<Vec<_>>(),
+                    "side_finds_waiting": finds,
+                    "evidence_dir": evidence_dir,
+                }));
+            }
+
             Ok(json!({
                 "verdict": verdict::verdict(state),
                 "uncommitted": self.hub.uncommitted,
@@ -876,51 +886,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: start a row's next attempt. Leave out `spec` and `platform` to start the next row (queued rows first, then untested, on a platform that can take a spec now), or name them for a particular row. Returns its token, model, agent type and a short prompt: pass the prompt unchanged to a background agent of that type, which fetches its brief with `brief`."
-    )]
-    async fn dispatch(
-        &self,
-        Parameters(p): Parameters<DispatchParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let platform = match p
-            .platform
-            .as_deref()
-            .map(|n| self.hub.platform(n))
-            .transpose()
-        {
-            Ok(platform) => platform,
-            Err(e) => return reply(Err(e)),
-        };
-
-        let dispatched = self.hub.dispatch(p.spec.as_deref(), platform).await;
-        if let Ok(d) = &dispatched {
-            self.hub.hand_out(d);
-        }
-
-        reply(dispatched.map(|d| json!(d)))
-    }
-
-    #[tool(
-        description = "Tester: your brief, the spec you're testing and how to post its result. Call it first, with the token you were given."
-    )]
-    async fn brief(
-        &self,
-        Parameters(p): Parameters<TokenParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let brief = self.hub.with_run(|run, now| {
-            let brief = run.brief(&p.token)?;
-            run.call_started(now, &p.token, "brief");
-            run.call_finished(now, &p.token, "brief");
-            Ok(brief)
-        });
-        Ok(match brief {
-            Ok(text) => CallToolResult::success(vec![ContentBlock::text(text)]),
-            Err(e) => CallToolResult::error(vec![ContentBlock::text(format!("refused: {e:#}"))]),
-        })
-    }
-
-    #[tool(
-        description = "Coordinator: your call on a result waiting for review: uphold, verify (a fresh attempt told the claim), send-back, judge (an Unsure only), spec-unclear, or harness (the harness stopped it: filed BLOCKED, or with rerun a fresh attempt told the note). Every call needs a one-line reason."
+        description = "Reviewer (or the coordinator, for a row no reviewer settled): your call on a result waiting for review: uphold, verify (a fresh attempt told the claim), send-back, judge (an Unsure only), spec-unclear, or harness (the harness stopped it: filed BLOCKED, or with rerun a fresh attempt told the note). Every call needs a one-line reason."
     )]
     async fn review(
         &self,
@@ -938,7 +904,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: your call on a side find: give it a title in plain words to make it a finding, or none if it isn't one. Read its screenshots first and keep only those on its topic, whether they confirm it or not."
+        description = "Reviewer (or the coordinator, for a row no reviewer settled): your call on a side find: give it a title in plain words to make it a finding, or none if it isn't one. Read its screenshots first and keep only those on its topic, whether they confirm it or not."
     )]
     async fn review_find(
         &self,
@@ -1024,7 +990,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Coordinator: build and install the current tree on a platform with the suite's install hook, between specs. The server runs it and returns at once; the result comes as an event, `build ... installed on <platform>` or `install failed on <platform>`. Then the rows you list (agreed with the person) rerun; the rest keep their results."
+        description = "Coordinator: build and install the current tree on a platform with the suite's install hook. It runs between specs: if a spec is running or waiting for review there, the install is queued, nothing new starts on the platform, and it starts by itself once that's settled. The server runs it and returns at once; the result comes as an event, `build ... installed on <platform>` or `install failed on <platform>`. Then the rows you list (agreed with the person) rerun; the rest keep their results."
     )]
     async fn install_build(
         &self,

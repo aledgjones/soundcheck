@@ -102,7 +102,7 @@ pub use soundcheck_driver::DriverKind;
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "kebab-case")]
 pub struct SuiteConfig {
-    /// The soundcheck version this suite is written for, e.g. `0.3`.
+    /// The soundcheck version this suite is written for, e.g. `0.4`.
     pub soundcheck: String,
     /// Each platform's whole map: nothing about one platform is shared from the top level.
     pub platforms: BTreeMap<Platform, PlatformConfig>,
@@ -393,12 +393,20 @@ pub struct Hooks {
 #[serde(deny_unknown_fields)]
 pub struct Models {
     pub default: String,
+    /// The model that reviews claims and side finds (SA-1050).
+    #[serde(default = "default_reviewer")]
+    pub reviewer: String,
+}
+
+fn default_reviewer() -> String {
+    "opus".into()
 }
 
 impl Default for Models {
     fn default() -> Self {
         Models {
             default: "sonnet".into(),
+            reviewer: default_reviewer(),
         }
     }
 }
@@ -443,7 +451,7 @@ mod tests {
     const HOOKS: &str = "{ guard: g, build-identity: b, install: i, check: c }";
 
     fn config(platforms: &str) -> Result<SuiteConfig, Vec<String>> {
-        SuiteConfig::parse(&format!("soundcheck: \"0.3\"\nplatforms:\n{platforms}"))
+        SuiteConfig::parse(&format!("soundcheck: \"0.4\"\nplatforms:\n{platforms}"))
     }
 
     #[test]

@@ -3,7 +3,60 @@ use crate::run::journal::Entry;
 use crate::run::model::{Answer, Claim};
 use crate::suite::config::Platform;
 
-/// One plain line per journal entry, for the coordinator's Monitor: every line wakes it.
+/// Picks out of the journal what needs the coordinator, for `soundcheck attention` (SA-1051). The server dispatches,
+/// restarts devices and has claims reviewed by itself, so that's little: the run paused, a claim no reviewer settled,
+/// an `install_build` ending, a restart that failed.
+#[derive(Default)]
+pub struct Attention {
+    /// Platforms whose `install_build` is under way: only their builds are news, not the ones a run logs at its start.
+    installing: std::collections::HashSet<Platform>,
+    /// Platforms whose restart has failed and not yet worked: the server tries again every minute, and the
+    /// coordinator hears of the first failure only.
+    down: std::collections::HashSet<Platform>,
+}
+
+impl Attention {
+    /// The entry's line if the coordinator should hear of it. Every entry goes through, in order, wanted or not.
+    pub fn of(&mut self, entry: &Entry) -> Option<String> {
+        let wanted = match &entry.event {
+            Event::InstallStarted { platform } => {
+                self.installing.insert(*platform);
+                false
+            }
+            Event::BuildInstalled { platform, .. } => self.installing.remove(platform),
+            Event::InstallFailed { platform, .. } => {
+                self.installing.remove(platform);
+                true
+            }
+            Event::RestartFailed { platform, .. } => self.down.insert(*platform),
+            Event::DeviceRestarted { platform, .. } => {
+                self.down.remove(platform);
+                false
+            }
+            // The coordinator's own pause is no news to it; the server's is.
+            Event::Paused { reason } => reason.starts_with(super::orchestrate::PAUSED_BY_SERVER),
+            Event::Reviewer {
+                unsettled: Some(_), ..
+            } => true,
+            _ => false,
+        };
+        wanted.then(|| summary(entry))
+    }
+
+    /// Whether the entry may have filed the run's last row, which is worth asking the server about.
+    pub fn may_end_the_work(entry: &Entry) -> bool {
+        matches!(
+            entry.event,
+            Event::Posted { .. }
+                | Event::Reviewed { .. }
+                | Event::FindReviewed { .. }
+                | Event::Stalled { .. }
+                | Event::ResetFailed { .. }
+        )
+    }
+}
+
+/// One plain line per journal entry, for `soundcheck events` and the lines `soundcheck attention` prints.
 pub fn summary(entry: &Entry) -> String {
     let what = match &entry.event {
         Event::Dispatched {
@@ -208,6 +261,15 @@ pub fn summary(entry: &Entry) -> String {
             duration_ms / 1000
         ),
         Event::Tokens { token, tokens, .. } => format!("{token} used {tokens} tokens"),
+        Event::Reviewer {
+            spec,
+            platform,
+            unsettled: Some(why),
+            ..
+        } => format!("review unsettled: {spec} on {platform} needs your review ({why})"),
+        Event::Reviewer { spec, platform, .. } => {
+            format!("a reviewer of {spec} on {platform} ended")
+        }
     };
     format!("#{} {what}", entry.seq)
 }

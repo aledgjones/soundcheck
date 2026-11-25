@@ -1,57 +1,16 @@
-//! The plugin's Stop, SessionStart, PreToolUse and PostToolUse hooks. Each asks the run serving on the port and prints the hook's
-//! JSON reply, or nothing: with no run up, sessions are left alone.
+//! The plugin's SessionStart hook: it asks the run serving on the port and prints the hook's JSON reply, or nothing:
+//! with no run up, sessions are left alone. The hooks that made a coordinator dispatch went with SA-1049: the server
+//! dispatches.
 
-use crate::serve::{Dispatched, Summary};
-use anyhow::{Context, Result};
-use serde::Deserialize;
-use serde_json::{Value, json};
+use crate::serve::Summary;
+use anyhow::Result;
+use serde_json::json;
 use std::time::Duration;
 
-const TESTERS: [&str; 2] = [
-    "soundcheck:soundcheck-tester",
-    "soundcheck:soundcheck-tester-mechanics",
-];
-
-/// Covers a dispatch's reset, which seeds and relaunches the app, three times at worst.
-const DISPATCH_TIMEOUT: Duration = Duration::from_secs(590);
-
-#[derive(Deserialize)]
-struct StopInput {
-    #[serde(default)]
-    session_id: String,
-    #[serde(default)]
-    stop_hook_active: bool,
-}
-
-#[derive(Deserialize)]
-struct ToolInput {
-    #[serde(default)]
-    session_id: String,
-    #[serde(default)]
-    tool_name: String,
-    #[serde(default)]
-    tool_input: Value,
-}
-
-#[derive(Deserialize)]
-struct Next {
-    spec: String,
-    platform: String,
-}
-
 /// The run's summary, or None when no run is serving on the port.
-async fn summary(port: u16, session: Option<&str>) -> Result<Option<Summary>> {
-    let mut url = format!("http://127.0.0.1:{port}/summary");
-
-    // Session IDs are UUIDs, so anything else needn't be escaped: it's left out.
-    if let Some(session) =
-        session.filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
-    {
-        url.push_str(&format!("?session={session}"));
-    }
-
+async fn summary(port: u16) -> Result<Option<Summary>> {
     let request = reqwest::Client::new()
-        .get(url)
+        .get(format!("http://127.0.0.1:{port}/summary"))
         .timeout(Duration::from_secs(3));
     match request.send().await {
         Ok(response) => Ok(Some(response.error_for_status()?.json().await?)),
@@ -61,103 +20,9 @@ async fn summary(port: u16, session: Option<&str>) -> Result<Option<Summary>> {
     }
 }
 
-/// Blocks the coordinator from stopping while a row could be dispatched and nothing waits for review: nothing running,
-/// or with platforms in parallel, a platform left idle. Only a session that has started testers is held, and only once per stop.
-pub async fn stop(stdin: &str, port: u16) -> Result<Option<String>> {
-    let input: StopInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
-
-    if input.stop_hook_active {
-        return Ok(None);
-    }
-
-    let Some(s) = summary(port, Some(&input.session_id)).await? else {
-        return Ok(None);
-    };
-    // A running tester doesn't make the session busy: with platforms in parallel, another may be free, and `/next`
-    // refuses when none is.
-    let busy = !s.review.is_empty() || s.side_finds > 0;
-
-    if !s.coordinator || s.finished || s.paused || busy {
-        return Ok(None);
-    }
-
-    let Some(next) = next_row(port, Duration::from_secs(30)).await? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        json!({
-            "decision": "block",
-            "reason": format!(
-                "dispatch {} on {}: it could start now and nothing has started it, so start its tester now",
-                next.spec, next.platform
-            ),
-        })
-        .to_string(),
-    ))
-}
-
-/// Whether the call is an Agent call that starts a tester.
-fn is_tester(input: &ToolInput) -> bool {
-    let agent = input.tool_input["subagent_type"]
-        .as_str()
-        .unwrap_or_default();
-
-    matches!(input.tool_name.as_str(), "Agent" | "Task") && TESTERS.contains(&agent)
-}
-
-/// The row a platform could start now, or None when every platform is busy or nothing is ready.
-async fn next_row(port: u16, timeout: Duration) -> Result<Option<Next>> {
-    let response = reqwest::Client::new()
-        .get(format!("http://127.0.0.1:{port}/next"))
-        .timeout(timeout)
-        .send()
-        .await?;
-    if !response.status().is_success() {
-        return Ok(None);
-    }
-
-    Ok(Some(response.json().await?))
-}
-
-/// After each of the coordinator's own calls, says when a platform has gone idle with a row it could start: a
-/// tester's reply that lands mid-turn wakes nobody, and the Stop hook only catches it once the turn ends. Testers
-/// never get here, as hooks.json matches only tools they don't have.
-pub async fn post_tool_use(stdin: &str, port: u16) -> Result<Option<String>> {
-    let input: ToolInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
-
-    // A dispatch's own hook can run before a parallel dispatch in the same message has taken its platform.
-    if is_tester(&input) || input.tool_name == "mcp__plugin_soundcheck_soundcheck__dispatch" {
-        return Ok(None);
-    }
-
-    let Some(s) = summary(port, Some(&input.session_id)).await? else {
-        return Ok(None);
-    };
-
-    if !s.coordinator || s.finished || s.paused {
-        return Ok(None);
-    }
-
-    let Some(next) = next_row(port, Duration::from_secs(5)).await? else {
-        return Ok(None);
-    };
-    Ok(Some(
-        json!({
-            "hookSpecificOutput": {
-                "hookEventName": "PostToolUse",
-                "additionalContext": format!(
-                    "soundcheck: {} on {} could start now and nothing has started it; dispatch it before anything else",
-                    next.spec, next.platform
-                ),
-            },
-        })
-        .to_string(),
-    ))
-}
-
 /// Tells a new session about the run serving on the port, so a coordinator after `/clear` knows where it stands.
 pub async fn session_start(port: u16) -> Result<Option<String>> {
-    let Some(s) = summary(port, None).await? else {
+    let Some(s) = summary(port).await? else {
         return Ok(None);
     };
     let mut state = vec![format!("verdict {}", s.verdict)];
@@ -189,7 +54,7 @@ pub async fn session_start(port: u16) -> Result<Option<String>> {
     }
 
     let context = format!(
-        "A soundcheck run is up: {} ({}), {}. {}. To coordinate it, use the soundcheck run skill (`soundcheck:run`).",
+        "A soundcheck run is up: {} ({}), {}. {}. Its server dispatches and reviews by itself; to coordinate it, use the soundcheck run skill (`soundcheck:run`).",
         s.folder.display(),
         s.label,
         state.join(", "),
@@ -204,60 +69,4 @@ pub async fn session_start(port: u16) -> Result<Option<String>> {
         })
         .to_string(),
     ))
-}
-
-/// Turns the coordinator's tester Agent call into a dispatch: the server starts the next row (or the one the prompt
-/// names) and the call's input is rewritten to that attempt's prompt, agent type, model and token. A refusal denies
-/// the call with the server's reason.
-pub async fn pre_tool_use(stdin: &str, port: u16) -> Result<Option<String>> {
-    let input: ToolInput = serde_json::from_str(stdin).context("hook input isn't JSON")?;
-
-    if !is_tester(&input) {
-        return Ok(None);
-    }
-
-    let prompt = input.tool_input["prompt"].as_str().unwrap_or_default();
-    let sent = reqwest::Client::new()
-        .post(format!("http://127.0.0.1:{port}/dispatch"))
-        .timeout(DISPATCH_TIMEOUT)
-        .json(&json!({ "prompt": prompt, "session": input.session_id }))
-        .send()
-        .await;
-    let response = match sent {
-        Ok(response) => response,
-        Err(e) if e.is_connect() => return Ok(None),
-        Err(e) => return Err(e.into()),
-    };
-
-    let decision = if response.status().is_success() {
-        let d: Dispatched = response.json().await?;
-        let mut updated = input.tool_input.clone();
-        updated["subagent_type"] = json!(format!("soundcheck:{}", d.agent));
-        updated["prompt"] = json!(d.prompt);
-        updated["description"] = json!(d.token);
-        updated["run_in_background"] = json!(true);
-        match d.model {
-            Some(model) => updated["model"] = json!(model),
-            None => {
-                if let Some(fields) = updated.as_object_mut() {
-                    fields.remove("model");
-                }
-            }
-        }
-
-        json!({
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": format!("soundcheck dispatched {}", d.token),
-            "updatedInput": updated,
-        })
-    } else {
-        let reason = response.text().await.unwrap_or_default();
-        json!({
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "deny",
-            "permissionDecisionReason": format!("soundcheck refused the dispatch: {}", reason.trim()),
-        })
-    };
-    Ok(Some(json!({ "hookSpecificOutput": decision }).to_string()))
 }

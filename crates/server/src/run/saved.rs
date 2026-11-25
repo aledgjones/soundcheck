@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 pub const INFO_FILE: &str = "run.json";
 pub const SNAPSHOT_DIR: &str = "suite";
 pub const JOURNAL_FILE: &str = "journal.jsonl";
+/// What the run is testing, as `run --about` gave it: every reviewer is told.
+pub const ABOUT_FILE: &str = "about.md";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunInfo {
@@ -75,6 +77,12 @@ pub fn save(run_dir: &Path, info: &RunInfo, suite: &Suite) -> Result<()> {
         suite.root.join(suite::CONFIG_FILE),
         snapshot.join(suite::CONFIG_FILE),
     )?;
+    let facts = suite.root.join(suite::SUITE_FILE);
+
+    if facts.exists() {
+        std::fs::copy(facts, snapshot.join(suite::SUITE_FILE))?;
+    }
+
     let specs = suite.root.join(&suite.specs_dir);
     for feature in &suite.features {
         let from = specs.join(&feature.name);

@@ -1,57 +1,11 @@
 {
   "hooks": {
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook subagent-stop",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook stop",
-            "timeout": 40
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook session-start",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "matcher": "Agent|Task",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook pre-tool-use",
-            "timeout": 600
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Agent|Task|Bash|mcp__plugin_soundcheck_soundcheck__(status|review|review_find|queue|triage|install_build|export|relabel|add_evidence|dispatch|resume)",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/soundcheck\" hook post-tool-use",
             "timeout": 10
           }
         ]

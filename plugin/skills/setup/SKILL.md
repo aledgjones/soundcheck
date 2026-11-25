@@ -36,6 +36,7 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
 <project skill folder>/
   SKILL.md
   suite.yaml
+  _suite.md       # optional: what every tester needs to know, whatever its spec
   hooks/          # one self-contained script per concern; no reaching into other folders
   scripts/        # what specs' prepare steps run: seeding, signing in
   fixtures/
@@ -45,12 +46,14 @@ Ask the person, one topic at a time, and don't guess. Write the answers down; th
       001-<name>.spec.md
 ```
 
+`_suite.md` is for facts every tester needs whatever its spec: the test accounts' names, which account is "the second account". It goes into every tester's brief as "About this app's suite". A tester reads only its brief, never the regression skill or the repo, so a spec must not point at something written anywhere else. Keep it short, since every tester reads it, and leave it out if there's nothing to say.
+
 `suite.yaml`:
 
 Each platform is a whole block: nothing is shared from the top level, so two platforms repeat what they have in common, and each command says its platform itself.
 
 ```yaml
-soundcheck: "0.3" # the version this suite is written for
+soundcheck: "0.4" # the version this suite is written for
 platforms:
   android:
     driver: android
@@ -91,6 +94,8 @@ reports: ../../../reports # relative to suite.yaml; runs are written here
 tickets: # only with a tracker; fixed and deferred problems then need its ticket
   url: https://example.atlassian.net/browse/{id}
 ```
+
+Optional: `models` sets the testers' model (`default`, `sonnet` unless set; a spec's `model` overrides it) and the reviewers' (`reviewer`, `opus` unless set).
 
 A spec readies itself in its frontmatter, with commands run from this folder after a fresh relaunch (DESIGN.md 5.6):
 
@@ -139,26 +144,30 @@ Write stubs first that exit 1 with "not written yet", then fill them in with the
 It holds what's specific to this project, never soundcheck's generic steps:
 
 - when the project runs a regression, and with what scope. A release process usually chooses the scope and calls this skill;
-- the accounts, and anything about the devices no script or `device:` covers;
+- the accounts, and anything about the devices no script or `device:` covers (what a tester needs of this goes in `_suite.md` too, since testers never read the skill);
 - known device quirks and their workarounds;
 - with a tracker, how to search and create tickets during triage;
-- then: hand the suite folder, platforms and scope to `soundcheck:run`.
+- then: hand the suite folder, platforms, scope and a sentence or two on what the run is testing (the release's changes, the fix being checked) to `soundcheck:run`. That last is for the reviewers.
+
+Never have it dispatch testers, watch the run's events or wait on a held platform: the server does all three, and `soundcheck:run` says what's left for the coordinator.
 
 ## 4. Allow soundcheck's tools
 
-Add these rules to the project's `.claude/settings.json` under `permissions.allow`, so background testers never stop at a permission prompt and auto mode doesn't block the coordinator's commands as self-modification:
+Add these rules to the project's `.claude/settings.json` under `permissions.allow`, so the coordinator's soundcheck tools and commands never stop at a permission prompt and auto mode doesn't block them as self-modification:
 
 ```json
 "mcp__plugin_soundcheck_soundcheck__*",
 "Bash(soundcheck lint:*)",
 "Bash(soundcheck run:*)",
+"Bash(soundcheck attention:*)",
 "Bash(soundcheck events:*)",
-"Bash(soundcheck ready:*)",
 "Bash(soundcheck serve:*)",
 "Bash(soundcheck drive:*)"
 ```
 
-They're safe because the tester agent's only tools are soundcheck's own and Read, and each command only reads the suite, drives the test devices or writes the suite's reports. Keep any rules already there, and show the person the change before writing it.
+They're for the coordinator only. The testers and reviewers the server launches are given their tools on the command line and read none of the project's settings, so no rule here is what keeps them from prompting. The rules are safe because the plugin's tools only act on the run, and each command only reads the suite, waits on or reads a run, drives the test devices or writes the suite's reports. Keep any rules already there, and show the person the change before writing it. A `Bash(soundcheck ready:*)` rule from an earlier setup is no longer needed: the server waits out its own holds.
+
+The server launches those testers and reviewers with Claude Code, on the person's Claude subscription, so check `claude --version` runs in a terminal on the machine that will run the server. A run's first check is the same, and it refuses to start without it.
 
 ## 5. First spec and lint
 
