@@ -174,6 +174,7 @@ Each spec on each platform moves through `not run → running → needs review �
 - **When health is degraded:**
   - the attempt is marked, and a failure seen on it can't be upheld until it reproduces: the reviewer calls verify, and the rerun runs on the restarted device. A harness BLOCKED can still be upheld;
   - the server restarts the emulator or simulator before the next spec on it, waits for it to settle, restores its forwards and reconnects its reader. Both are notes in the record. At most one restart per platform in 15 minutes, so a device that stays degraded is noted rather than rebooted in a loop.
+- **When the health reading never comes** (SA-1061, 2026-11-26): the platform's next spec waits for the reading taken after each post, and the reading had no time limit. After the Mac slept mid-run (bf33ab36), Chrome's connection was dead, the reading never returned, and Chrome took no more specs for 20 minutes with nothing saying why; the stall check only watches testers. A device now has 60 s to answer. One that doesn't is restarted before the next spec, as a degraded one is, with the reason in the record (`didn't answer its health check within 60 s`), whatever the 15-minute limit says: a device that can't answer can't run a spec either.
 - Health is part of the evidence. A slowly degrading emulator produced one-off failures that looked like app bugs (2026-10-20: 0.4 of 4 GB free, the system busy while idle, ANRs in Google's own apps, a 59 s cold launch).
 
 ### 3.8 Release runs and builds (SA-784, 2026-10-28)

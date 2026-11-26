@@ -328,6 +328,10 @@ const STEP_DOWN_IDLE_MS: u64 = 5 * 60_000;
 
 /// How long a device has to answer a quick question before it counts as not answering.
 const DEVICE_ANSWERS_IN: Duration = Duration::from_secs(15);
+/// How long a device has for the health reading after a spec, which samples it for a few seconds. Its platform's
+/// next spec waits for the reading, so one that never comes (Chrome after the Mac slept, SA-1061) mustn't be waited
+/// for.
+const HEALTH_ANSWERS_IN: Duration = Duration::from_secs(60);
 
 /// Why a platform takes no spec in the seconds after a result: the reading may call for a restart first.
 const SAMPLING: &str = "sampling the device's health after the last spec";
@@ -1557,19 +1561,36 @@ impl Hub {
         }
 
         let driver = self.suite().config.as_ref().map(|c| c.driver(&platform));
-        let Ok(health) = self
-            .on_device(platform, async |d| {
-                // An attempt that ended offline or with a fault mustn't leave the app cut off between specs.
-                if let Some(network) = &d.network {
-                    network.reset().await?;
-                } else if driver == Some(DriverKind::Chrome) {
-                    d.device.offline(false).await?;
-                }
-                d.device.health().await
-            })
-            .await
-        else {
-            return;
+        let asked = self.on_device(platform, async |d| {
+            // An attempt that ended offline or with a fault mustn't leave the app cut off between specs.
+            if let Some(network) = &d.network {
+                network.reset().await?;
+            } else if driver == Some(DriverKind::Chrome) {
+                d.device.offline(false).await?;
+            }
+            d.device.health().await
+        });
+        let health = match tokio::time::timeout(HEALTH_ANSWERS_IN, asked).await {
+            Ok(Ok(health)) => health,
+            Ok(Err(_)) => return,
+            // A device that never answers would hold its platform's next spec for good: restart it instead.
+            Err(_) => {
+                self.restart_due
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(
+                        platform,
+                        (
+                            spec.to_string(),
+                            format!(
+                                "didn't answer its health check within {} s",
+                                HEALTH_ANSWERS_IN.as_secs()
+                            ),
+                        ),
+                    );
+
+                return;
+            }
         };
         let restarted_lately = self
             .last_restart
