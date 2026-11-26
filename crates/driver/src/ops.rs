@@ -29,6 +29,15 @@ const FILL_LAND_READS: u32 = 6;
 /// Reads, `POLL_MS` apart, for the tapped field to take focus before `fill` taps it again.
 const FILL_FOCUS_READS: u32 = 8;
 
+/// What `fill`'s tap did to focus.
+enum Focus {
+    /// The target has it, or something inside the target does.
+    Target,
+    /// Something else took it that didn't have it before: the target is a label, say, and this is its field.
+    Beside(Element),
+    Nowhere,
+}
+
 fn within(what: &str, value: u64, min: u64, max: u64, unit: &str) -> Result<()> {
     if value < min || value > max {
         return Err(DriverError::Invalid(format!(
@@ -339,8 +348,15 @@ impl<D: Device> Driver<D> {
     /// Taps the field, empties it, types `text` and checks it landed; typing can drop characters, so it tries 3 times.
     pub async fn fill(&self, target: &Matcher, text: &str) -> Result<()> {
         let mut unfocused = 0;
-        for _ in 0..FILL_TRIES {
-            let field = self.wait_for(target, TAP_WAIT_MS, false).await?;
+        // What had focus before this fill's first tap: something else that has it since is what the tap focused.
+        let mut focus_before = None;
+        for attempt in 0..FILL_TRIES {
+            let (field, focus) = self.wait_for_seen(target, TAP_WAIT_MS, false).await?;
+
+            if attempt == 0 {
+                focus_before = focus;
+            }
+
             // At the right end, so the cursor lands after the text: an on-screen keyboard only deletes backwards. A
             // segmented date or time field has its picker button there, so that's tapped at its first segment.
             let f = field.frame;
@@ -351,9 +367,24 @@ impl<D: Device> Driver<D> {
             };
             self.device.tap_at(x, f.y + f.height / 2.0).await?;
             // Under load focus moves after the tap returns, and the clear would empty the field that had it.
-            if !self.took_focus(target).await? {
-                unfocused += 1;
-                continue;
+            match self.took_focus(target, focus_before.as_ref()).await? {
+                Focus::Target => {}
+                // A label was named, say, and its tap focused the field beside it. Only a field the caller names is
+                // typed into, so this says which one that is.
+                Focus::Beside(field) => {
+                    let named = match field.label.as_str() {
+                        "" => "a field with no label".to_string(),
+                        label => format!("{label:?}"),
+                    };
+
+                    return Err(DriverError::Invalid(format!(
+                        "{target} isn't a field: tapping it focused {named}. Fill that instead"
+                    )));
+                }
+                Focus::Nowhere => {
+                    unfocused += 1;
+                    continue;
+                }
             }
 
             let held = field.value.as_deref().map_or(0, |v| v.chars().count());
@@ -403,7 +434,11 @@ impl<D: Device> Driver<D> {
         )))
     }
 
-    async fn took_focus(&self, target: &Matcher) -> Result<bool> {
+    /// What `fill`'s tap did to focus, given what had it `before`. Under load focus moves after the tap returns, so
+    /// the target is given every read to take it before anything else that took it is reported.
+    async fn took_focus(&self, target: &Matcher, before: Option<&Element>) -> Result<Focus> {
+        let mut beside = None;
+
         for _ in 0..FILL_FOCUS_READS {
             let elements = self.device.read(false).await?;
             // A date field's focus is on one of its segments, inside it.
@@ -414,14 +449,24 @@ impl<D: Device> Driver<D> {
                     e.focused && x >= f.x && x <= f.x + f.width && y >= f.y && y <= f.y + f.height
                 })
             };
+
             if elements.iter().filter(|e| target.matches(e)).any(inside) {
-                return Ok(true);
+                return Ok(Focus::Target);
             }
+
+            // What already had focus didn't get it from this tap. It's the same element if it's in the same place
+            // or reads the same, since the tap can scroll the screen under it.
+            let had_it = |e: &Element| {
+                before.is_some_and(|b| {
+                    b.frame == e.frame || (b.label == e.label && b.id == e.id && b.role == e.role)
+                })
+            };
+            beside = elements.into_iter().find(|e| e.focused && !had_it(e));
 
             sleep(Duration::from_millis(POLL_MS)).await;
         }
 
-        Ok(false)
+        Ok(beside.map_or(Focus::Nowhere, Focus::Beside))
     }
 
     /// Types into the focused field and checks it landed: keys can drop under load, and a person would see it. A
@@ -631,18 +676,30 @@ impl<D: Device> Driver<D> {
     /// Looks in what a screen reader gets first, then in everything `see` shows with `all`: a view marked not
     /// important (the score's page) is still a target by its id.
     async fn find(&self, target: &Matcher, last: bool) -> Result<Option<Element>> {
+        Ok(self.find_seen(target, last).await?.map(|(found, _)| found))
+    }
+
+    /// [`Self::find`], with where focus was in the read that found it.
+    async fn find_seen(
+        &self,
+        target: &Matcher,
+        last: bool,
+    ) -> Result<Option<(Element, Option<Element>)>> {
         for all in [false, true] {
             let elements = self.device.read(all).await?;
+            let focus = elements.iter().find(|e| e.focused).cloned();
             let mut matching = elements.into_iter().filter(|e| target.matches(e));
             let found = if last {
                 matching.next_back()
             } else {
                 matching.next()
             };
-            if found.is_some() {
-                return Ok(found);
+
+            if let Some(found) = found {
+                return Ok(Some((found, focus)));
             }
         }
+
         Ok(None)
     }
 
@@ -658,14 +715,24 @@ impl<D: Device> Driver<D> {
     }
 
     async fn wait_for(&self, target: &Matcher, timeout_ms: u64, last: bool) -> Result<Element> {
+        Ok(self.wait_for_seen(target, timeout_ms, last).await?.0)
+    }
+
+    /// [`Self::wait_for`], with where focus was in the read that found it (nowhere known, for another process's).
+    async fn wait_for_seen(
+        &self,
+        target: &Matcher,
+        timeout_ms: u64,
+        last: bool,
+    ) -> Result<(Element, Option<Element>)> {
         let start = Instant::now();
         let end = start + Duration::from_millis(timeout_ms);
         let mut looked_wider: Option<Instant> = None;
         loop {
             // A read can fail for a moment while an animation runs; keep trying until the deadline. A restart can't
             // be waited out: the app's state went with it.
-            match self.find(target, last).await {
-                Ok(Some(e)) => return Ok(e),
+            match self.find_seen(target, last).await {
+                Ok(Some(seen)) => return Ok(seen),
                 Err(e @ DriverError::Restarted(_)) => return Err(e),
                 _ => {}
             }
@@ -673,7 +740,7 @@ impl<D: Device> Driver<D> {
             {
                 looked_wider = Some(Instant::now());
                 match self.find_others(target, last).await {
-                    Ok(Some(e)) => return Ok(e),
+                    Ok(Some(e)) => return Ok((e, None)),
                     Err(e @ DriverError::Restarted(_)) => return Err(e),
                     _ => {}
                 }

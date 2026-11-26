@@ -502,6 +502,58 @@ async fn fill_clears_only_once_the_field_has_focus() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn fill_on_a_label_names_the_field_its_tap_focused_and_types_nothing() {
+    let label = el("Title*", 0.0);
+    let mut field = el("Title", 60.0);
+    field.role = Some("field".into());
+    let mut focused = field.clone();
+    focused.focused = true;
+    let driver = Driver::new(Fake::new(vec![
+        vec![label.clone(), field],
+        vec![label, focused],
+    ]));
+
+    let err = driver
+        .fill(&m("Title*"), "Opener")
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(
+        err,
+        "\"Title*\" isn't a field: tapping it focused \"Title\". Fill that instead"
+    );
+    let actions = driver.device.actions.lock().unwrap();
+    assert_eq!(actions.len(), 1, "{actions:?}");
+    assert!(actions[0].starts_with("tap"), "{actions:?}");
+}
+
+#[tokio::test(start_paused = true)]
+async fn fill_doesnt_blame_a_field_that_already_had_focus() {
+    let label = el("Title*", 0.0);
+    let mut other = el("Artist", 60.0);
+    other.role = Some("field".into());
+    other.focused = true;
+    other.value = Some("Pachelbel".into());
+    let driver = Driver::new(Fake::new(vec![vec![label, other]]));
+
+    let err = driver
+        .fill(&m("Title*"), "Opener")
+        .await
+        .unwrap_err()
+        .to_string();
+
+    assert_eq!(err, "\"Title*\" never took focus after 3 taps");
+    let actions = driver.device.actions.lock().unwrap();
+    assert!(
+        !actions
+            .iter()
+            .any(|a| a.starts_with("clear") || a.starts_with("type")),
+        "{actions:?}"
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn fill_never_clears_a_field_that_wont_take_focus() {
     let mut field = el("Title", 0.0);
     field.role = Some("field".into());
