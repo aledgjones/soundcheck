@@ -21,7 +21,7 @@ use chromiumoxide::cdp::browser_protocol::input::{
     InsertTextParams, MouseButton,
 };
 use chromiumoxide::cdp::browser_protocol::network::{
-    ClearBrowserCookiesParams, CookieParam, SetCookiesParams,
+    CookieParam, DeleteCookiesParams, GetCookiesParams, SetCookiesParams,
 };
 use chromiumoxide::cdp::browser_protocol::page::{
     DialogType, EventFileChooserOpened, EventJavascriptDialogClosed, EventJavascriptDialogOpening,
@@ -1412,14 +1412,23 @@ impl Device for Chrome {
         Ok(())
     }
 
-    /// Every cookie and the site's storage gone (local and session storage, IndexedDB, OPFS, service workers,
-    /// caches), as a fresh profile has.
+    /// The site's cookies and storage gone (local and session storage, IndexedDB, OPFS, service workers, caches), as
+    /// on a first visit. Other sites' cookies stay: a profile signed in to Google must still be after it (SA-1065).
     async fn clear_data(&self) -> Result<()> {
         self.blocked()?;
-        self.page
-            .execute(ClearBrowserCookiesParams::default())
+        let cookies = self
+            .page
+            .execute(GetCookiesParams::builder().url(&self.base_url).build())
             .await
             .map_err(device)?;
+
+        for cookie in &cookies.result.cookies {
+            let mut gone = DeleteCookiesParams::new(&cookie.name);
+            gone.domain = Some(cookie.domain.clone());
+            gone.path = Some(cookie.path.clone());
+            self.page.execute(gone).await.map_err(device)?;
+        }
+
         self.page
             .execute(ClearDataForOriginParams::new(origin(&self.base_url), "all"))
             .await
