@@ -1303,7 +1303,7 @@ impl Tools {
     }
 
     #[tool(
-        description = "Tester: swipe from one point to another over `ms` milliseconds. Returns the screen once it holds still."
+        description = "Tester: swipe from one point to another over `ms` milliseconds, which is how to scroll: start over the list or page to move and swipe up to go further down it. On Chrome it turns the wheel at the start point, so what's under that point scrolls by the swipe's length, and the start has to be inside the viewport. Returns the screen once it holds still."
     )]
     async fn swipe(
         &self,

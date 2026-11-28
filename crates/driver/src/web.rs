@@ -130,8 +130,9 @@ pub struct Chrome {
     prompt: Mutex<String>,
     /// The viewport, which can't be asked while a dialog blocks the page.
     size: Mutex<(f64, f64)>,
-    /// Headed, how much wider and taller the window is than the page it shows: its tab strip, address bar and edges.
-    frame: Option<(i64, i64)>,
+    /// How much wider and taller the window is than the page it shows: its tab strip, address bar and edges, which a
+    /// headless window counts in its size too.
+    frame: (i64, i64),
     /// Files `push` has put where the file picker finds them, in the order pushed.
     pushed: Mutex<Vec<String>>,
     /// A file picker the page has opened, held by soundcheck in place of the system's window until it's answered.
@@ -280,11 +281,11 @@ fn describe_download(d: &Download) -> String {
 }
 
 impl Chrome {
-    /// Sizes a headed window so it shows the whole viewport: Chrome counts its own toolbars in a window's size.
+    /// Sizes the window so it shows the whole viewport: Chrome counts its own toolbars in a window's size, headless
+    /// too. The wheel only scrolls what the window really shows, so a swipe that started in the strip of the
+    /// viewport below the window's edge used to reach the page and scroll nothing.
     async fn fit_window(&self, width: u32, height: u32) -> Result<()> {
-        let Some((w, h)) = self.frame else {
-            return Ok(());
-        };
+        let (w, h) = self.frame;
         let window = self
             .page
             .execute(GetWindowForTargetParams::default())
@@ -406,17 +407,12 @@ impl Chrome {
             .map_err(device)?
             .replace("HeadlessChrome", "Chrome");
         page.set_user_agent(agent).await.map_err(device)?;
-        let frame = if headed {
-            let (w, h): (i64, i64) = page
-                .evaluate("[outerWidth - innerWidth, outerHeight - innerHeight]")
-                .await
-                .map_err(device)?
-                .into_value()
-                .map_err(device)?;
-            Some((w, h))
-        } else {
-            None
-        };
+        let frame: (i64, i64) = page
+            .evaluate("[outerWidth - innerWidth, outerHeight - innerHeight]")
+            .await
+            .map_err(device)?
+            .into_value()
+            .map_err(device)?;
         page.execute(SetDeviceMetricsOverrideParams::new(
             width, height, 1.0, false,
         ))
@@ -1184,6 +1180,16 @@ impl Device for Chrome {
         self.blocked()?;
         // A desktop scrolls with the wheel or trackpad, never by dragging (a drag that starts on an image or a link
         // drags it out): so a swipe scrolls what's under its start, by as much as a finger would have moved it.
+        // The page is read whole, so a point further down it than the window shows has coordinates too: no pointer
+        // is there to turn a wheel.
+        let (width, height) = *self.size.lock().unwrap_or_else(|e| e.into_inner());
+        if !(0.0..width).contains(&from.0) || !(0.0..height).contains(&from.1) {
+            return Err(DriverError::Invalid(format!(
+                "a swipe starts on the screen, and {},{} is outside Chrome's {width}×{height} viewport: start inside \
+                 it, over what should scroll",
+                from.0, from.1
+            )));
+        }
         let steps = (ms / 16).clamp(2, 60);
         self.mouse(DispatchMouseEventType::MouseMoved, from.0, from.1, false)
             .await?;

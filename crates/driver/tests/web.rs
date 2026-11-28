@@ -713,3 +713,106 @@ async fn a_new_build_drops_the_old_builds_worker() {
     server.abort();
     driver.device.close().await;
 }
+
+/// A page shaped like an app's list screen: the document itself never scrolls, a list of 40 rows inside it does.
+const LONG_LIST: &str = r#"<!doctype html><html><head><title>Long list</title><style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  #app { display: flex; height: 100%; }
+  nav { width: 368px; }
+  #list { flex: 1; overflow-y: auto; }
+  #list button { display: block; width: 100%; height: 56px; }
+</style></head><body>
+<div id="app">
+  <nav>
+    <button onclick="this.textContent = 'At ' + list.scrollTop">Where</button>
+    <p id="opened">Nothing opened</p>
+  </nav>
+  <div id="list"></div>
+</div>
+<script>
+  const list = document.getElementById('list');
+  for (let i = 1; i <= 40; i++) {
+    const row = document.createElement('button');
+    row.textContent = 'Score ' + i;
+    row.onclick = () => { document.getElementById('opened').textContent = 'Opened ' + i; };
+    list.append(row);
+  }
+</script>
+</body></html>"#;
+
+/// The run of 2026-11-28 couldn't reach the end of a 40-score list on Chrome: its swipes started below the
+/// viewport, then in the strip of it that the headless window didn't show, where the wheel scrolled nothing.
+#[tokio::test]
+async fn a_swipe_scrolls_a_long_list_to_its_end_from_anywhere_on_screen() {
+    let dir = std::env::temp_dir().join(format!("soundcheck-list-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("list.html");
+    std::fs::write(&file, LONG_LIST).unwrap();
+    let web = match Chrome::launch(&format!("file://{}", file.display()), 1440, 900, false).await {
+        Ok(web) => web,
+        Err(e) => {
+            eprintln!("skipping: Chrome didn't start ({e})");
+            return;
+        }
+    };
+    let driver = Driver::new(web);
+    let at = async |top: u32| {
+        driver.tap(&m("re:^(Where|At )"), false).await.unwrap();
+        driver.wait(&m(&format!("At {top}")), 2_000).await
+    };
+
+    let refused = driver
+        .device
+        .swipe((800.0, 1300.0), (800.0, 200.0), 150)
+        .await
+        .expect_err("a swipe can't start below the screen")
+        .to_string();
+    assert!(
+        refused.contains("800,1300 is outside Chrome's 1440×900 viewport"),
+        "{refused}"
+    );
+    at(0).await.expect("a refused swipe scrolls nothing");
+
+    // Near the foot of the viewport, over the list: the document itself has nowhere to scroll.
+    driver
+        .device
+        .swipe((900.0, 800.0), (900.0, 200.0), 300)
+        .await
+        .unwrap();
+    at(600)
+        .await
+        .expect("a swipe up by 600 scrolls the list down by 600");
+    driver
+        .device
+        .swipe((900.0, 880.0), (900.0, 680.0), 300)
+        .await
+        .unwrap();
+    at(800).await.expect("the viewport's last rows scroll too");
+    driver
+        .device
+        .swipe((900.0, 300.0), (900.0, 500.0), 300)
+        .await
+        .unwrap();
+    at(600).await.expect("a swipe down scrolls back up");
+
+    // 40 rows of 56 in a 900 viewport: the list ends at 1340, however much further the wheel turns.
+    for _ in 0..2 {
+        driver
+            .device
+            .swipe((900.0, 800.0), (900.0, 200.0), 300)
+            .await
+            .unwrap();
+    }
+    at(1340).await.expect("the list stops at its end");
+    driver.tap(&m("Score 40"), false).await.unwrap();
+    driver.wait(&m("Opened 40"), 2_000).await.unwrap();
+
+    // Over the sidebar nothing scrolls: the wheel moves what's under the pointer.
+    driver
+        .device
+        .swipe((180.0, 300.0), (180.0, 500.0), 300)
+        .await
+        .unwrap();
+    at(1340).await.expect("a swipe off the list leaves it be");
+    driver.device.close().await;
+}
